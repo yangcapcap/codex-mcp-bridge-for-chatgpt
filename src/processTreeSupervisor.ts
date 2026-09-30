@@ -264,6 +264,26 @@ export class SupervisedProcessTreeRegistry {
     }), timeoutMs);
   }
 
+  /** Exact already retained tree only. This is local process evidence, not an
+   * owner/generation receipt or proof that all other workers have exited. */
+  observeNonforcingTreeExit(identity: JsonRpcProcessIdentity, timeoutMs = 6000): Promise<ShutdownResult> {
+    let retained:SupervisedProcessTree|undefined;
+    try {
+      if(identity && typeof identity==="object") {
+        const d=Object.getOwnPropertyDescriptors(identity);
+        if(Reflect.ownKeys(d).length===2 && ["pid","processGroupId"].every(k=>
+          Object.hasOwn(d,k) && Object.hasOwn(d[k],"value"))) {
+          const root={pid:d.pid.value,processGroupId:d.processGroupId.value};
+          validateRootIdentity(root);
+          retained=this.nonforcingEvidence?.get(supervisedProcessKey(root));
+        }
+      }
+    } catch { /* Malformed correlation grants no absence proof. */ }
+    const tree=retained;
+    return boundedShutdown(()=>this.enqueue(async()=>tree ?
+      this.observeRetainedTrees([tree]) : shutdownResult("uncertain")),timeoutMs);
+  }
+
   private retainObservedTree(key: string, tree: SupervisedProcessTree): void {
     const retained = this.nonforcingEvidence?.get(key);
     if (!retained) return;

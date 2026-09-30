@@ -142,3 +142,12 @@ whose registration is pending. Completing registration after parent exit cannot
 reconstruct an escaped descendant that was never captured, so it does not clear
 this UNKNOWN. Transport prohibition still pins immediately; no wait for the
 registration callback can defer or reopen ordinary force recovery.
+
+Scoped tree observation copies an exact PID/original-group selector before any
+queue yield and requires that tree to already exist in the pinned ledger. A
+missing selector, later registration or malformed data cannot approve absence.
+It reads that retained tree in the same serialized registry, preserving active
+force-history uncertainty, partial ledgers and birth observations. The result
+counts only that tree's observed survivors; it does not prove all other workers
+exited or bind a worker generation. An execution supervisor still needs trusted
+spawn-time association and a separate all-tree check before whole-owner exit.
