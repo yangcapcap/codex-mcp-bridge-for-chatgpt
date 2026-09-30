@@ -24,9 +24,17 @@ function probe(file: string): void {
   const lease = prepareStateDatabaseOpen(file);
   lease?.complete();
 }
-function unchangedRejectedFixture(edit: (database: Database.Database) => void, error: RegExp): void {
+function unchangedRejectedFixture(
+  edit: (database: Database.Database) => void, error: RegExp, pendingSchema?: number
+): void {
   const file = fixture();
-  upstream21(file);
+  if (pendingSchema === undefined) upstream21(file);
+  else {
+    createSchema18Fixture(file);
+    expect(() => new BridgeStateStore({ file, onMigrationSchemaCommitted(progress) {
+      if (progress.targetSchema === pendingSchema) throw new Error("fixture-pending");
+    } })).toThrow("fixture-pending");
+  }
   const database = new Database(file);
   edit(database);
   const before = readFileSync(file), walBefore = readFileSync(`${file}-wal`);
@@ -40,6 +48,42 @@ function unchangedRejectedFixture(edit: (database: Database.Database) => void, e
 }
 
 describe("state lineage admission before writes", () => {
+  it.each(["startedAt", "productVersion", "buildId", "originalSourceSchema"])(
+    "rejects a malformed pending %s before startup writes", field => {
+      unchangedRejectedFixture(database => {
+        const raw = database.prepare("SELECT value FROM bridge_meta WHERE key='state_migration_pending'").get() as { value: string };
+        const pending = JSON.parse(raw.value);
+        if (field === "originalSourceSchema") pending[field] = String(pending[field]);
+        else delete pending[field];
+        database.prepare("UPDATE bridge_meta SET value=? WHERE key='state_migration_pending'").run(JSON.stringify(pending));
+      }, /invalid pending migration provenance/, 20);
+    }
+  );
+
+  it("rejects a malformed retained gap before the first pending migration is finalized", () => {
+    unchangedRejectedFixture(database => {
+      database.prepare("INSERT INTO bridge_meta(key,value) VALUES ('state_migration_provenance_gap',?)").run("{malformed");
+    }, /provenance gap marker is invalid/, 19);
+  });
+
+  it("rejects a retained gap ahead of the pending checkpoint before startup writes", () => {
+    unchangedRejectedFixture(database => {
+      database.prepare("INSERT INTO bridge_meta(key,value) VALUES ('state_migration_provenance_gap',?)").run(JSON.stringify({
+        kind: "pre-contract-intermediate-checkpoint", originalSourceSchema: 18,
+        observedSchema: 21, recordedAt: new Date().toISOString()
+      }));
+    }, /provenance gap marker is invalid/, 19);
+  });
+
+  it("rejects a pending first receipt whose claimed earlier source has no preceding path", () => {
+    unchangedRejectedFixture(database => {
+      const raw = database.prepare("SELECT value FROM bridge_meta WHERE key='state_migration_pending'").get() as { value: string };
+      const pending = JSON.parse(raw.value);
+      pending.originalSourceSchema = 3;
+      database.prepare("UPDATE bridge_meta SET value=? WHERE key='state_migration_pending'").run(JSON.stringify(pending));
+      database.prepare("UPDATE bridge_meta SET value='3' WHERE key='schema_v19_upgrade_source'").run();
+    }, /no complete preceding provenance path/, 19);
+  });
   it("rejects a missing durable original-source marker before startup writes", () => {
     unchangedRejectedFixture(database => {
       database.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
@@ -130,6 +174,28 @@ describe("state lineage admission before writes", () => {
     const store = new BridgeStateStore({ file });
     try { expect(store.schemaVersion).toBe(30); }
     finally { store.close(); }
+  });
+
+  it("retains historical receipts when a later published-version upgrade is interrupted", () => {
+    const file = fixture();
+    upstream21(file);
+    const database = new Database(file);
+    // Model the completion markers of an earlier release whose current schema
+    // was 21. Its historical receipts remain bound to source18.
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_source_schema", "18");
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_target_schema", "21");
+    database.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
+    database.close();
+    expect(() => new BridgeStateStore({ file, onMigrationProgress(progress) {
+      if (progress.targetSchema === 22) throw new Error("fixture-later-upgrade-22");
+    } })).toThrow("fixture-later-upgrade-22");
+    const store = new BridgeStateStore({ file });
+    try {
+      expect(store.schemaVersion).toBe(30);
+      expect(store.getMeta("state_last_migration_source_schema")).toBe("21");
+      expect(JSON.parse(store.getMeta("state_migration:bridge-state-19-to-20")!).originalSourceSchema).toBe(18);
+      expect(JSON.parse(store.getMeta("state_migration:bridge-state-21-to-22")!).originalSourceSchema).toBe(21);
+    } finally { store.close(); }
   });
 
   it("rejects mixed CoGate structures even if the upstream completion shape is also present", () => {

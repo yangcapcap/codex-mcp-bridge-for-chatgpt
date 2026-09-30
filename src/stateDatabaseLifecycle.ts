@@ -192,7 +192,12 @@ export function inspectStateDatabase(
           pending.fromSchema !== entry.fromSchema ||
           pending.toSchema !== entry.toSchema ||
           pending.implementationSha256 !== entry.sha256 ||
+          !Number.isSafeInteger(pending.originalSourceSchema) ||
           !SUPPORTED_STATE_SCHEMA_VERSIONS.has(pendingOriginalSource) ||
+          pendingOriginalSource > entry.fromSchema ||
+          typeof pending.productVersion !== "string" ||
+          typeof pending.buildId !== "string" ||
+          typeof pending.startedAt !== "string" || !Number.isFinite(Date.parse(pending.startedAt)) ||
           ![entry.fromSchema, entry.toSchema].includes(schemaVersion)
         ) throw new Error("invalid pending record");
         pendingMigrationId = entry.id;
@@ -222,7 +227,7 @@ export function inspectStateDatabase(
     ) {
       throw new Error("Pending state migration conflicts with its original-source marker.");
     }
-    assertStateLineageAdmission(database, schemaVersion, pendingMigrationId);
+    assertStateLineageAdmission(database, schemaVersion, pendingMigrationId, pendingOriginalSource);
     let activeProcessIds: number[] = [];
     if (tableExists(database, "bridge_instances")) {
       const rows = database.prepare(
@@ -277,7 +282,8 @@ export function inspectStateDatabase(
  * pre-contract checkpoints also need the positive structures introduced by the
  * published async/completion migrations; they may have no applied receipts. */
 function assertStateLineageAdmission(
-  database: Database.Database, schemaVersion: number, pendingMigrationId: string | null
+  database: Database.Database, schemaVersion: number, pendingMigrationId: string | null,
+  pendingOriginalSource: number | null
 ): void {
   const records = database.prepare(
     "SELECT key,value FROM bridge_meta WHERE substr(key,1,16)='state_migration:'"
@@ -305,31 +311,47 @@ function assertStateLineageAdmission(
     "SELECT value FROM bridge_meta WHERE key=?"
   ).get(key) as { value: string } | undefined)?.value;
   const lastMigrationId = getMeta("state_last_migration_id");
-  if (lastMigrationId !== undefined) {
-    const sourceRaw = getMeta("state_last_migration_source_schema") || getMeta("schema_v19_upgrade_source");
+  const gapRaw = getMeta("state_migration_provenance_gap");
+  let completePath: StateMigrationCatalogEntry[] = [];
+  let originalSource: number | undefined;
+  let pathStart = 0;
+  let gapCheckpoint: number | undefined;
+  const pending = STATE_MIGRATIONS.find(entry => entry.id === pendingMigrationId);
+  const checkpoint = pending?.toSchema === schemaVersion ? pending.fromSchema : schemaVersion;
+  if (lastMigrationId !== undefined || gapRaw !== undefined) {
+    const durableSource = getMeta("schema_v19_upgrade_source");
+    // After a previously published database starts a later upgrade, the old
+    // completed-source marker remains until the new path finishes. The latest
+    // finalized receipt identifies which retained path currently owns the last
+    // marker. Receipts from earlier paths are still authenticated individually.
+    const latestSource = lastMigrationId === undefined ? undefined : applied.get(lastMigrationId)?.originalSourceSchema;
+    const sourceRaw = durableSource !== undefined && latestSource === Number(durableSource)
+      ? durableSource : getMeta("state_last_migration_source_schema") || durableSource;
     if (!sourceRaw || !/^\d+$/.test(sourceRaw) || String(Number(sourceRaw)) !== sourceRaw ||
         !SUPPORTED_STATE_SCHEMA_VERSIONS.has(Number(sourceRaw))) {
       throw new Error("State migration provenance has no supported original source schema.");
     }
-    const originalSource = Number(sourceRaw);
-    const completePath = stateMigrationPath(originalSource);
-    let pathStart = 0;
-    const gapRaw = getMeta("state_migration_provenance_gap");
+    originalSource = Number(sourceRaw);
+    completePath = stateMigrationPath(originalSource);
     if (gapRaw !== undefined) {
-      const gap = parseJsonTextStrict<Record<string, unknown>>(gapRaw, "State migration provenance gap");
+      let gap: Record<string, unknown>;
+      try { gap = parseJsonTextStrict<Record<string, unknown>>(gapRaw, "State migration provenance gap"); }
+      catch { throw new Error("State migration provenance gap marker is invalid."); }
       const gapIndex = completePath.findIndex(entry => entry.toSchema === gap.observedSchema);
       if (gap.kind !== "pre-contract-intermediate-checkpoint" ||
           gap.originalSourceSchema !== originalSource || gapIndex < 0 ||
+          Number(gap.observedSchema) > checkpoint ||
           typeof gap.recordedAt !== "string" || !Number.isFinite(Date.parse(gap.recordedAt))) {
         throw new Error("State migration provenance gap marker is invalid.");
       }
       pathStart = gapIndex + 1;
+      gapCheckpoint = Number(gap.observedSchema);
     }
+  }
+  if (lastMigrationId !== undefined) {
     // A committed pending migration has not finalized its receipt yet. Validate
     // the preceding durable path; normal recovery will authenticate and finalize
     // the already validated pending record under the startup lease.
-    const pending = STATE_MIGRATIONS.find(entry => entry.id === pendingMigrationId);
-    const checkpoint = pending?.toSchema === schemaVersion ? pending.fromSchema : schemaVersion;
     const expected = completePath.slice(pathStart).filter(entry => entry.toSchema <= checkpoint);
     if (expected.at(-1)?.toSchema !== checkpoint) {
       throw new Error(`State migration provenance cannot reach schema ${checkpoint}.`);
@@ -346,6 +368,10 @@ function assertStateLineageAdmission(
     }
   } else if (applied.size > 0) {
     throw new Error("Applied state migration provenance has no last-migration identity.");
+  } else if (gapCheckpoint !== undefined && gapCheckpoint !== checkpoint) {
+    throw new Error("State migration provenance gap does not reach the unrecorded checkpoint.");
+  } else if (pending && pendingOriginalSource !== checkpoint && gapCheckpoint !== checkpoint) {
+    throw new Error("Pending state migration has no complete preceding provenance path.");
   }
   if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion) || schemaVersion < 20) return;
   const columns = (table: string) => new Set(
