@@ -209,7 +209,8 @@ export class SupervisedProcessTreeRegistry {
       if (!tree) return true;
       this.forceOperations++;
       try {
-        const exited = await terminateTree(tree, graceMs, this.readTable, () => !this.nonforcingEvidence);
+        const exited = await terminateTree(tree, graceMs, this.readTable, () => !this.nonforcingEvidence,
+          () => this.retainObservedTree(key,tree));
         this.retainObservedTree(key, tree);
         if(this.incompleteTrees.has(key)) return false;
         if (exited && !this.nonforcingEvidence) {this.trees.delete(key);this.incompleteTrees.delete(key);}
@@ -217,7 +218,7 @@ export class SupervisedProcessTreeRegistry {
       } catch(error) {
         if(processObservationFailure(error).kind==="ledger-limit") this.incompleteTrees.add(key);
         throw error;
-      } finally { this.forceOperations--; }
+      } finally { this.retainObservedTree(key,tree);this.forceOperations--; }
     });
   }
 
@@ -231,7 +232,8 @@ export class SupervisedProcessTreeRegistry {
       const results = await Promise.all(entries.map(async ([key, tree]) => {
         this.forceOperations++;
         try {
-          const exited = await terminateTree(tree, graceMs, this.readTable, () => !this.nonforcingEvidence);
+          const exited = await terminateTree(tree, graceMs, this.readTable, () => !this.nonforcingEvidence,
+            () => this.retainObservedTree(key,tree));
           this.retainObservedTree(key, tree);
           if(this.incompleteTrees.has(key)) return false;
           if (exited && !this.nonforcingEvidence) {this.trees.delete(key);this.incompleteTrees.delete(key);}
@@ -239,7 +241,7 @@ export class SupervisedProcessTreeRegistry {
         } catch(error) {
           if(processObservationFailure(error).kind==="ledger-limit") this.incompleteTrees.add(key);
           return false;
-        } finally { this.forceOperations--; }
+        } finally { this.retainObservedTree(key,tree);this.forceOperations--; }
       }));
       return results.every(Boolean) && this.trees.size === 0;
     });
@@ -347,7 +349,8 @@ async function terminateTree(
   tree: SupervisedProcessTree,
   graceMs: number,
   readTable: () => Promise<ProcessTableEntry[]> = readProcessTable,
-  mayEscalate: () => boolean = () => true
+  mayEscalate: () => boolean = () => true,
+  onObserved: () => void = () => {}
 ): Promise<boolean> {
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
     throw new Error("Invalid supervised process termination grace period.");
@@ -361,21 +364,19 @@ async function terminateTree(
   }
 
   let rows = await readTable();
-  observeTree(tree, rows);
-  let running = runningTreeProcesses(tree, rows);
+  let running = runningTreeProcesses(tree, rows, onObserved);
   if (running.length === 0) {
     // A live retained orphan with a missing birth stamp is not verified exit.
     return !hasPotentialLiveOwner(tree, rows);
   }
   signalTreeProcesses(running, rows, "SIGTERM");
-  let observed = await waitForTreeExit(tree, graceMs, readTable);
+  let observed = await waitForTreeExit(tree, graceMs, readTable, onObserved);
   running = observed.running;
   if (running.length === 0) return !hasPotentialLiveOwner(tree, observed.rows);
   rows = await readTable();
-  observeTree(tree, rows);
-  running = runningTreeProcesses(tree, rows);
+  running = runningTreeProcesses(tree, rows, onObserved);
   signalTreeProcesses(running, rows, "SIGKILL", mayEscalate);
-  observed = await waitForTreeExit(tree, graceMs, readTable);
+  observed = await waitForTreeExit(tree, graceMs, readTable, onObserved);
   return observed.running.length === 0 && !hasPotentialLiveOwner(tree, observed.rows);
 }
 
@@ -472,9 +473,10 @@ function observeTree(
 
 function runningTreeProcesses(
   tree: SupervisedProcessTree,
-  rows: readonly ProcessTableEntry[]
+  rows: readonly ProcessTableEntry[],
+  onObserved: () => void = () => {}
 ): ProcessTableEntry[] {
-  observeTree(tree, rows);
+  try {observeTree(tree, rows);} finally {onObserved();}
   return rows.filter((row) => {
     if (isZombie(row)) return false;
     const captured = tree.captured.get(row.pid);
@@ -486,13 +488,14 @@ function runningTreeProcesses(
 async function waitForTreeExit(
   tree: SupervisedProcessTree,
   timeoutMs: number,
-  readTable: () => Promise<ProcessTableEntry[]>
+  readTable: () => Promise<ProcessTableEntry[]>,
+  onObserved: () => void = () => {}
 ): Promise<{ running: ProcessTableEntry[]; rows: ProcessTableEntry[] }> {
   const deadline = Date.now() + timeoutMs;
   let running: ProcessTableEntry[] = [];
   do {
     const rows = await readTable();
-    running = runningTreeProcesses(tree, rows);
+    running = runningTreeProcesses(tree, rows, onObserved);
     if (running.length === 0 || Date.now() >= deadline) return { running, rows };
     await delay(PROCESS_EXIT_POLL_MS);
   } while (true);

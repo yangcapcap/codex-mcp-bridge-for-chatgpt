@@ -142,4 +142,28 @@ describe.skipIf(process.platform === "win32")("nonforcing supervised tree fence 
     expect(await f.registry.cleanupAll(0)).toBe(false);f.registry.forget(identity);expect(f.registry.size).toBe(1);
     f.registry.pinNonforcingShutdown();expect((await f.registry.observeNonforcingExit()).outcome).toBe("uncertain");
   });
+  test.each(["release","cleanup"])("%s continuation retains each birth-bound child before a later observer fault", async operation => {
+    let rows=[root],reads=0,afterPinReads=0,pinned=false;
+    const registry=new SupervisedProcessTreeRegistry(async()=> {
+      reads++;
+      if(pinned && ++afterPinReads>1) throw Error("later probe fault");
+      return rows;
+    });
+    await registry.register(identity);
+    const signal=vi.spyOn(process,"kill").mockImplementation(()=> {
+      registry.pinNonforcingShutdown();pinned=true;rows=[root,child];return true;
+    });
+    try {
+      if(operation==="release") await expect(registry.release(identity,0)).rejects.toThrow("later probe fault");
+      else expect(await registry.cleanupAll(0)).toBe(false);
+      expect(reads).toBeGreaterThan(2);
+      const snapshot=registry.snapshots()[0];
+      expect(snapshot.processes).toContainEqual(expect.objectContaining({pid:child.pid,startedAt:child.startedAt}));
+      const recovered=new SupervisedProcessTreeRegistry(async()=>[{...child,parentPid:1}]);
+      recovered.remember(identity);recovered.merge(JSON.parse(JSON.stringify({...snapshot,rootExited:true})));
+      recovered.pinNonforcingShutdown();
+      expect((await recovered.observeNonforcingExit()).exited).toBe(false);
+      expect(signal.mock.calls.some(([,kind])=>kind==="SIGKILL")).toBe(false);
+    } finally {signal.mockRestore();}
+  });
 });

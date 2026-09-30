@@ -78,3 +78,10 @@ UNKNOWN. Pinned historical entries are bounded as well as current live entries.
 Other trees in a complete snapshot are still inspected when one tree overflows.
 The execution-service snapshot parser accepts only an absent or literal true
 incomplete flag. This field carries uncertainty, never shutdown authority.
+
+An ordinary cleanup already in progress invokes retention after every complete
+or partial tree observation, including its polling and escalation continuations.
+Final retention also runs when a later probe throws. A birth-bound descendant
+observed after pinning therefore survives snapshot serialization and recovery
+even if the cleanup never returns successfully. Failed overflow still retains
+the incomplete flag; known identities are kept alongside that UNKNOWN.
