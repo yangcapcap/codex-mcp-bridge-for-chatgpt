@@ -1,0 +1,779 @@
+{
+  "profileVersion": 1,
+  "lineage": "cogate-v2-workspace-hmac",
+  "schema": 21,
+  "sourceCommit": "128932cd9099e167da4fb588cb8a340903342426",
+  "schemaObjectsSha256": "cdebf3d1c707a0458d41cf5341a79f332fde2caf4a21d0cf60ccabd3098fe362",
+  "objects": [
+    {
+      "type": "index",
+      "name": "activities_continuation",
+      "tableName": "activities",
+      "sql": "CREATE INDEX activities_continuation ON activities(continuation_of_activity_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "activities_project_pin",
+      "tableName": "activities",
+      "sql": "CREATE INDEX activities_project_pin ON activities(project_id, pinned_cwd, lifecycle)"
+    },
+    {
+      "type": "index",
+      "name": "activities_scope_attention",
+      "tableName": "activities",
+      "sql": "CREATE INDEX activities_scope_attention ON activities(scope_id, waiting_on, verification, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "activities_scope_recent",
+      "tableName": "activities",
+      "sql": "CREATE INDEX activities_scope_recent ON activities(scope_id, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "activity_agents_active_pair",
+      "tableName": "activity_agents",
+      "sql": "CREATE UNIQUE INDEX activity_agents_active_pair ON activity_agents(activity_id, agent_id)\n    WHERE released_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "activity_agents_activity_history",
+      "tableName": "activity_agents",
+      "sql": "CREATE INDEX activity_agents_activity_history ON activity_agents(activity_id, assigned_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "activity_agents_agent_history",
+      "tableName": "activity_agents",
+      "sql": "CREATE INDEX activity_agents_agent_history ON activity_agents(agent_id, assigned_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "activity_events_activity_cursor",
+      "tableName": "activity_events",
+      "sql": "CREATE INDEX activity_events_activity_cursor ON activity_events(activity_id, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "activity_events_scope_cursor",
+      "tableName": "activity_events",
+      "sql": "CREATE INDEX activity_events_scope_cursor ON activity_events(scope_id, scope_version, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "agent_threads_agent_history",
+      "tableName": "agent_threads",
+      "sql": "CREATE INDEX agent_threads_agent_history ON agent_threads(agent_id, linked_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "agent_threads_one_current",
+      "tableName": "agent_threads",
+      "sql": "CREATE UNIQUE INDEX agent_threads_one_current ON agent_threads(agent_id) WHERE is_current = 1"
+    },
+    {
+      "type": "index",
+      "name": "agents_scope_state_recent",
+      "tableName": "agents",
+      "sql": "CREATE INDEX agents_scope_state_recent ON agents(scope_id, lifecycle, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "automatic_recovery_job",
+      "tableName": "automatic_recovery",
+      "sql": "CREATE INDEX automatic_recovery_job ON automatic_recovery(job_id)"
+    },
+    {
+      "type": "index",
+      "name": "automatic_recovery_scope",
+      "tableName": "automatic_recovery",
+      "sql": "CREATE INDEX automatic_recovery_scope ON automatic_recovery(scope_id, updated_at)"
+    },
+    {
+      "type": "index",
+      "name": "cancellation_intents_cascade",
+      "tableName": "cancellation_intents",
+      "sql": "CREATE INDEX cancellation_intents_cascade ON cancellation_intents(cascade_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "cancellation_intents_operation",
+      "tableName": "cancellation_intents",
+      "sql": "CREATE INDEX cancellation_intents_operation ON cancellation_intents(scope_id, request_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "cancellation_intents_target_activity",
+      "tableName": "cancellation_intents",
+      "sql": "CREATE INDEX cancellation_intents_target_activity ON cancellation_intents(target_activity_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "cancellation_intents_target_job",
+      "tableName": "cancellation_intents",
+      "sql": "CREATE INDEX cancellation_intents_target_job ON cancellation_intents(target_job_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "cancellation_operations_target_activity",
+      "tableName": "cancellation_operations",
+      "sql": "CREATE INDEX cancellation_operations_target_activity ON cancellation_operations(target_activity_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "cancellation_operations_target_job",
+      "tableName": "cancellation_operations",
+      "sql": "CREATE INDEX cancellation_operations_target_job ON cancellation_operations(target_job_id, created_at ASC)"
+    },
+    {
+      "type": "index",
+      "name": "completion_outbox_pending",
+      "tableName": "completion_outbox",
+      "sql": "CREATE INDEX completion_outbox_pending ON completion_outbox(delivered_at, next_attempt_at, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "job_events_job_cursor",
+      "tableName": "job_events",
+      "sql": "CREATE INDEX job_events_job_cursor ON job_events(job_id, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "job_events_scope_cursor",
+      "tableName": "job_events",
+      "sql": "CREATE INDEX job_events_scope_cursor ON job_events(scope_id, scope_version, event_id)"
+    },
+    {
+      "type": "index",
+      "name": "job_interactions_blocking",
+      "tableName": "job_interactions",
+      "sql": "CREATE INDEX job_interactions_blocking ON job_interactions(job_id) WHERE is_blocking = 1"
+    },
+    {
+      "type": "index",
+      "name": "jobs_activity_recent",
+      "tableName": "jobs",
+      "sql": "CREATE INDEX jobs_activity_recent ON jobs(activity_id, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "jobs_agent_active",
+      "tableName": "jobs",
+      "sql": "CREATE INDEX jobs_agent_active ON jobs(agent_id, status) WHERE archived_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "jobs_scope_recent",
+      "tableName": "jobs",
+      "sql": "CREATE INDEX jobs_scope_recent ON jobs(scope_id, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "jobs_source_thread_active",
+      "tableName": "jobs",
+      "sql": "CREATE INDEX jobs_source_thread_active ON jobs(source_thread_id, status) WHERE archived_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "jobs_status_recent",
+      "tableName": "jobs",
+      "sql": "CREATE INDEX jobs_status_recent ON jobs(status, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "jobs_thread_active",
+      "tableName": "jobs",
+      "sql": "CREATE INDEX jobs_thread_active ON jobs(thread_id, status) WHERE archived_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "projects_active_cwd",
+      "tableName": "projects",
+      "sql": "CREATE UNIQUE INDEX projects_active_cwd ON projects(cwd)\n    WHERE archived_at IS NULL AND deleted_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "projects_active_name",
+      "tableName": "projects",
+      "sql": "CREATE UNIQUE INDEX projects_active_name ON projects(name_key)\n    WHERE archived_at IS NULL AND deleted_at IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "projects_ordered",
+      "tableName": "projects",
+      "sql": "CREATE INDEX projects_ordered ON projects(deleted_at, archived_at, sort_order, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "scope_aliases_canonical",
+      "tableName": "scope_aliases",
+      "sql": "CREATE INDEX scope_aliases_canonical ON scope_aliases(canonical_scope_id,key_generation)"
+    },
+    {
+      "type": "index",
+      "name": "scope_rotation_lookup_canonical",
+      "tableName": "scope_rotation_lookup_evidence",
+      "sql": "CREATE INDEX scope_rotation_lookup_canonical\n    ON scope_rotation_lookup_evidence(canonical_scope_id,key_generation)"
+    },
+    {
+      "type": "index",
+      "name": "security_hmac_one_active",
+      "tableName": "security_hmac_keys",
+      "sql": "CREATE UNIQUE INDEX security_hmac_one_active\n    ON security_hmac_keys(purpose) WHERE status = 'active'"
+    },
+    {
+      "type": "index",
+      "name": "security_hmac_one_pending",
+      "tableName": "security_hmac_keys",
+      "sql": "CREATE UNIQUE INDEX security_hmac_one_pending\n    ON security_hmac_keys(purpose) WHERE status = 'pending'"
+    },
+    {
+      "type": "index",
+      "name": "security_key_rotation_event_order",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE INDEX security_key_rotation_event_order\n    ON security_key_rotation_events(rotation_id,sequence)"
+    },
+    {
+      "type": "index",
+      "name": "security_key_rotation_one_applied",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE UNIQUE INDEX security_key_rotation_one_applied\n    ON security_key_rotation_events(rotation_id) WHERE phase='applied'"
+    },
+    {
+      "type": "index",
+      "name": "security_key_rotation_one_applying",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE UNIQUE INDEX security_key_rotation_one_applying\n    ON security_key_rotation_events(rotation_id) WHERE phase='applying'"
+    },
+    {
+      "type": "index",
+      "name": "security_key_rotation_one_prepared",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE UNIQUE INDEX security_key_rotation_one_prepared\n    ON security_key_rotation_events(rotation_id) WHERE phase='prepared'"
+    },
+    {
+      "type": "index",
+      "name": "sessions_project_recent",
+      "tableName": "sessions",
+      "sql": "CREATE INDEX sessions_project_recent ON sessions(project_id, last_used_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "sessions_scope_recent",
+      "tableName": "sessions",
+      "sql": "CREATE INDEX sessions_scope_recent ON sessions(scope_id, last_used_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "steering_deliveries_job_recent",
+      "tableName": "steering_deliveries",
+      "sql": "CREATE INDEX steering_deliveries_job_recent ON steering_deliveries(job_id, created_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "steering_deliveries_status_recent",
+      "tableName": "steering_deliveries",
+      "sql": "CREATE INDEX steering_deliveries_status_recent ON steering_deliveries(status, updated_at DESC)"
+    },
+    {
+      "type": "index",
+      "name": "thread_connections_agent",
+      "tableName": "thread_connections",
+      "sql": "CREATE INDEX thread_connections_agent ON thread_connections(agent_id)"
+    },
+    {
+      "type": "index",
+      "name": "thread_connections_idle",
+      "tableName": "thread_connections",
+      "sql": "CREATE INDEX thread_connections_idle ON thread_connections(phase, last_finished_at)"
+    },
+    {
+      "type": "index",
+      "name": "transport_observations_recent",
+      "tableName": "transport_observations",
+      "sql": "CREATE INDEX transport_observations_recent ON transport_observations(created_at DESC, observation_id DESC)"
+    },
+    {
+      "type": "index",
+      "name": "user_questions_expiry",
+      "tableName": "user_questions",
+      "sql": "CREATE INDEX user_questions_expiry ON user_questions(expires_at)"
+    },
+    {
+      "type": "index",
+      "name": "work_history_expired",
+      "tableName": "work_history_state",
+      "sql": "CREATE INDEX work_history_expired ON work_history_state(expired_at)"
+    },
+    {
+      "type": "index",
+      "name": "workspace_repository",
+      "tableName": "workspaces",
+      "sql": "CREATE INDEX workspace_repository ON workspaces(repository,lifecycle)"
+    },
+    {
+      "type": "index",
+      "name": "workspace_scope",
+      "tableName": "workspaces",
+      "sql": "CREATE INDEX workspace_scope ON workspaces(scope_id,updated_at)"
+    },
+    {
+      "type": "table",
+      "name": "activities",
+      "tableName": "activities",
+      "sql": "CREATE TABLE activities (\n    activity_id TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    project_id TEXT REFERENCES projects(project_id) ON DELETE SET NULL,\n    pinned_cwd TEXT,\n    continuation_of_activity_id TEXT REFERENCES activities(activity_id),\n    card_generation INTEGER NOT NULL DEFAULT 1 CHECK(card_generation >= 1),\n    title TEXT NOT NULL,\n    kind TEXT NOT NULL CHECK(kind IN ('discussion','investigation','review','implementation','other')),\n    execution_mode TEXT NOT NULL CHECK(execution_mode IN ('foreground','background')),\n    handoff_policy TEXT NOT NULL CHECK(handoff_policy IN ('none','notify','verify')),\n    completion_trigger TEXT NOT NULL CHECK(completion_trigger IN ('manual','sealed-jobs-terminal')),\n    lifecycle TEXT NOT NULL CHECK(lifecycle IN ('open','sealed','terminating','completed','cancelled','abandoned')),\n    waiting_on TEXT NOT NULL CHECK(waiting_on IN ('none','codex','orchestrator','user','verification')),\n    verification TEXT NOT NULL CHECK(verification IN ('not-required','pending','verifying','verified','failed')),\n    version INTEGER NOT NULL CHECK(version >= 1),\n    completion_version INTEGER NOT NULL DEFAULT 0 CHECK(completion_version >= 0),\n    legacy INTEGER NOT NULL DEFAULT 0 CHECK(legacy IN (0,1)),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    sealed_at INTEGER,\n    completed_at INTEGER,\n    total_jobs INTEGER NOT NULL DEFAULT 0 CHECK(total_jobs >= 0),\n    running_jobs INTEGER NOT NULL DEFAULT 0 CHECK(running_jobs >= 0),\n    completed_jobs INTEGER NOT NULL DEFAULT 0 CHECK(completed_jobs >= 0),\n    failed_jobs INTEGER NOT NULL DEFAULT 0 CHECK(failed_jobs >= 0),\n    interrupted_jobs INTEGER NOT NULL DEFAULT 0 CHECK(interrupted_jobs >= 0),\n    cancelled_jobs INTEGER NOT NULL DEFAULT 0 CHECK(cancelled_jobs >= 0),\n    terminal_jobs INTEGER NOT NULL DEFAULT 0 CHECK(terminal_jobs >= 0),\n    CHECK((project_id IS NULL) = (pinned_cwd IS NULL))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "activity_agents",
+      "tableName": "activity_agents",
+      "sql": "CREATE TABLE activity_agents (\n    assignment_id TEXT PRIMARY KEY,\n    activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE RESTRICT,\n    agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,\n    role TEXT NOT NULL,\n    context_mode TEXT NOT NULL CHECK(context_mode IN ('continue','fork','fresh')),\n    assigned_at INTEGER NOT NULL,\n    released_at INTEGER\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "activity_events",
+      "tableName": "activity_events",
+      "sql": "CREATE TABLE activity_events (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE CASCADE,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE CASCADE,\n    scope_version INTEGER NOT NULL CHECK(scope_version >= 1),\n    event_type TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    payload TEXT NOT NULL CHECK(json_valid(payload))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "agent_mutations",
+      "tableName": "agent_mutations",
+      "sql": "CREATE TABLE agent_mutations (\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    request_id TEXT NOT NULL,\n    action_hash TEXT NOT NULL,\n    result TEXT NOT NULL CHECK(json_valid(result)),\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY(scope_id, request_id)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "agent_threads",
+      "tableName": "agent_threads",
+      "sql": "CREATE TABLE agent_threads (\n    thread_id TEXT PRIMARY KEY REFERENCES sessions(thread_id) ON DELETE RESTRICT,\n    agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,\n    context_mode TEXT NOT NULL CHECK(context_mode IN ('continue','fork','fresh')),\n    is_current INTEGER NOT NULL CHECK(is_current IN (0,1)),\n    linked_at INTEGER NOT NULL,\n    replaced_at INTEGER\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "agents",
+      "tableName": "agents",
+      "sql": "CREATE TABLE agents (\n    agent_id TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    agent_name TEXT NOT NULL,\n    normalized_name TEXT NOT NULL,\n    lifecycle TEXT NOT NULL CHECK(lifecycle IN ('idle','active','waiting-input','orphaned')),\n    current_thread_id TEXT,\n    current_job_id TEXT,\n    version INTEGER NOT NULL CHECK(version >= 1),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    orphaned_reason TEXT,\n    UNIQUE(scope_id, normalized_name)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "automatic_recovery",
+      "tableName": "automatic_recovery",
+      "sql": "CREATE TABLE automatic_recovery (\n    recovery_key TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL,\n    agent_id TEXT NOT NULL,\n    job_id TEXT,\n    kind TEXT NOT NULL CHECK(kind IN ('recheck','retry-stop','release')),\n    state TEXT NOT NULL CHECK(state IN ('retrying','resolved','blocked')),\n    attempts INTEGER NOT NULL,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    next_attempt_at INTEGER NOT NULL,\n    reason TEXT NOT NULL,\n    evidence TEXT\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "automatic_recovery_incidents",
+      "tableName": "automatic_recovery_incidents",
+      "sql": "CREATE TABLE automatic_recovery_incidents (\n    identity_key TEXT PRIMARY KEY,\n    recovery_key TEXT NOT NULL UNIQUE,\n    agent_id TEXT NOT NULL,\n    active INTEGER NOT NULL CHECK(active IN (0,1)),\n    updated_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "bridge_instances",
+      "tableName": "bridge_instances",
+      "sql": "CREATE TABLE bridge_instances (\n    instance_id TEXT PRIMARY KEY,\n    started_at INTEGER NOT NULL,\n    stopped_at INTEGER,\n    termination_reason TEXT,\n    process_id INTEGER NOT NULL,\n    payload TEXT NOT NULL CHECK(json_valid(payload))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "bridge_meta",
+      "tableName": "bridge_meta",
+      "sql": "CREATE TABLE bridge_meta (\n          key TEXT PRIMARY KEY,\n          value TEXT NOT NULL\n        ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "cancellation_intents",
+      "tableName": "cancellation_intents",
+      "sql": "CREATE TABLE cancellation_intents (\n    intent_id TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    parent_intent_id TEXT REFERENCES cancellation_intents(intent_id) ON DELETE RESTRICT,\n    cascade_id TEXT NOT NULL,\n    source TEXT NOT NULL CHECK(source IN ('model-tool','widget-control','activity-cascade','operator','assignment-containment')),\n    tool_name TEXT NOT NULL,\n    action_name TEXT NOT NULL,\n    target_kind TEXT NOT NULL CHECK(target_kind IN ('job','activity')),\n    target_job_id TEXT,\n    target_activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE RESTRICT,\n    target_agent_id TEXT,\n    target_thread_id TEXT,\n    target_turn_id TEXT,\n    target_presentation_id TEXT,\n    expected_version INTEGER NOT NULL CHECK(expected_version >= 1),\n    caller_presentation_kind TEXT CHECK(caller_presentation_kind IN ('automatic','explicit')),\n    caller_presentation_id TEXT,\n    widget_instance_present INTEGER NOT NULL CHECK(widget_instance_present IN (0,1)),\n    widget_instance_digest TEXT,\n    card_generation INTEGER CHECK(card_generation >= 1),\n    caller_request_digest TEXT,\n    bridge_instance_id TEXT NOT NULL REFERENCES bridge_instances(instance_id) ON DELETE RESTRICT,\n    reason_code TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('recorded','dispatched','succeeded','failed','no-op')),\n    created_at INTEGER NOT NULL,\n    dispatched_at INTEGER,\n    completed_at INTEGER,\n    FOREIGN KEY(scope_id, request_id) REFERENCES cancellation_operations(scope_id, request_id) ON DELETE RESTRICT,\n    CHECK((target_kind = 'job') = (target_job_id IS NOT NULL)),\n    CHECK((widget_instance_present = 1) = (widget_instance_digest IS NOT NULL)),\n    CHECK((caller_presentation_kind = 'automatic') = (caller_presentation_id IS NOT NULL))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "cancellation_operations",
+      "tableName": "cancellation_operations",
+      "sql": "CREATE TABLE cancellation_operations (\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    request_id TEXT NOT NULL,\n    root_intent_id TEXT NOT NULL UNIQUE,\n    action_hash TEXT NOT NULL,\n    source TEXT NOT NULL CHECK(source IN ('model-tool','widget-control','activity-cascade','operator','assignment-containment')),\n    tool_name TEXT NOT NULL,\n    action_name TEXT NOT NULL,\n    target_kind TEXT NOT NULL CHECK(target_kind IN ('job','activity')),\n    target_job_id TEXT,\n    target_activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE RESTRICT,\n    target_agent_id TEXT,\n    target_thread_id TEXT,\n    target_turn_id TEXT,\n    target_presentation_id TEXT,\n    expected_version INTEGER NOT NULL CHECK(expected_version >= 1),\n    caller_presentation_kind TEXT CHECK(caller_presentation_kind IN ('automatic','explicit')),\n    caller_presentation_id TEXT,\n    widget_instance_present INTEGER NOT NULL CHECK(widget_instance_present IN (0,1)),\n    widget_instance_digest TEXT,\n    card_generation INTEGER CHECK(card_generation >= 1),\n    caller_request_digest TEXT,\n    bridge_instance_id TEXT NOT NULL REFERENCES bridge_instances(instance_id) ON DELETE RESTRICT,\n    reason_code TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('recorded','completed','failed')),\n    result TEXT CHECK(result IS NULL OR json_valid(result)),\n    created_at INTEGER NOT NULL,\n    completed_at INTEGER,\n    reason_text TEXT CHECK(reason_text IS NULL OR length(reason_text) BETWEEN 1 AND 500),\n    PRIMARY KEY(scope_id, request_id),\n    CHECK((target_kind = 'job') = (target_job_id IS NOT NULL)),\n    CHECK((widget_instance_present = 1) = (widget_instance_digest IS NOT NULL)),\n    CHECK((caller_presentation_kind = 'automatic') = (caller_presentation_id IS NOT NULL))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "codex_question_deliveries",
+      "tableName": "codex_question_deliveries",
+      "sql": "CREATE TABLE codex_question_deliveries (\n    scope_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    question_ref TEXT NOT NULL,\n    action_hash TEXT NOT NULL,\n    status TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY(scope_id, request_id),\n    UNIQUE(scope_id, question_ref)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "completion_outbox",
+      "tableName": "completion_outbox",
+      "sql": "CREATE TABLE completion_outbox (\n    outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE CASCADE,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE CASCADE,\n    completion_version INTEGER NOT NULL CHECK(completion_version >= 1),\n    channel TEXT NOT NULL CHECK(channel IN ('notify','verify')),\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),\n    next_attempt_at INTEGER,\n    lease_owner TEXT,\n    lease_expires_at INTEGER,\n    delivered_at INTEGER,\n    acknowledged_at INTEGER,\n    created_at INTEGER NOT NULL,\n    UNIQUE(activity_id, completion_version, channel)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "event_budget",
+      "tableName": "event_budget",
+      "sql": "CREATE TABLE event_budget (\n    id INTEGER PRIMARY KEY CHECK(id = 1),\n    rows INTEGER NOT NULL,\n    bytes INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "event_retention_state",
+      "tableName": "event_retention_state",
+      "sql": "CREATE TABLE event_retention_state (\n    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n    policy_version INTEGER NOT NULL CHECK(policy_version >= 1),\n    cursor_event_id INTEGER NOT NULL CHECK(cursor_event_id >= 0)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "job_events",
+      "tableName": "job_events",
+      "sql": "CREATE TABLE job_events (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,\n    activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE CASCADE,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE CASCADE,\n    scope_version INTEGER NOT NULL CHECK(scope_version >= 1),\n    event_type TEXT NOT NULL,\n    status TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    payload TEXT NOT NULL CHECK(json_valid(payload))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "job_interactions",
+      "tableName": "job_interactions",
+      "sql": "CREATE TABLE job_interactions (\n    job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,\n    position INTEGER NOT NULL CHECK(position >= 0),\n    interaction_id TEXT NOT NULL,\n    is_blocking INTEGER NOT NULL CHECK(is_blocking IN (0,1)),\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    PRIMARY KEY(job_id, position),\n    UNIQUE(job_id, interaction_id)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "jobs",
+      "tableName": "jobs",
+      "sql": "CREATE TABLE jobs (\n    job_id TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    request_id TEXT NOT NULL,\n    activity_id TEXT NOT NULL REFERENCES activities(activity_id) ON DELETE RESTRICT,\n    thread_id TEXT,\n    source_thread_id TEXT,\n    status TEXT NOT NULL CHECK(status IN (\n      'running','terminating','termination-failed','completed','failed','interrupted','cancelled'\n    )),\n    execution_mode TEXT NOT NULL CHECK(execution_mode IN ('foreground','background')),\n    backend_kind TEXT NOT NULL,\n    bridge_instance_id TEXT,\n    worker_id TEXT,\n    worker_generation INTEGER,\n    upstream_request_id TEXT,\n    terminal_version INTEGER,\n    agent_id TEXT REFERENCES agents(agent_id),\n    context_mode TEXT CHECK(context_mode IN ('continue','fork','fresh')),\n    cwd TEXT NOT NULL,\n    sandbox TEXT NOT NULL CHECK(sandbox IN ('read-only','workspace-write','danger-full-access')),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    archived_at INTEGER,\n    job_version INTEGER NOT NULL CHECK(job_version >= 1),\n    last_progress_at INTEGER NOT NULL,\n    last_progress TEXT CHECK(last_progress IS NULL OR json_valid(last_progress)),\n    terminal_origin TEXT CHECK(terminal_origin IS NULL OR terminal_origin IN (\n      'normal-completion','upstream-failure','app-server-interrupted','explicit-cancellation',\n      'assignment-containment','bridge-restart','worker-loss','sdk-abort','sdk-timeout',\n      'authentication-failure','usage-limit','legacy-unattributed-cancellation'\n    )),\n    cancellation_intent_id TEXT,\n    summary TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(summary)),\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    UNIQUE(scope_id, request_id)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "project_registry",
+      "tableName": "project_registry",
+      "sql": "CREATE TABLE project_registry (\n    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n    registry_revision INTEGER NOT NULL CHECK(registry_revision >= 0),\n    updated_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "projects",
+      "tableName": "projects",
+      "sql": "CREATE TABLE projects (\n    project_id TEXT PRIMARY KEY,\n    project_ref TEXT NOT NULL UNIQUE,\n    project_revision INTEGER NOT NULL CHECK(project_revision >= 1),\n    name TEXT NOT NULL,\n    name_key TEXT NOT NULL,\n    cwd TEXT NOT NULL,\n    sort_order INTEGER NOT NULL CHECK(sort_order >= 0),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    archived_at INTEGER,\n    deleted_at INTEGER\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "result_holds",
+      "tableName": "result_holds",
+      "sql": "CREATE TABLE result_holds (\n    job_id TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,\n    reason TEXT NOT NULL,\n    expires_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "runtime_problem_resolutions",
+      "tableName": "runtime_problem_resolutions",
+      "sql": "CREATE TABLE runtime_problem_resolutions (\n    agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,\n    revision TEXT NOT NULL,\n    resolved_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "scope_aliases",
+      "tableName": "scope_aliases",
+      "sql": "CREATE TABLE scope_aliases (\n    alias_scope_id TEXT PRIMARY KEY,\n    canonical_scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    key_generation INTEGER NOT NULL CHECK(key_generation >= 2),\n    rotation_id TEXT NOT NULL REFERENCES security_key_rotation_plans(rotation_id) ON DELETE RESTRICT,\n    created_at INTEGER NOT NULL,\n    CHECK(alias_scope_id <> canonical_scope_id),\n    UNIQUE(key_generation,canonical_scope_id)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "scope_rotation_lookup_evidence",
+      "tableName": "scope_rotation_lookup_evidence",
+      "sql": "CREATE TABLE scope_rotation_lookup_evidence (\n    key_generation INTEGER NOT NULL CHECK(key_generation >= 1),\n    lookup_scope_id TEXT NOT NULL,\n    canonical_scope_id TEXT NOT NULL,\n    rotation_id TEXT NOT NULL REFERENCES security_key_rotation_plans(rotation_id) ON DELETE RESTRICT,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY(key_generation,lookup_scope_id)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "scopes",
+      "tableName": "scopes",
+      "sql": "CREATE TABLE scopes (\n    scope_id TEXT PRIMARY KEY,\n    version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "security_hmac_keys",
+      "tableName": "security_hmac_keys",
+      "sql": "CREATE TABLE security_hmac_keys (\n    purpose TEXT NOT NULL CHECK(purpose IN ('scope','execution-policy')),\n    generation INTEGER NOT NULL CHECK(generation >= 1),\n    status TEXT NOT NULL CHECK(status IN ('active','pending','retired')),\n    verification_mode TEXT NOT NULL CHECK(verification_mode IN ('sign-and-verify','scope-lookup-only','reject')),\n    key_material TEXT NOT NULL,\n    fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64),\n    rotation_id TEXT REFERENCES security_key_rotation_plans(rotation_id) ON DELETE RESTRICT,\n    created_at INTEGER NOT NULL,\n    retired_at INTEGER,\n    PRIMARY KEY(purpose,generation),\n    UNIQUE(purpose,fingerprint),\n    CHECK(\n      (status = 'active' AND verification_mode = 'sign-and-verify' AND retired_at IS NULL) OR\n      (status = 'pending' AND verification_mode = 'reject' AND rotation_id IS NOT NULL AND retired_at IS NULL) OR\n      (status = 'retired' AND verification_mode IN ('scope-lookup-only','reject') AND retired_at IS NOT NULL)\n    ),\n    CHECK(purpose = 'scope' OR verification_mode <> 'scope-lookup-only')\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "security_key_rotation_events",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE TABLE security_key_rotation_events (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT,\n    rotation_id TEXT NOT NULL,\n    attempt_id TEXT NOT NULL UNIQUE,\n    phase TEXT NOT NULL CHECK(phase IN ('prepared','applying','applied','failed-prepare','failed-apply')),\n    reason_code TEXT CHECK(reason_code IS NULL OR (\n      length(reason_code) BETWEEN 10 AND 129 AND\n      substr(reason_code,1,9)='SECURITY_' AND\n      reason_code NOT GLOB '*[^A-Z0-9_]*'\n    )),\n    payload TEXT NOT NULL CHECK(json_valid(payload) AND length(payload) <= 16384),\n    created_at INTEGER NOT NULL,\n    CHECK((phase LIKE 'failed-%') = (reason_code IS NOT NULL))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "security_key_rotation_plans",
+      "tableName": "security_key_rotation_plans",
+      "sql": "CREATE TABLE security_key_rotation_plans (\n    rotation_id TEXT PRIMARY KEY,\n    source_scope_generation INTEGER NOT NULL CHECK(source_scope_generation >= 1),\n    target_scope_generation INTEGER NOT NULL CHECK(target_scope_generation > source_scope_generation),\n    source_execution_generation INTEGER NOT NULL CHECK(source_execution_generation >= 1),\n    target_execution_generation INTEGER NOT NULL CHECK(target_execution_generation > source_execution_generation),\n    control_revision INTEGER NOT NULL CHECK(control_revision >= 1),\n    before_schema_identity TEXT NOT NULL CHECK(length(before_schema_identity) = 64),\n    before_data_identity TEXT NOT NULL CHECK(length(before_data_identity) = 64),\n    migration_digest TEXT NOT NULL CHECK(length(migration_digest) = 64),\n    build_id TEXT NOT NULL CHECK(length(build_id) BETWEEN 1 AND 512),\n    created_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "sessions",
+      "tableName": "sessions",
+      "sql": "CREATE TABLE sessions (\n    thread_id TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    project_id TEXT REFERENCES projects(project_id) ON DELETE SET NULL,\n    backend_kind TEXT NOT NULL,\n    cwd TEXT NOT NULL,\n    sandbox TEXT NOT NULL CHECK(sandbox IN ('read-only','workspace-write','danger-full-access')),\n    session_id TEXT,\n    forked_from_thread_id TEXT,\n    persistence TEXT NOT NULL CHECK(persistence IN ('persistent','ephemeral','unknown')),\n    visible_in_codex_app INTEGER CHECK(visible_in_codex_app IN (0,1)),\n    selection TEXT CHECK(selection IS NULL OR json_valid(selection)),\n    policy_revision INTEGER CHECK(policy_revision IS NULL OR policy_revision >= 0),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    last_used_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "steering_deliveries",
+      "tableName": "steering_deliveries",
+      "sql": "CREATE TABLE steering_deliveries (\n    scope_id TEXT NOT NULL REFERENCES scopes(scope_id) ON DELETE RESTRICT,\n    request_id TEXT NOT NULL,\n    action_hash TEXT NOT NULL,\n    job_id TEXT NOT NULL,\n    expected_job_version INTEGER NOT NULL CHECK(expected_job_version >= 1),\n    prompt_sha256 TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('prepared','dispatching','delivered','not-delivered','uncertain')),\n    bridge_instance_id TEXT NOT NULL REFERENCES bridge_instances(instance_id) ON DELETE RESTRICT,\n    result TEXT CHECK(result IS NULL OR json_valid(result)),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    dispatched_at INTEGER,\n    completed_at INTEGER,\n    PRIMARY KEY(scope_id, request_id),\n    CHECK(length(action_hash) = 64),\n    CHECK(length(prompt_sha256) = 64),\n    CHECK((status IN ('prepared','dispatching')) = (completed_at IS NULL))\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "thread_connections",
+      "tableName": "thread_connections",
+      "sql": "CREATE TABLE thread_connections (\n    thread_id TEXT PRIMARY KEY,\n    agent_id TEXT,\n    scope_id TEXT NOT NULL,\n    persistence TEXT NOT NULL CHECK(persistence IN ('persistent','ephemeral','unknown')),\n    phase TEXT NOT NULL,\n    handoff_requested INTEGER NOT NULL DEFAULT 0,\n    last_finished_at INTEGER,\n    last_job_id TEXT,\n    worker_pid INTEGER,\n    revision INTEGER NOT NULL DEFAULT 1,\n    updated_at INTEGER NOT NULL,\n    reason TEXT,\n    evidence TEXT\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "transport_observations",
+      "tableName": "transport_observations",
+      "sql": "CREATE TABLE transport_observations (\n    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    kind TEXT NOT NULL CHECK(kind IN ('http-request-aborted','http-response-detached','mcp-handler-aborted','status-wait-aborted','activity-watch-aborted','presentation-superseded')),\n    scope_id TEXT,\n    job_id TEXT,\n    activity_id TEXT,\n    tool_name TEXT,\n    caller_request_digest TEXT,\n    bridge_instance_id TEXT NOT NULL REFERENCES bridge_instances(instance_id) ON DELETE RESTRICT,\n    reason_code TEXT NOT NULL,\n    created_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "user_questions",
+      "tableName": "user_questions",
+      "sql": "CREATE TABLE user_questions (\n    question_id TEXT PRIMARY KEY,\n    scope_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    response_ref TEXT UNIQUE,\n    expires_at INTEGER NOT NULL,\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    UNIQUE(scope_id, request_id)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "user_settings",
+      "tableName": "user_settings",
+      "sql": "CREATE TABLE user_settings (\n    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    settings_revision INTEGER NOT NULL DEFAULT 0 CHECK(settings_revision >= 0),\n    updated_at INTEGER\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "work_history_control",
+      "tableName": "work_history_control",
+      "sql": "CREATE TABLE work_history_control (\n    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n    review_revision INTEGER NOT NULL DEFAULT 0 CHECK(review_revision >= 0),\n    cursor_updated_at INTEGER NOT NULL DEFAULT 0 CHECK(cursor_updated_at >= 0),\n    cursor_job_id TEXT NOT NULL DEFAULT '',\n    last_cleanup_at INTEGER,\n    last_cleanup_count INTEGER NOT NULL DEFAULT 0 CHECK(last_cleanup_count >= 0),\n    total_removed INTEGER NOT NULL DEFAULT 0 CHECK(total_removed >= 0)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "work_history_state",
+      "tableName": "work_history_state",
+      "sql": "CREATE TABLE work_history_state (\n    job_id TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,\n    acknowledged_at INTEGER,\n    expired_at INTEGER,\n    review_sequence INTEGER\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "workspace_control",
+      "tableName": "workspace_control",
+      "sql": "CREATE TABLE workspace_control (\n    singleton INTEGER PRIMARY KEY CHECK(singleton=1),\n    mode TEXT NOT NULL CHECK(mode IN ('disabled','enabled','draining')),\n    revision INTEGER NOT NULL CHECK(revision>0),\n    maintenance INTEGER NOT NULL CHECK(maintenance IN (0,1)),\n    updated_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "workspace_events",
+      "tableName": "workspace_events",
+      "sql": "CREATE TABLE workspace_events (\n    sequence INTEGER PRIMARY KEY AUTOINCREMENT,\n    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),\n    version INTEGER NOT NULL,\n    kind TEXT NOT NULL,\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    created_at INTEGER NOT NULL,\n    UNIQUE(workspace_id,version)\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "workspace_git_operations",
+      "tableName": "workspace_git_operations",
+      "sql": "CREATE TABLE workspace_git_operations (\n    repository TEXT PRIMARY KEY,\n    owner TEXT NOT NULL UNIQUE,\n    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),\n    operation TEXT NOT NULL CHECK(operation IN ('allocate','handoff','remove')),\n    state TEXT NOT NULL CHECK(state IN ('prepared','in-progress','uncertain')),\n    created_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "workspace_legacy_hazards",
+      "tableName": "workspace_legacy_hazards",
+      "sql": "CREATE TABLE workspace_legacy_hazards (\n    owner TEXT PRIMARY KEY,\n    repository TEXT,\n    root TEXT NOT NULL,\n    evidence TEXT NOT NULL CHECK(json_valid(evidence)),\n    imported_at INTEGER NOT NULL\n  ) STRICT"
+    },
+    {
+      "type": "table",
+      "name": "workspaces",
+      "tableName": "workspaces",
+      "sql": "CREATE TABLE workspaces (\n    workspace_id TEXT PRIMARY KEY,\n    job_id TEXT NOT NULL UNIQUE,\n    scope_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    request_hash TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    logical_root TEXT NOT NULL,\n    repository TEXT NOT NULL,\n    execution_cwd TEXT NOT NULL UNIQUE,\n    branch TEXT NOT NULL UNIQUE,\n    base_commit TEXT NOT NULL,\n    owner_revision INTEGER NOT NULL CHECK(owner_revision>0),\n    version INTEGER NOT NULL CHECK(version>0),\n    generation INTEGER NOT NULL CHECK(generation>0),\n    lifecycle TEXT NOT NULL CHECK(lifecycle IN\n      ('allocating','ready','dispatching','running','preserved','quarantined','released','removed')),\n    payload TEXT NOT NULL CHECK(json_valid(payload)),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    UNIQUE(scope_id,request_id)\n  ) STRICT"
+    },
+    {
+      "type": "trigger",
+      "name": "event_budget_delete",
+      "tableName": "job_events",
+      "sql": "CREATE TRIGGER event_budget_delete AFTER DELETE ON job_events BEGIN\n    UPDATE event_budget SET rows=rows-1, bytes=bytes-length(CAST(OLD.payload AS BLOB)) WHERE id=1;\n  END"
+    },
+    {
+      "type": "trigger",
+      "name": "event_budget_insert",
+      "tableName": "job_events",
+      "sql": "CREATE TRIGGER event_budget_insert AFTER INSERT ON job_events BEGIN\n    UPDATE event_budget SET rows=rows+1, bytes=bytes+length(CAST(NEW.payload AS BLOB)) WHERE id=1;\n  END"
+    },
+    {
+      "type": "trigger",
+      "name": "event_budget_update",
+      "tableName": "job_events",
+      "sql": "CREATE TRIGGER event_budget_update AFTER UPDATE OF payload ON job_events BEGIN\n    UPDATE event_budget SET bytes=bytes+length(CAST(NEW.payload AS BLOB))-length(CAST(OLD.payload AS BLOB)) WHERE id=1;\n  END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_alias_rejects_existing_scope",
+      "tableName": "scope_aliases",
+      "sql": "CREATE TRIGGER scope_alias_rejects_existing_scope\n  BEFORE INSERT ON scope_aliases\n  WHEN EXISTS(SELECT 1 FROM scopes WHERE scope_id=NEW.alias_scope_id)\n  BEGIN SELECT RAISE(ABORT,'scope alias collides with canonical scope'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_aliases_no_delete",
+      "tableName": "scope_aliases",
+      "sql": "CREATE TRIGGER scope_aliases_no_delete\n  BEFORE DELETE ON scope_aliases\n  BEGIN SELECT RAISE(ABORT,'scope aliases are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_aliases_no_update",
+      "tableName": "scope_aliases",
+      "sql": "CREATE TRIGGER scope_aliases_no_update\n  BEFORE UPDATE ON scope_aliases\n  BEGIN SELECT RAISE(ABORT,'scope aliases are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_rejects_existing_alias",
+      "tableName": "scopes",
+      "sql": "CREATE TRIGGER scope_rejects_existing_alias\n  BEFORE INSERT ON scopes\n  WHEN EXISTS(SELECT 1 FROM scope_aliases WHERE alias_scope_id=NEW.scope_id)\n  BEGIN SELECT RAISE(ABORT,'canonical scope collides with scope alias'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_rotation_lookup_evidence_guard_insert",
+      "tableName": "scope_rotation_lookup_evidence",
+      "sql": "CREATE TRIGGER scope_rotation_lookup_evidence_guard_insert\n  BEFORE INSERT ON scope_rotation_lookup_evidence\n  WHEN NOT EXISTS(\n         SELECT 1 FROM security_key_rotation_plans p\n         WHERE p.rotation_id=NEW.rotation_id\n           AND p.source_scope_generation=NEW.key_generation\n       )\n    OR EXISTS(\n         SELECT 1 FROM security_key_rotation_events e\n         WHERE e.rotation_id=NEW.rotation_id AND e.phase='applied'\n       )\n    OR EXISTS(\n         SELECT 1 FROM scope_aliases a\n         WHERE a.alias_scope_id=NEW.canonical_scope_id\n       )\n  BEGIN SELECT RAISE(ABORT,'invalid scope rotation lookup evidence'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_rotation_lookup_evidence_no_delete",
+      "tableName": "scope_rotation_lookup_evidence",
+      "sql": "CREATE TRIGGER scope_rotation_lookup_evidence_no_delete\n  BEFORE DELETE ON scope_rotation_lookup_evidence\n  BEGIN SELECT RAISE(ABORT,'scope rotation lookup evidence is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "scope_rotation_lookup_evidence_no_update",
+      "tableName": "scope_rotation_lookup_evidence",
+      "sql": "CREATE TRIGGER scope_rotation_lookup_evidence_no_update\n  BEFORE UPDATE ON scope_rotation_lookup_evidence\n  BEGIN SELECT RAISE(ABORT,'scope rotation lookup evidence is immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "security_hmac_keys_guard_update",
+      "tableName": "security_hmac_keys",
+      "sql": "CREATE TRIGGER security_hmac_keys_guard_update\n  BEFORE UPDATE ON security_hmac_keys\n  WHEN NOT (\n    OLD.purpose=NEW.purpose AND OLD.generation=NEW.generation AND\n    OLD.key_material=NEW.key_material AND OLD.fingerprint=NEW.fingerprint AND\n    OLD.rotation_id IS NEW.rotation_id AND OLD.created_at=NEW.created_at AND\n    (\n      (OLD.status='active' AND OLD.verification_mode='sign-and-verify' AND\n       NEW.status='retired' AND NEW.verification_mode IN ('scope-lookup-only','reject') AND\n       OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL) OR\n      (OLD.status='pending' AND OLD.verification_mode='reject' AND\n       NEW.status='active' AND NEW.verification_mode='sign-and-verify' AND\n       OLD.retired_at IS NULL AND NEW.retired_at IS NULL)\n    )\n  )\n  BEGIN SELECT RAISE(ABORT,'invalid security HMAC key transition'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "security_hmac_keys_no_delete",
+      "tableName": "security_hmac_keys",
+      "sql": "CREATE TRIGGER security_hmac_keys_no_delete\n  BEFORE DELETE ON security_hmac_keys\n  BEGIN SELECT RAISE(ABORT,'security HMAC keys are immutable evidence'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "security_key_rotation_events_no_delete",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE TRIGGER security_key_rotation_events_no_delete\n  BEFORE DELETE ON security_key_rotation_events\n  BEGIN SELECT RAISE(ABORT,'security rotation events are append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "security_key_rotation_events_no_update",
+      "tableName": "security_key_rotation_events",
+      "sql": "CREATE TRIGGER security_key_rotation_events_no_update\n  BEFORE UPDATE ON security_key_rotation_events\n  BEGIN SELECT RAISE(ABORT,'security rotation events are append-only'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "security_key_rotation_plans_no_delete",
+      "tableName": "security_key_rotation_plans",
+      "sql": "CREATE TRIGGER security_key_rotation_plans_no_delete\n  BEFORE DELETE ON security_key_rotation_plans\n  BEGIN SELECT RAISE(ABORT,'security rotation plans are immutable'); END"
+    },
+    {
+      "type": "trigger",
+      "name": "security_key_rotation_plans_no_update",
+      "tableName": "security_key_rotation_plans",
+      "sql": "CREATE TRIGGER security_key_rotation_plans_no_update\n  BEFORE UPDATE ON security_key_rotation_plans\n  BEGIN SELECT RAISE(ABORT,'security rotation plans are immutable'); END"
+    }
+  ],
+  "migrations": [
+    {
+      "id": "bridge-state-3-to-4",
+      "fromSchema": 3,
+      "toSchema": 4,
+      "sha256": "fd4815995f2e2b6a1e1928fbcb3781c307044f0ab713b225301dd2cacff8e98c"
+    },
+    {
+      "id": "bridge-state-4-to-5",
+      "fromSchema": 4,
+      "toSchema": 5,
+      "sha256": "58e58b793d1ac793aa8600500bc494a31cb96466ffab7527c1ebe62a4eb80180"
+    },
+    {
+      "id": "bridge-state-5-to-6",
+      "fromSchema": 5,
+      "toSchema": 6,
+      "sha256": "4060a324d9a6a03e23b846075a9d0ffaeac4a1fb83aa259556ef6e32c43b06a9"
+    },
+    {
+      "id": "bridge-state-6-to-7",
+      "fromSchema": 6,
+      "toSchema": 7,
+      "sha256": "4bfd7645ae12423ac3d41ae732f81a16e45281aaac1bfe20371de0a97ea5a17d"
+    },
+    {
+      "id": "bridge-state-7-to-8",
+      "fromSchema": 7,
+      "toSchema": 8,
+      "sha256": "3a7ab4a1cbc20c1feb3859e5daf1f4a5a41f68054d467e705073ac4db10d3bc6"
+    },
+    {
+      "id": "bridge-state-8-to-9",
+      "fromSchema": 8,
+      "toSchema": 9,
+      "sha256": "49baff9681cc753c391ee4cee0e5bbe6e1e3c27d6a0afaa482445303c2fa733e"
+    },
+    {
+      "id": "bridge-state-9-to-10",
+      "fromSchema": 9,
+      "toSchema": 10,
+      "sha256": "262e338df21b8c56959677db57ffb2053baa0429f6e2cd04e6365094401e65e8"
+    },
+    {
+      "id": "bridge-state-10-to-11",
+      "fromSchema": 10,
+      "toSchema": 11,
+      "sha256": "aa7d375d8596461fd8a25b82e30682dd39d37d13596dac85364771efc0e0b613"
+    },
+    {
+      "id": "bridge-state-11-to-12",
+      "fromSchema": 11,
+      "toSchema": 12,
+      "sha256": "3be6b46cc236326b3210c7d904fa991936ee8da33e8115f6d963fc1541a24392"
+    },
+    {
+      "id": "bridge-state-12-to-13",
+      "fromSchema": 12,
+      "toSchema": 13,
+      "sha256": "cd7afbc7190bf406520b50fe67e892543505cc166cad616bb42988b05a82323c"
+    },
+    {
+      "id": "bridge-state-13-to-14",
+      "fromSchema": 13,
+      "toSchema": 14,
+      "sha256": "59484834c3a03a0b7b4d08e33d83c2453eef7a3ce42eaa14f6e5e2233c988293"
+    },
+    {
+      "id": "bridge-state-14-to-15",
+      "fromSchema": 14,
+      "toSchema": 15,
+      "sha256": "d8aff5881ab15bdb45cce9fbbaed2384c541fec40b048671b4efa55dde5a1ac4"
+    },
+    {
+      "id": "bridge-state-15-to-17",
+      "fromSchema": 15,
+      "toSchema": 17,
+      "sha256": "ae59f829471695d3e3593476f9820579c4fa98c7be207c16977af31b754edffa"
+    },
+    {
+      "id": "bridge-state-16-to-17",
+      "fromSchema": 16,
+      "toSchema": 17,
+      "sha256": "ae59f829471695d3e3593476f9820579c4fa98c7be207c16977af31b754edffa"
+    },
+    {
+      "id": "bridge-state-17-to-18",
+      "fromSchema": 17,
+      "toSchema": 18,
+      "sha256": "eba48908e79718ef7b0bc4b85082e159b70eab5a757e67f251f9cb41a05f6125"
+    },
+    {
+      "id": "bridge-state-18-to-19",
+      "fromSchema": 18,
+      "toSchema": 19,
+      "sha256": "a4db1fb8dc0476a8c2906dc11b47abdca8a4f05a12129a31511becdc3af124ad"
+    },
+    {
+      "id": "bridge-state-19-to-20",
+      "fromSchema": 19,
+      "toSchema": 20,
+      "sha256": "2026875a08cfb857d0d217ef29a6b99efa667c947a0eb221cc9bf29115d8f38f"
+    },
+    {
+      "id": "bridge-state-20-to-21",
+      "fromSchema": 20,
+      "toSchema": 21,
+      "sha256": "0537140af132ad6711decb6bb1d8f0e2ab40163861b3af9a96a12bd3241bb70f"
+    }
+  ]
+}

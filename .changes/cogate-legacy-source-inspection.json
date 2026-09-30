@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Authenticate the fixed legacy CoGate Workspace/HMAC schema21 source through a read-only profile before a separately reviewed single-runtime conversion."
+}
