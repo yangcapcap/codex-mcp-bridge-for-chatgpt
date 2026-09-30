@@ -74,6 +74,12 @@ bound. Physical insertion order does not change a table's digest. The ledger emi
 no cell values or HMAC material and retains `authority: none`. It is private source
 evidence for a future copy-to-target verifier, not a conversion receipt, backup seal,
 claim of idle ownership, signing authority or readiness to apply.
+Setup and rollback errors propagate without returning evidence. Cleanup always
+attempts to restore the caller's original query-only setting, including a failure
+before or during BEGIN and a failed ROLLBACK. If the physical rollback cannot run,
+the caller retains the connection and its unresolved read transaction; no success
+or transaction-exit claim is made. Caller-owned pre-existing transactions are
+rejected before any setting is changed or rollback is attempted.
 
 ## Apply transaction and recovery
 

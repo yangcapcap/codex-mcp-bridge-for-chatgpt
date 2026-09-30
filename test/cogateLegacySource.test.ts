@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import profile from "../src/cogateLegacySourceProfile.json" with { type: "json" };
 import { inspectCoGateLegacySource, inspectCoGateLegacyPreservation } from "../src/cogateLegacySource.js";
 import { securityKeyFingerprint } from "../src/cogateLegacySecurityRead.js";
@@ -47,6 +47,49 @@ function completed(db: Database.Database, source: number): void {
 function withFixture(action: (db: Database.Database) => void): void {
   const db = fixture(); try { action(db); } finally { db.close(); }
 }
+
+describe.each([
+  { name: "source", inspect: inspectCoGateLegacySource },
+  { name: "preservation", inspect: inspectCoGateLegacyPreservation }
+])("CoGate $name snapshot cleanup", ({ inspect }) => {
+  test.each([0, 1])("restores query-only=%i after setup and rollback failures", initial => {
+    for (const phase of ["enable-after", "begin-before", "begin-after", "rollback-before", "rollback-after"]) {
+      withFixture(db => {
+        db.pragma(`query_only = ${initial ? "ON" : "OFF"}`);
+        const before = db.serialize(); const exec = db.exec.bind(db); const pragma = db.pragma.bind(db);
+        let injected = false;
+        const execution = vi.spyOn(db, "exec").mockImplementation(sql => {
+          if ((phase.startsWith("begin-") && sql === "BEGIN") ||
+              (phase.startsWith("rollback-") && sql === "ROLLBACK")) {
+            injected = true;
+            if (phase.endsWith("after")) exec(sql);
+            throw new Error(`injected-${phase}`);
+          }
+          return exec(sql);
+        });
+        const setting = vi.spyOn(db, "pragma").mockImplementation((sql, options) => {
+          const result = pragma(sql, options);
+          if (phase === "enable-after" && sql === "query_only = ON" && !injected) {
+            injected = true; throw new Error(`injected-${phase}`);
+          }
+          return result;
+        });
+        try {
+          expect(() => inspect(db)).toThrow(`injected-${phase}`);
+          expect(injected).toBe(true);
+          expect(pragma("query_only", { simple: true })).toBe(initial);
+          // A failed physical rollback is surfaced to the caller; the API
+          // returns no evidence and does not claim that the transaction exited.
+          expect(db.inTransaction).toBe(phase === "rollback-before");
+          expect(db.serialize()).toEqual(before);
+        } finally {
+          execution.mockRestore(); setting.mockRestore();
+          if (db.inTransaction) exec("ROLLBACK");
+        }
+      });
+    }
+  });
+});
 
 describe("CoGate source preservation ledger", () => {
   test("binds all 42 retained tables without granting authority or returning secret values", () => withFixture(db => {

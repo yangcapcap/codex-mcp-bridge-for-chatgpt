@@ -79,9 +79,9 @@ function inspectSourceSnapshot<T>(
     throw new Error("CoGate source profile digest conflicts with the fixed contract.");
   }
   const queryOnly = database.pragma("query_only", { simple: true });
-  database.pragma("query_only = ON");
-  database.exec("BEGIN");
   try {
+    database.pragma("query_only = ON");
+    database.exec("BEGIN");
     const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
       FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
       ORDER BY type,name`).all();
@@ -136,8 +136,15 @@ function inspectSourceSnapshot<T>(
       authority: "none"
     });
   } finally {
-    database.exec("ROLLBACK");
-    database.pragma(`query_only = ${queryOnly ? "ON" : "OFF"}`);
+    try {
+      // An available connection can report a transaction even if BEGIN's
+      // caller observed an error. Never roll back a transaction owned by the
+      // caller: those were rejected before this try acquired any state.
+      if (database.inTransaction) database.exec("ROLLBACK");
+    } finally {
+      // A rollback error must propagate, but cannot skip connection cleanup.
+      database.pragma(`query_only = ${queryOnly ? "ON" : "OFF"}`);
+    }
   }
 }
 
