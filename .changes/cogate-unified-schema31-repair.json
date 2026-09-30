@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject reserved CoGate object-name collisions before migration writes and prevent REPLACE from changing immutable archives.",
+  "breaking": false,
+  "migration": null
+}

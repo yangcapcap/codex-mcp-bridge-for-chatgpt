@@ -42,7 +42,10 @@ storage and a separately typed conversion receipt. Existing upstream migrations
 and their hashes remain unchanged. An ordinary upstream upgrade initializes disabled
 Workspace control and empty security/conversion stores; it produces no legacy
 conversion receipt or execution grant. Exact schema31 storage objects are verified
-before startup writes, including all legacy safety triggers and archive guards. The conversion has its own named implementation
+before startup writes, including all legacy safety triggers and archive guards.
+All reserved object names are rejected on older source schemas regardless of
+object kind or name casing. Archives reject existing-key INSERT/REPLACE/UPSERT
+and UPDATE/DELETE; WITHOUT ROWID removes an alternative rowid conflict path. The conversion has its own named implementation
 digest and fixed source/target profiles; it is not an ordinary 21->22 migration.
 Old provenance remains byte-for-byte in immutable archival rows before active
 upstream provenance is established. The archive includes source schema-origin,

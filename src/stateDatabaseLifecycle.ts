@@ -32,7 +32,8 @@ import {
 } from "./stateCompatibility.js";
 
 import {
-  COGATE_UNIFIED_SCHEMA_TABLES, COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256
+  COGATE_UNIFIED_SCHEMA_TABLES, COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256,
+  COGATE_UNIFIED_SCHEMA_OBJECT_NAMES
 } from "./cogateUnifiedSchema.js";
 
 const UPGRADE_HEADROOM_BYTES = 16 * 1024 * 1024;
@@ -403,8 +404,15 @@ function assertStateLineageAdmission(
     }
   }
   if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion)) return;
-  if (schemaVersion < 31 && COGATE_UNIFIED_SCHEMA_TABLES.some(table => tableExists(database, table))) {
-    throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
+  if (schemaVersion < 31) {
+    const names = COGATE_UNIFIED_SCHEMA_OBJECT_NAMES.map(() => "?").join(",");
+    const tables = COGATE_UNIFIED_SCHEMA_TABLES.map(() => "?").join(",");
+    // SQLite object names are case-insensitive, and a non-table object can
+    // block CREATE before the migration transaction ever reaches its commit.
+    const collision = database.prepare(`SELECT 1 FROM sqlite_master
+      WHERE name COLLATE NOCASE IN (${names}) OR tbl_name COLLATE NOCASE IN (${tables})
+      LIMIT 1`).get(...COGATE_UNIFIED_SCHEMA_OBJECT_NAMES, ...COGATE_UNIFIED_SCHEMA_TABLES);
+    if (collision) throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
   }
   if (schemaVersion < 20) return;
   const columns = (table: string) => new Set(

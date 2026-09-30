@@ -249,14 +249,14 @@ CREATE TABLE cogate_lineage_conversions (
   sealed_backup_sha256 TEXT NOT NULL CHECK(length(sealed_backup_sha256)=64 AND sealed_backup_sha256 NOT GLOB '*[^0-9a-f]*'),
   recorded_at TEXT NOT NULL,
   evidence TEXT NOT NULL CHECK(json_valid(evidence))
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE cogate_legacy_metadata (
   conversion_id TEXT NOT NULL REFERENCES cogate_lineage_conversions(conversion_id) ON DELETE RESTRICT,
   key TEXT NOT NULL,
   value TEXT NOT NULL,
   PRIMARY KEY(conversion_id,key)
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE cogate_legacy_execution_modes (
   conversion_id TEXT NOT NULL REFERENCES cogate_lineage_conversions(conversion_id) ON DELETE RESTRICT,
@@ -264,7 +264,7 @@ CREATE TABLE cogate_legacy_execution_modes (
   entity_id TEXT NOT NULL,
   execution_mode TEXT NOT NULL CHECK(execution_mode IN ('foreground','background')),
   PRIMARY KEY(conversion_id,entity_kind,entity_id)
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TRIGGER cogate_lineage_conversions_no_update BEFORE UPDATE ON cogate_lineage_conversions
 BEGIN SELECT RAISE(ABORT,'CoGate lineage evidence is immutable'); END;
@@ -282,6 +282,18 @@ CREATE TRIGGER cogate_legacy_execution_modes_no_update BEFORE UPDATE ON cogate_l
 BEGIN SELECT RAISE(ABORT,'CoGate lineage evidence is immutable'); END;
 
 CREATE TRIGGER cogate_legacy_execution_modes_no_delete BEFORE DELETE ON cogate_legacy_execution_modes
+BEGIN SELECT RAISE(ABORT,'CoGate lineage evidence is immutable'); END;
+
+CREATE TRIGGER cogate_lineage_conversions_no_replace BEFORE INSERT ON cogate_lineage_conversions
+WHEN EXISTS(SELECT 1 FROM cogate_lineage_conversions WHERE conversion_id=NEW.conversion_id OR logical_database_id=NEW.logical_database_id)
+BEGIN SELECT RAISE(ABORT,'CoGate lineage evidence is immutable'); END;
+
+CREATE TRIGGER cogate_legacy_metadata_no_replace BEFORE INSERT ON cogate_legacy_metadata
+WHEN EXISTS(SELECT 1 FROM cogate_legacy_metadata WHERE conversion_id=NEW.conversion_id AND key=NEW.key)
+BEGIN SELECT RAISE(ABORT,'CoGate lineage evidence is immutable'); END;
+
+CREATE TRIGGER cogate_legacy_execution_modes_no_replace BEFORE INSERT ON cogate_legacy_execution_modes
+WHEN EXISTS(SELECT 1 FROM cogate_legacy_execution_modes WHERE conversion_id=NEW.conversion_id AND entity_kind=NEW.entity_kind AND entity_id=NEW.entity_id)
 BEGIN SELECT RAISE(ABORT,'CoGate lineage evidence is immutable'); END;
 
 `;
@@ -302,4 +314,52 @@ export const COGATE_UNIFIED_SCHEMA_TABLES = Object.freeze([
   "cogate_legacy_execution_modes"
 ]);
 
-export const COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256 = "60d44c402a95f5ca3e160c0b5922973d8e95148abb910d5558480f585bc51765";
+export const COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256 = "65e5af49d56f6de8ebda03ccc0f2450ef6f60a4f360b6b0cfd915bff47121baf";
+
+/** All reserved names, including views/indexes/triggers occupying the namespace. */
+export const COGATE_UNIFIED_SCHEMA_OBJECT_NAMES = Object.freeze([
+  "scope_aliases_canonical",
+  "scope_rotation_lookup_canonical",
+  "security_hmac_one_active",
+  "security_hmac_one_pending",
+  "security_key_rotation_event_order",
+  "security_key_rotation_one_applied",
+  "security_key_rotation_one_applying",
+  "security_key_rotation_one_prepared",
+  "workspace_repository",
+  "workspace_scope",
+  "cogate_legacy_execution_modes",
+  "cogate_legacy_metadata",
+  "cogate_lineage_conversions",
+  "scope_aliases",
+  "scope_rotation_lookup_evidence",
+  "security_hmac_keys",
+  "security_key_rotation_events",
+  "security_key_rotation_plans",
+  "workspace_control",
+  "workspace_events",
+  "workspace_git_operations",
+  "workspace_legacy_hazards",
+  "workspaces",
+  "cogate_legacy_execution_modes_no_delete",
+  "cogate_legacy_execution_modes_no_replace",
+  "cogate_legacy_execution_modes_no_update",
+  "cogate_legacy_metadata_no_delete",
+  "cogate_legacy_metadata_no_replace",
+  "cogate_legacy_metadata_no_update",
+  "cogate_lineage_conversions_no_delete",
+  "cogate_lineage_conversions_no_replace",
+  "cogate_lineage_conversions_no_update",
+  "scope_alias_rejects_existing_scope",
+  "scope_aliases_no_delete",
+  "scope_aliases_no_update",
+  "scope_rotation_lookup_evidence_guard_insert",
+  "scope_rotation_lookup_evidence_no_delete",
+  "scope_rotation_lookup_evidence_no_update",
+  "security_hmac_keys_guard_update",
+  "security_hmac_keys_no_delete",
+  "security_key_rotation_events_no_delete",
+  "security_key_rotation_events_no_update",
+  "security_key_rotation_plans_no_delete",
+  "security_key_rotation_plans_no_update"
+]);

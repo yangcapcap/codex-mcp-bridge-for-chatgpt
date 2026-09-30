@@ -264,7 +264,7 @@
       "toSchema": 31,
       "implementation": "migrateV30ToV31",
       "introducedCommit": "58d6d091b1d87002ac688e775d779caf3d2a3d1f",
-      "sha256": "755b9a56351e65a56694271bc0fe125255086dd00da909a317406656fa5922f0"
+      "sha256": "1fea197d243d5a8ca5b02d0dbac331763dcd0452a4b13939564157b8068a2401"
     }
   ],
   "fixtures": [

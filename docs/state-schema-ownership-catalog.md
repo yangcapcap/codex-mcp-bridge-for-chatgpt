@@ -210,3 +210,6 @@ Retained explicit indexes and triggers:
 - `cogate_legacy_metadata_no_delete` on `cogate_legacy_metadata` rejects mutation of archived evidence.
 - `cogate_legacy_execution_modes_no_update` on `cogate_legacy_execution_modes` rejects mutation of archived evidence.
 - `cogate_legacy_execution_modes_no_delete` on `cogate_legacy_execution_modes` rejects mutation of archived evidence.
+- `cogate_lineage_conversions_no_replace` on `cogate_lineage_conversions` rejects all existing-key inserts, including SQLite REPLACE and UPSERT. The archive has no mutable rowid alias.
+- `cogate_legacy_metadata_no_replace` on `cogate_legacy_metadata` rejects all existing-key inserts, including SQLite REPLACE and UPSERT. The archive has no mutable rowid alias.
+- `cogate_legacy_execution_modes_no_replace` on `cogate_legacy_execution_modes` rejects all existing-key inserts, including SQLite REPLACE and UPSERT. The archive has no mutable rowid alias.
