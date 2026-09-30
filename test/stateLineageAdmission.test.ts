@@ -198,6 +198,39 @@ describe("state lineage admission before writes", () => {
     } finally { store.close(); }
   });
 
+  it.each(["before-commit", "after-commit"])(
+    "rejects a different later-upgrade pending source %s before startup writes", phase => {
+      const file = fixture();
+      upstream21(file);
+      let database = new Database(file);
+      database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_source_schema", "18");
+      database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_target_schema", "21");
+      database.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
+      database.close();
+      expect(() => new BridgeStateStore({ file, onMigrationSchemaCommitted(progress) {
+        if (progress.targetSchema === 22) throw new Error("fixture-new-pending-22");
+      } })).toThrow("fixture-new-pending-22");
+      database = new Database(file);
+      const raw = database.prepare("SELECT value FROM bridge_meta WHERE key='state_migration_pending'").get() as { value: string };
+      const pending = JSON.parse(raw.value);
+      pending.originalSourceSchema = 17;
+      database.prepare("UPDATE bridge_meta SET value=? WHERE key='state_migration_pending'").run(JSON.stringify(pending));
+      database.prepare("UPDATE bridge_meta SET value='17' WHERE key='schema_v19_upgrade_source'").run();
+      if (phase === "before-commit") {
+        database.exec("ALTER TABLE job_completion_deliveries DROP COLUMN result_read_source");
+        database.prepare("UPDATE bridge_meta SET value='21' WHERE key='schema_version'").run();
+      }
+      const before = readFileSync(file), walBefore = readFileSync(`${file}-wal`);
+      const entries = readdirSync(path.dirname(file)).sort();
+      try {
+        expect(() => new BridgeStateStore({ file })).toThrow(/Pending state migration provenance is missing bridge-state-17-to-18/);
+        expect(readFileSync(file)).toEqual(before);
+        expect(readFileSync(`${file}-wal`)).toEqual(walBefore);
+        expect(readdirSync(path.dirname(file)).sort()).toEqual(entries);
+      } finally { database.close(); }
+    }
+  );
+
   it("rejects mixed CoGate structures even if the upstream completion shape is also present", () => {
     const file = fixture();
     upstream21(file);

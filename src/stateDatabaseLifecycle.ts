@@ -373,6 +373,23 @@ function assertStateLineageAdmission(
   } else if (pending && pendingOriginalSource !== checkpoint && gapCheckpoint !== checkpoint) {
     throw new Error("Pending state migration has no complete preceding provenance path.");
   }
+  if (pending && pendingOriginalSource !== null) {
+    // The preceding last marker may belong to an earlier published release.
+    // Authenticate the prefix that the pending receipt itself claims, rather
+    // than letting the earlier completed path authorize a different source.
+    if (gapRaw !== undefined && originalSource !== pendingOriginalSource) {
+      throw new Error("Pending state migration conflicts with the retained provenance gap.");
+    }
+    const prefix = stateMigrationPath(pendingOriginalSource).slice(gapRaw === undefined ? 0 : pathStart)
+      .filter(entry => entry.toSchema <= pending.fromSchema);
+    for (const entry of prefix) {
+      const record = applied.get(entry.id);
+      if (!record) throw new Error(`Pending state migration provenance is missing ${entry.id}.`);
+      if (record.originalSourceSchema !== pendingOriginalSource) {
+        throw new Error(`Pending state migration provenance conflicts with ${entry.id}.`);
+      }
+    }
+  }
   if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion) || schemaVersion < 20) return;
   const columns = (table: string) => new Set(
     (database.pragma(`table_info(${table})`) as Array<{ name: string }>).map(column => column.name)
