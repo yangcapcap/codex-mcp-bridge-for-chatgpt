@@ -1695,6 +1695,7 @@ function isSupervisedProcessTreeSnapshot(
   value: unknown
 ): value is SupervisedProcessTreeSnapshot {
   return isRecord(value) && isJsonRpcProcessIdentity(value.root) &&
+    (value.incomplete === undefined || value.incomplete === true) &&
     Array.isArray(value.processes) && value.processes.length <= 4_096 &&
     value.processes.every((entry: unknown): entry is SupervisedProcessIdentity =>
       isRecord(entry) && Number.isSafeInteger(entry.pid) && entry.pid >= 2 &&

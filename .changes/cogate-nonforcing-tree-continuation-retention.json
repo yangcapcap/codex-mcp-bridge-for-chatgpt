@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retain newly observed worker descendants through already-running cleanup continuations and later probe faults.",
+  "breaking": false,
+  "migration": null
+}

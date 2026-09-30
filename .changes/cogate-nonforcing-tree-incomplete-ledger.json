@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retain partial tree evidence and sticky incomplete-ledger UNKNOWN through overflow, recovery and later absence observations.",
+  "breaking": false,
+  "migration": null
+}

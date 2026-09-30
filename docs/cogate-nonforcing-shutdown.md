@@ -47,3 +47,41 @@ services, runtime/frontend and launcher. Preserve supervised tree evidence and
 real survivors; prevent every subordinate recovery timer from independently
 escalating. The complete path must receive new exact-head independent review,
 full validation and operator integration before production use.
+
+The supervised process registry additionally has a synchronous, sticky
+`pinNonforcingShutdown()` fence. Queued ordinary release/cleanup becomes
+observation only; an already running cleanup rechecks the fence before every
+SIGKILL. It retains an append-only copy of observed birth/group identities,
+including descendants observed after pinning. Release, cleanup and forget cannot
+erase that ledger while pinned. Ordinary unpinned cleanup retains escalation.
+
+`observeNonforcingExit()` performs a bounded, serialized fresh process-table
+observation without worker signals. A retained escaped child prevents success
+after parent exit; missing birth information, reused identities, populated old
+groups, changed tree membership, probe faults and unsupported platforms remain
+uncertain. A timeout receipt stays immutable when a later separate observation
+proves absence. Pinning after ordinary cleanup already began cannot certify a
+nonforcing history and keeps uncertainty. This registry proof is not a
+generation-bound worker/owner receipt and still cannot account for a detached
+descendant never observed before reparenting. The bounded /bin/ps probe retains
+its own timeout cleanup; that auxiliary probe is not a supervised worker.
+
+These registry primitives are not yet connected to App Server pool policy,
+worker-exit callbacks, execution-service IPC or runtime/operator shutdown.
+
+An observation or supplied merge that exceeds the bounded retained ledger sets
+a sticky `incomplete: true` flag. Partial observed identities are retained even
+when traversal throws. Fresh empty process tables cannot certify absence of
+unrecorded escaped descendants. The flag survives snapshot serialization and
+merge into a new registry; normal release/cleanup and forget cannot erase this
+UNKNOWN. Pinned historical entries are bounded as well as current live entries.
+Other trees in a complete snapshot are still inspected when one tree overflows.
+The execution-service snapshot parser accepts only an absent or literal true
+incomplete flag. This field carries uncertainty, never shutdown authority.
+
+An ordinary cleanup already in progress invokes retention after every complete
+or partial tree observation, including its polling and escalation continuations.
+Final retention also runs when a later probe throws. A birth-bound descendant
+observed after pinning therefore survives snapshot serialization and recovery
+even if the cleanup never returns successfully. Failed overflow still retains
+the incomplete flag; known identities are kept alongside that UNKNOWN.
