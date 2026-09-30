@@ -154,7 +154,7 @@ const STATE_MIGRATION_DEFINITIONS = [
   [29, 30, "migrateV29ToV30", "2a177a258ace53624a6c6b839f803bf24e028ad5", [
     ["src/stateSchema.ts", "V30_SESSION_AUTH_BOUNDARY_MIGRATION_SCHEMA"]
   ]],
-  [30, 31, "migrateV30ToV31", "7db2f90e8a67a3faacc725c7d2054a636e5f6596", [
+  [30, 31, "migrateV30ToV31", "58d6d091b1d87002ac688e775d779caf3d2a3d1f", [
     ["src/cogateUnifiedSchema.ts", "V31_COGATE_UNIFIED_MIGRATION_SCHEMA"]
   ]]
 ];
