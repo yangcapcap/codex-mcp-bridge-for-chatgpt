@@ -1,7 +1,8 @@
 # CoGate source21 to the single upstream runtime
 
 Status: implementation contract; source inspection and read-only preservation
-ledger and schema31 storage are implemented; conversion and actor/runtime integration are not. The operator command must remain unavailable
+ledger, schema31 storage and a read-only target projection verifier are implemented;
+conversion and actor/runtime integration are not. The operator command must remain unavailable
 until all of this contract has independent exact-head review and validation.
 
 The integration base is upstream dev 8b8d40a55a16f9d60ee0fb0397ac16a4e31ea239.
@@ -86,6 +87,25 @@ before or during BEGIN and a failed ROLLBACK. If the physical rollback cannot ru
 the caller retains the connection and its unresolved read transaction; no success
 or transaction-exit claim is made. Caller-owned pre-existing transactions are
 rejected before any setting is changed or rollback is attempted.
+
+`inspectCoGateLegacyProjection` checks a caller-owned read-only target against
+the exact 48-table schema31 object set and the fixed 42-table source ledger. It
+reconstructs archived provenance and execution modes only for content comparison,
+requires matching logical/conversion identities and encoding, verifies all source
+content digests and sequence marks, and checks integrity and foreign keys. Added
+session authentication boundaries must remain NULL, and new delivery/operational
+receipts must remain empty. Extra job/activity rows and orphan archival rows fail
+closed. Writable file handles and existing caller transactions are rejected.
+The inspector returns hashes and counts, never raw cells or secrets.
+
+This verifier supplies content evidence with `authority: none`. The typed archive
+binding is not authentication of external approval, a maintenance owner, backup,
+candidate or implementation. New target-model state and active upstream provenance
+initialization are explicitly not verified here. These require separate reviewed
+initialization and operator checks before the converter can become callable. The
+synthetic test copier is confined to test helpers and arbitrary fixture hashes
+cannot supply any real approval. No runtime apply command or production converter
+is introduced by this inspection module.
 
 ## Apply transaction and recovery
 

@@ -2,7 +2,7 @@
 
 Schema 30 is the current SQLite schema. `src/stateSchema.ts` contains the complete
 DDL and projections used for a new installation. `src/stateStore.ts` contains
-upgrade code for schemas 3 through 29; schemas 1 and 2 are rejected. The published v0.2 and
+upgrade code for schemas 3 through 30; schemas 1 and 2 are rejected. The published v0.2 and
 v0.3 line used schema 3, and the pre-change development installation used schema
 18. Every supported upgrade ends with the same tables, columns, constraints,
 indexes, and triggers as direct schema-31 creation.
@@ -253,7 +253,7 @@ snapshot.
 
 The supported schema-3 fixture is taken from the published v0.3.0 implementation
 and passes every fixed checkpoint through schema 30. Exact deployed-development
-fixtures cover schemas 16 and 18; schemas 4 through 15, 17, and 19 through 29 are generated
+fixtures cover schemas 16 and 18; schemas 4 through 15, 17, and 19 through 30 are generated
 only as named, committed checkpoints from those sources. `state-migrations.json` binds
 their provenance and hashes to the shipped implementation. Schemas 1 and 2 are
 outside the supported release floor and are rejected before a backup or mutation.

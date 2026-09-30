@@ -1,0 +1,1162 @@
+{
+  "format": "cogate-legacy-projection-plan/v1",
+  "sourceProfile": "cogate-v2-workspace-hmac/schema21/v1",
+  "sourceSchemaObjectsSha256": "cdebf3d1c707a0458d41cf5341a79f332fde2caf4a21d0cf60ccabd3098fe362",
+  "targetSchema": 31,
+  "targetSchemaObjectsSha256": "2ced184f0b7de991be944c28fdf5219f16863ae69d645e7092b75aadd377e79a",
+  "tables": [
+    {
+      "name": "activities",
+      "sourceColumns": [
+        "activity_id",
+        "scope_id",
+        "project_id",
+        "pinned_cwd",
+        "continuation_of_activity_id",
+        "card_generation",
+        "title",
+        "kind",
+        "execution_mode",
+        "handoff_policy",
+        "completion_trigger",
+        "lifecycle",
+        "waiting_on",
+        "verification",
+        "version",
+        "completion_version",
+        "legacy",
+        "created_at",
+        "updated_at",
+        "sealed_at",
+        "completed_at",
+        "total_jobs",
+        "running_jobs",
+        "completed_jobs",
+        "failed_jobs",
+        "interrupted_jobs",
+        "cancelled_jobs",
+        "terminal_jobs"
+      ],
+      "targetColumns": [
+        "activity_id",
+        "scope_id",
+        "project_id",
+        "pinned_cwd",
+        "continuation_of_activity_id",
+        "card_generation",
+        "title",
+        "kind",
+        "handoff_policy",
+        "completion_trigger",
+        "lifecycle",
+        "waiting_on",
+        "verification",
+        "version",
+        "completion_version",
+        "legacy",
+        "created_at",
+        "updated_at",
+        "sealed_at",
+        "completed_at",
+        "total_jobs",
+        "running_jobs",
+        "completed_jobs",
+        "failed_jobs",
+        "interrupted_jobs",
+        "cancelled_jobs",
+        "terminal_jobs"
+      ],
+      "sourceOnlyColumns": [
+        "execution_mode"
+      ],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "activity_agents",
+      "sourceColumns": [
+        "assignment_id",
+        "activity_id",
+        "agent_id",
+        "role",
+        "context_mode",
+        "assigned_at",
+        "released_at"
+      ],
+      "targetColumns": [
+        "assignment_id",
+        "activity_id",
+        "agent_id",
+        "role",
+        "context_mode",
+        "assigned_at",
+        "released_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "activity_events",
+      "sourceColumns": [
+        "event_id",
+        "activity_id",
+        "scope_id",
+        "scope_version",
+        "event_type",
+        "created_at",
+        "payload"
+      ],
+      "targetColumns": [
+        "event_id",
+        "activity_id",
+        "scope_id",
+        "scope_version",
+        "event_type",
+        "created_at",
+        "payload"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "agent_mutations",
+      "sourceColumns": [
+        "scope_id",
+        "request_id",
+        "action_hash",
+        "result",
+        "created_at"
+      ],
+      "targetColumns": [
+        "scope_id",
+        "request_id",
+        "action_hash",
+        "result",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "agent_threads",
+      "sourceColumns": [
+        "thread_id",
+        "agent_id",
+        "context_mode",
+        "is_current",
+        "linked_at",
+        "replaced_at"
+      ],
+      "targetColumns": [
+        "thread_id",
+        "agent_id",
+        "context_mode",
+        "is_current",
+        "linked_at",
+        "replaced_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "agents",
+      "sourceColumns": [
+        "agent_id",
+        "scope_id",
+        "agent_name",
+        "normalized_name",
+        "lifecycle",
+        "current_thread_id",
+        "current_job_id",
+        "version",
+        "created_at",
+        "updated_at",
+        "orphaned_reason"
+      ],
+      "targetColumns": [
+        "agent_id",
+        "scope_id",
+        "agent_name",
+        "normalized_name",
+        "lifecycle",
+        "current_thread_id",
+        "current_job_id",
+        "version",
+        "created_at",
+        "updated_at",
+        "orphaned_reason"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "automatic_recovery",
+      "sourceColumns": [
+        "recovery_key",
+        "scope_id",
+        "agent_id",
+        "job_id",
+        "kind",
+        "state",
+        "attempts",
+        "created_at",
+        "updated_at",
+        "next_attempt_at",
+        "reason",
+        "evidence"
+      ],
+      "targetColumns": [
+        "recovery_key",
+        "scope_id",
+        "agent_id",
+        "job_id",
+        "kind",
+        "state",
+        "attempts",
+        "created_at",
+        "updated_at",
+        "next_attempt_at",
+        "reason",
+        "evidence"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "automatic_recovery_incidents",
+      "sourceColumns": [
+        "identity_key",
+        "recovery_key",
+        "agent_id",
+        "active",
+        "updated_at"
+      ],
+      "targetColumns": [
+        "identity_key",
+        "recovery_key",
+        "agent_id",
+        "active",
+        "updated_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "bridge_instances",
+      "sourceColumns": [
+        "instance_id",
+        "started_at",
+        "stopped_at",
+        "termination_reason",
+        "process_id",
+        "payload"
+      ],
+      "targetColumns": [
+        "instance_id",
+        "started_at",
+        "stopped_at",
+        "termination_reason",
+        "process_id",
+        "payload"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "bridge_meta",
+      "sourceColumns": [
+        "key",
+        "value"
+      ],
+      "targetColumns": [
+        "key",
+        "value"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "cancellation_intents",
+      "sourceColumns": [
+        "intent_id",
+        "scope_id",
+        "request_id",
+        "parent_intent_id",
+        "cascade_id",
+        "source",
+        "tool_name",
+        "action_name",
+        "target_kind",
+        "target_job_id",
+        "target_activity_id",
+        "target_agent_id",
+        "target_thread_id",
+        "target_turn_id",
+        "target_presentation_id",
+        "expected_version",
+        "caller_presentation_kind",
+        "caller_presentation_id",
+        "widget_instance_present",
+        "widget_instance_digest",
+        "card_generation",
+        "caller_request_digest",
+        "bridge_instance_id",
+        "reason_code",
+        "status",
+        "created_at",
+        "dispatched_at",
+        "completed_at"
+      ],
+      "targetColumns": [
+        "intent_id",
+        "scope_id",
+        "request_id",
+        "parent_intent_id",
+        "cascade_id",
+        "source",
+        "tool_name",
+        "action_name",
+        "target_kind",
+        "target_job_id",
+        "target_activity_id",
+        "target_agent_id",
+        "target_thread_id",
+        "target_turn_id",
+        "target_presentation_id",
+        "expected_version",
+        "caller_presentation_kind",
+        "caller_presentation_id",
+        "widget_instance_present",
+        "widget_instance_digest",
+        "card_generation",
+        "caller_request_digest",
+        "bridge_instance_id",
+        "reason_code",
+        "status",
+        "created_at",
+        "dispatched_at",
+        "completed_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "cancellation_operations",
+      "sourceColumns": [
+        "scope_id",
+        "request_id",
+        "root_intent_id",
+        "action_hash",
+        "source",
+        "tool_name",
+        "action_name",
+        "target_kind",
+        "target_job_id",
+        "target_activity_id",
+        "target_agent_id",
+        "target_thread_id",
+        "target_turn_id",
+        "target_presentation_id",
+        "expected_version",
+        "caller_presentation_kind",
+        "caller_presentation_id",
+        "widget_instance_present",
+        "widget_instance_digest",
+        "card_generation",
+        "caller_request_digest",
+        "bridge_instance_id",
+        "reason_code",
+        "status",
+        "result",
+        "created_at",
+        "completed_at",
+        "reason_text"
+      ],
+      "targetColumns": [
+        "scope_id",
+        "request_id",
+        "root_intent_id",
+        "action_hash",
+        "source",
+        "tool_name",
+        "action_name",
+        "target_kind",
+        "target_job_id",
+        "target_activity_id",
+        "target_agent_id",
+        "target_thread_id",
+        "target_turn_id",
+        "target_presentation_id",
+        "expected_version",
+        "caller_presentation_kind",
+        "caller_presentation_id",
+        "widget_instance_present",
+        "widget_instance_digest",
+        "card_generation",
+        "caller_request_digest",
+        "bridge_instance_id",
+        "reason_code",
+        "status",
+        "result",
+        "created_at",
+        "completed_at",
+        "reason_text"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "codex_question_deliveries",
+      "sourceColumns": [
+        "scope_id",
+        "request_id",
+        "question_ref",
+        "action_hash",
+        "status",
+        "created_at"
+      ],
+      "targetColumns": [
+        "scope_id",
+        "request_id",
+        "question_ref",
+        "action_hash",
+        "status",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "completion_outbox",
+      "sourceColumns": [
+        "outbox_id",
+        "activity_id",
+        "scope_id",
+        "completion_version",
+        "channel",
+        "payload",
+        "attempt_count",
+        "next_attempt_at",
+        "lease_owner",
+        "lease_expires_at",
+        "delivered_at",
+        "acknowledged_at",
+        "created_at"
+      ],
+      "targetColumns": [
+        "outbox_id",
+        "activity_id",
+        "scope_id",
+        "completion_version",
+        "channel",
+        "payload",
+        "attempt_count",
+        "next_attempt_at",
+        "lease_owner",
+        "lease_expires_at",
+        "delivered_at",
+        "acknowledged_at",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "event_budget",
+      "sourceColumns": [
+        "id",
+        "rows",
+        "bytes"
+      ],
+      "targetColumns": [
+        "id",
+        "rows",
+        "bytes"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "event_retention_state",
+      "sourceColumns": [
+        "singleton",
+        "policy_version",
+        "cursor_event_id"
+      ],
+      "targetColumns": [
+        "singleton",
+        "policy_version",
+        "cursor_event_id"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "job_events",
+      "sourceColumns": [
+        "event_id",
+        "job_id",
+        "activity_id",
+        "scope_id",
+        "scope_version",
+        "event_type",
+        "status",
+        "created_at",
+        "payload"
+      ],
+      "targetColumns": [
+        "event_id",
+        "job_id",
+        "activity_id",
+        "scope_id",
+        "scope_version",
+        "event_type",
+        "status",
+        "created_at",
+        "payload"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "job_interactions",
+      "sourceColumns": [
+        "job_id",
+        "position",
+        "interaction_id",
+        "is_blocking",
+        "payload"
+      ],
+      "targetColumns": [
+        "job_id",
+        "position",
+        "interaction_id",
+        "is_blocking",
+        "payload"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "jobs",
+      "sourceColumns": [
+        "job_id",
+        "scope_id",
+        "request_id",
+        "activity_id",
+        "thread_id",
+        "source_thread_id",
+        "status",
+        "execution_mode",
+        "backend_kind",
+        "bridge_instance_id",
+        "worker_id",
+        "worker_generation",
+        "upstream_request_id",
+        "terminal_version",
+        "agent_id",
+        "context_mode",
+        "cwd",
+        "sandbox",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "job_version",
+        "last_progress_at",
+        "last_progress",
+        "terminal_origin",
+        "cancellation_intent_id",
+        "summary",
+        "payload"
+      ],
+      "targetColumns": [
+        "job_id",
+        "scope_id",
+        "request_id",
+        "activity_id",
+        "thread_id",
+        "source_thread_id",
+        "status",
+        "backend_kind",
+        "bridge_instance_id",
+        "worker_id",
+        "worker_generation",
+        "upstream_request_id",
+        "terminal_version",
+        "agent_id",
+        "context_mode",
+        "cwd",
+        "sandbox",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "job_version",
+        "last_progress_at",
+        "last_progress",
+        "terminal_origin",
+        "cancellation_intent_id",
+        "summary",
+        "payload"
+      ],
+      "sourceOnlyColumns": [
+        "execution_mode"
+      ],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "project_registry",
+      "sourceColumns": [
+        "singleton",
+        "registry_revision",
+        "updated_at"
+      ],
+      "targetColumns": [
+        "singleton",
+        "registry_revision",
+        "updated_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "projects",
+      "sourceColumns": [
+        "project_id",
+        "project_ref",
+        "project_revision",
+        "name",
+        "name_key",
+        "cwd",
+        "sort_order",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "deleted_at"
+      ],
+      "targetColumns": [
+        "project_id",
+        "project_ref",
+        "project_revision",
+        "name",
+        "name_key",
+        "cwd",
+        "sort_order",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "deleted_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "result_holds",
+      "sourceColumns": [
+        "job_id",
+        "reason",
+        "expires_at"
+      ],
+      "targetColumns": [
+        "job_id",
+        "reason",
+        "expires_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "runtime_problem_resolutions",
+      "sourceColumns": [
+        "agent_id",
+        "revision",
+        "resolved_at"
+      ],
+      "targetColumns": [
+        "agent_id",
+        "revision",
+        "resolved_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "scope_aliases",
+      "sourceColumns": [
+        "alias_scope_id",
+        "canonical_scope_id",
+        "key_generation",
+        "rotation_id",
+        "created_at"
+      ],
+      "targetColumns": [
+        "alias_scope_id",
+        "canonical_scope_id",
+        "key_generation",
+        "rotation_id",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "scope_rotation_lookup_evidence",
+      "sourceColumns": [
+        "key_generation",
+        "lookup_scope_id",
+        "canonical_scope_id",
+        "rotation_id",
+        "created_at"
+      ],
+      "targetColumns": [
+        "key_generation",
+        "lookup_scope_id",
+        "canonical_scope_id",
+        "rotation_id",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "scopes",
+      "sourceColumns": [
+        "scope_id",
+        "version",
+        "created_at",
+        "updated_at"
+      ],
+      "targetColumns": [
+        "scope_id",
+        "version",
+        "created_at",
+        "updated_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "security_hmac_keys",
+      "sourceColumns": [
+        "purpose",
+        "generation",
+        "status",
+        "verification_mode",
+        "key_material",
+        "fingerprint",
+        "rotation_id",
+        "created_at",
+        "retired_at"
+      ],
+      "targetColumns": [
+        "purpose",
+        "generation",
+        "status",
+        "verification_mode",
+        "key_material",
+        "fingerprint",
+        "rotation_id",
+        "created_at",
+        "retired_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "security_key_rotation_events",
+      "sourceColumns": [
+        "sequence",
+        "rotation_id",
+        "attempt_id",
+        "phase",
+        "reason_code",
+        "payload",
+        "created_at"
+      ],
+      "targetColumns": [
+        "sequence",
+        "rotation_id",
+        "attempt_id",
+        "phase",
+        "reason_code",
+        "payload",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "security_key_rotation_plans",
+      "sourceColumns": [
+        "rotation_id",
+        "source_scope_generation",
+        "target_scope_generation",
+        "source_execution_generation",
+        "target_execution_generation",
+        "control_revision",
+        "before_schema_identity",
+        "before_data_identity",
+        "migration_digest",
+        "build_id",
+        "created_at"
+      ],
+      "targetColumns": [
+        "rotation_id",
+        "source_scope_generation",
+        "target_scope_generation",
+        "source_execution_generation",
+        "target_execution_generation",
+        "control_revision",
+        "before_schema_identity",
+        "before_data_identity",
+        "migration_digest",
+        "build_id",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "sessions",
+      "sourceColumns": [
+        "thread_id",
+        "scope_id",
+        "project_id",
+        "backend_kind",
+        "cwd",
+        "sandbox",
+        "session_id",
+        "forked_from_thread_id",
+        "persistence",
+        "visible_in_codex_app",
+        "selection",
+        "policy_revision",
+        "created_at",
+        "updated_at",
+        "last_used_at"
+      ],
+      "targetColumns": [
+        "thread_id",
+        "scope_id",
+        "project_id",
+        "backend_kind",
+        "cwd",
+        "sandbox",
+        "session_id",
+        "forked_from_thread_id",
+        "persistence",
+        "visible_in_codex_app",
+        "selection",
+        "policy_revision",
+        "created_at",
+        "updated_at",
+        "last_used_at",
+        "auth_boundary"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": [
+        "auth_boundary"
+      ]
+    },
+    {
+      "name": "steering_deliveries",
+      "sourceColumns": [
+        "scope_id",
+        "request_id",
+        "action_hash",
+        "job_id",
+        "expected_job_version",
+        "prompt_sha256",
+        "status",
+        "bridge_instance_id",
+        "result",
+        "created_at",
+        "updated_at",
+        "dispatched_at",
+        "completed_at"
+      ],
+      "targetColumns": [
+        "scope_id",
+        "request_id",
+        "action_hash",
+        "job_id",
+        "expected_job_version",
+        "prompt_sha256",
+        "status",
+        "bridge_instance_id",
+        "result",
+        "created_at",
+        "updated_at",
+        "dispatched_at",
+        "completed_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "thread_connections",
+      "sourceColumns": [
+        "thread_id",
+        "agent_id",
+        "scope_id",
+        "persistence",
+        "phase",
+        "handoff_requested",
+        "last_finished_at",
+        "last_job_id",
+        "worker_pid",
+        "revision",
+        "updated_at",
+        "reason",
+        "evidence"
+      ],
+      "targetColumns": [
+        "thread_id",
+        "agent_id",
+        "scope_id",
+        "persistence",
+        "phase",
+        "handoff_requested",
+        "last_finished_at",
+        "last_job_id",
+        "worker_pid",
+        "revision",
+        "updated_at",
+        "reason",
+        "evidence"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "transport_observations",
+      "sourceColumns": [
+        "observation_id",
+        "kind",
+        "scope_id",
+        "job_id",
+        "activity_id",
+        "tool_name",
+        "caller_request_digest",
+        "bridge_instance_id",
+        "reason_code",
+        "created_at"
+      ],
+      "targetColumns": [
+        "observation_id",
+        "kind",
+        "scope_id",
+        "job_id",
+        "activity_id",
+        "tool_name",
+        "caller_request_digest",
+        "bridge_instance_id",
+        "reason_code",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "user_questions",
+      "sourceColumns": [
+        "question_id",
+        "scope_id",
+        "request_id",
+        "response_ref",
+        "expires_at",
+        "payload"
+      ],
+      "targetColumns": [
+        "question_id",
+        "scope_id",
+        "request_id",
+        "response_ref",
+        "expires_at",
+        "payload"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "user_settings",
+      "sourceColumns": [
+        "singleton",
+        "payload",
+        "settings_revision",
+        "updated_at"
+      ],
+      "targetColumns": [
+        "singleton",
+        "payload",
+        "settings_revision",
+        "updated_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "work_history_control",
+      "sourceColumns": [
+        "singleton",
+        "review_revision",
+        "cursor_updated_at",
+        "cursor_job_id",
+        "last_cleanup_at",
+        "last_cleanup_count",
+        "total_removed"
+      ],
+      "targetColumns": [
+        "singleton",
+        "review_revision",
+        "cursor_updated_at",
+        "cursor_job_id",
+        "last_cleanup_at",
+        "last_cleanup_count",
+        "total_removed"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "work_history_state",
+      "sourceColumns": [
+        "job_id",
+        "acknowledged_at",
+        "expired_at",
+        "review_sequence"
+      ],
+      "targetColumns": [
+        "job_id",
+        "acknowledged_at",
+        "expired_at",
+        "review_sequence"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "workspace_control",
+      "sourceColumns": [
+        "singleton",
+        "mode",
+        "revision",
+        "maintenance",
+        "updated_at"
+      ],
+      "targetColumns": [
+        "singleton",
+        "mode",
+        "revision",
+        "maintenance",
+        "updated_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "workspace_events",
+      "sourceColumns": [
+        "sequence",
+        "workspace_id",
+        "version",
+        "kind",
+        "payload",
+        "created_at"
+      ],
+      "targetColumns": [
+        "sequence",
+        "workspace_id",
+        "version",
+        "kind",
+        "payload",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "workspace_git_operations",
+      "sourceColumns": [
+        "repository",
+        "owner",
+        "workspace_id",
+        "operation",
+        "state",
+        "created_at"
+      ],
+      "targetColumns": [
+        "repository",
+        "owner",
+        "workspace_id",
+        "operation",
+        "state",
+        "created_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "workspace_legacy_hazards",
+      "sourceColumns": [
+        "owner",
+        "repository",
+        "root",
+        "evidence",
+        "imported_at"
+      ],
+      "targetColumns": [
+        "owner",
+        "repository",
+        "root",
+        "evidence",
+        "imported_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    },
+    {
+      "name": "workspaces",
+      "sourceColumns": [
+        "workspace_id",
+        "job_id",
+        "scope_id",
+        "request_id",
+        "request_hash",
+        "project_id",
+        "logical_root",
+        "repository",
+        "execution_cwd",
+        "branch",
+        "base_commit",
+        "owner_revision",
+        "version",
+        "generation",
+        "lifecycle",
+        "payload",
+        "created_at",
+        "updated_at"
+      ],
+      "targetColumns": [
+        "workspace_id",
+        "job_id",
+        "scope_id",
+        "request_id",
+        "request_hash",
+        "project_id",
+        "logical_root",
+        "repository",
+        "execution_cwd",
+        "branch",
+        "base_commit",
+        "owner_revision",
+        "version",
+        "generation",
+        "lifecycle",
+        "payload",
+        "created_at",
+        "updated_at"
+      ],
+      "sourceOnlyColumns": [],
+      "targetAddedColumns": []
+    }
+  ]
+}

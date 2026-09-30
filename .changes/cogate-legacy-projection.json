@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add read-only comparison of the retained legacy 42-table projection against schema31 without conversion or launch authority.",
+  "breaking": false,
+  "migration": null
+}
