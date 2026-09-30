@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject sparse shutdown receipt collections and unstable policies; bound fresh observations and exact receipt fields.",
+  "breaking": false,
+  "migration": null
+}

@@ -9,14 +9,25 @@ export type ShutdownResult = Readonly<{
 }>;
 export const NONFORCING_SHUTDOWN: ShutdownPolicy = Object.freeze({ allowSigkillEscalation: false });
 export function shutdownGrace(policy: ShutdownPolicy): number {
-  const ms = policy?.graceMs ?? 1500;
-  if (!policy || typeof policy !== "object" ||
-      !Object.hasOwn(policy, "allowSigkillEscalation") ||
-      Object.keys(policy).some(key => !["allowSigkillEscalation", "graceMs"].includes(key)) ||
-      typeof policy.allowSigkillEscalation !== "boolean" || !Number.isSafeInteger(ms) || ms < 0 || ms > 60_000) {
-    throw new Error("SHUTDOWN_POLICY_INVALID");
-  }
-  return ms;
+  return snapshotShutdownPolicy(policy).graceMs;
+}
+/** Read validated data properties once, before any close state or signal changes. */
+export function snapshotShutdownPolicy(policy: ShutdownPolicy): Required<ShutdownPolicy> {
+  try {
+    if (!policy || typeof policy !== "object") throw new Error();
+    const properties = Object.getOwnPropertyDescriptors(policy) as Record<string,PropertyDescriptor>;
+    const keys = Reflect.ownKeys(properties);
+    if (keys.length < 1 || keys.length > 2 || keys.some(key =>
+      key !== "allowSigkillEscalation" && key !== "graceMs") ||
+      !Object.hasOwn(properties,"allowSigkillEscalation") || !Object.hasOwn(properties.allowSigkillEscalation, "value") ||
+      Object.hasOwn(properties,"graceMs") && !Object.hasOwn(properties.graceMs, "value")) throw new Error();
+    const allowSigkillEscalation = properties.allowSigkillEscalation.value;
+    const graceMs = Object.hasOwn(properties,"graceMs") && properties.graceMs.value !== undefined ?
+      properties.graceMs.value : 1500;
+    if (typeof allowSigkillEscalation !== "boolean" || !Number.isSafeInteger(graceMs) ||
+        graceMs < 0 || graceMs > 60_000) throw new Error();
+    return Object.freeze({ allowSigkillEscalation, graceMs });
+  } catch { throw new Error("SHUTDOWN_POLICY_INVALID"); }
 }
 export function shutdownResult(outcome: ShutdownResult["outcome"], survivors = 0,
   signalFailures = 0, identityChanges = 0): ShutdownResult {
@@ -32,7 +43,7 @@ function snapshotShutdownResult(value: unknown): ShutdownResult | undefined {
   try {
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const keys = ["exited", "outcome", "survivors", "signalFailures", "identityChanges"];
-  if (Object.keys(descriptors).length !== 5 || keys.some(key => !descriptors[key] ||
+  if (Reflect.ownKeys(descriptors).length !== 5 || keys.some(key => !Object.hasOwn(descriptors,key) ||
       !Object.hasOwn(descriptors[key], "value"))) return undefined;
   const r = Object.fromEntries(keys.map(key => [key, descriptors[key].value])) as ShutdownResult;
   const valid =
@@ -59,9 +70,21 @@ export async function boundedShutdown(operation: () => Promise<void | ShutdownRe
   } finally { if (timer) clearTimeout(timer); }
 }
 export function combineShutdown(results: readonly ShutdownResult[]): ShutdownResult {
-  const snapshots = results.map(snapshotShutdownResult);
-  if (snapshots.length === 0 || snapshots.some(result => !result)) return shutdownResult("uncertain");
-  const retained = snapshots as ShutdownResult[];
+  const retained: ShutdownResult[] = [];
+  try {
+    if (!Array.isArray(results)) return shutdownResult("uncertain");
+    const slots = Object.getOwnPropertyDescriptors(results as object) as Record<string,PropertyDescriptor>;
+    const length = slots.length?.value;
+    if (!Number.isSafeInteger(length) || length < 1 || length > 4096 ||
+        Reflect.ownKeys(slots).length !== length + 1) return shutdownResult("uncertain");
+    for (let index = 0; index < length; index++) {
+      const slot = slots[String(index)];
+      if (!Object.hasOwn(slots,String(index)) || !Object.hasOwn(slot, "value")) return shutdownResult("uncertain");
+      const result = snapshotShutdownResult(slot.value);
+      if (!result) return shutdownResult("uncertain");
+      retained.push(result);
+    }
+  } catch { return shutdownResult("uncertain"); }
   const sums = ["survivors", "signalFailures", "identityChanges"].map(key =>
     retained.reduce((total, result) => total + result[key as keyof Pick<ShutdownResult,
       "survivors" | "signalFailures" | "identityChanges">], 0));
@@ -71,10 +94,11 @@ export function combineShutdown(results: readonly ShutdownResult[]): ShutdownRes
 }
 export type ShutdownObserver = { observeNonforcingExit?(): ShutdownResult | Promise<ShutdownResult> };
 /** Fresh evidence may resolve a retained timeout; this operation sends no signal. */
-export async function observeShutdown(target: ShutdownObserver): Promise<ShutdownResult> {
-  if (!target.observeNonforcingExit) return shutdownResult("uncertain");
-  try {
-    const result = await target.observeNonforcingExit();
-    return snapshotShutdownResult(result) ?? shutdownResult("uncertain");
-  } catch { return shutdownResult("uncertain"); }
+export async function observeShutdown(target: ShutdownObserver, timeoutMs = 6000): Promise<ShutdownResult> {
+  return boundedShutdown(async () => {
+    // Access itself may throw. Run it inside the bounded rejection boundary.
+    const observe = target.observeNonforcingExit;
+    if (typeof observe !== "function") return shutdownResult("uncertain");
+    return observe.call(target);
+  }, timeoutMs);
 }

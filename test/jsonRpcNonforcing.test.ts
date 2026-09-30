@@ -94,6 +94,12 @@ describe("explicit nonforcing JSON-RPC close", () => {
     await expect(rpc.close({allowSigkillEscalation:false,graceMs:NaN})).rejects.toThrow(/POLICY/);
     expect(state.closing).toBe(false); expect(child.stdin.end).not.toHaveBeenCalled();
   });
+  test("an accessor cannot change the explicit prohibition between validation and close", async () => {
+    const {rpc,child,state}=transport(); let reads=0;
+    const policy={graceMs:0,get allowSigkillEscalation(){return ++reads>1;}};
+    await expect(rpc.close(policy)).rejects.toThrow(/POLICY/);
+    expect(reads).toBe(0);expect(state.closing).toBe(false);expect(child.stdin.end).not.toHaveBeenCalled();
+  });
   test("a nonstarted transport can be closed without claiming any child was killed", async () => {
     const rpc=new JsonRpcProcess({command:"unused",args:[],debugLabel:"synthetic"});
     expect(await rpc.close({allowSigkillEscalation:false})).toEqual(shutdownResult("exited"));

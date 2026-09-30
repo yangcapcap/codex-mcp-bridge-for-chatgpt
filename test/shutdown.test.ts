@@ -56,4 +56,37 @@ describe("fail-closed bounded shutdown receipts", () => {
     original.outcome="exited";original.exited=true;original.survivors=0;
     expect(result).toEqual(shutdownResult("timeout",1));expect(Object.isFrozen(result)).toBe(true);
   });
+  test("rejects every missing array member including sparse and inherited slots", () => {
+    const hole=new Array(1);
+    const tail=[shutdownResult("exited")];tail.length=2;
+    const inherited=new Array(1);Object.setPrototypeOf(inherited,{0:shutdownResult("exited")});
+    for (const list of [hole,tail,inherited]) expect(combineShutdown(list).outcome).toBe("uncertain");
+  });
+  test("rejects policy accessors without evaluating them", () => {
+    const getter=vi.fn(()=>false), policy={};
+    Object.defineProperty(policy,"allowSigkillEscalation",{get:getter,enumerable:true});
+    expect(()=>shutdownGrace(policy as never)).toThrow(/POLICY/);
+    expect(getter).not.toHaveBeenCalled();
+  });
+  test("observer property faults and hanging observations stay bounded and uncertain", async () => {
+    const target=Object.defineProperty({},"observeNonforcingExit",{get(){throw Error("observer-access");}});
+    await expect(observeShutdown(target)).resolves.toMatchObject({outcome:"uncertain"});
+    const result=await Promise.race([
+      observeShutdown({observeNonforcingExit:()=>new Promise(()=>{})},1),
+      new Promise(resolve=>setTimeout(()=>resolve("still-pending"),50))
+    ]);
+    expect(result).toMatchObject({outcome:"uncertain"});
+  });
+  test("exact data fields reject symbols, collection accessors and invalid grace values", async () => {
+    const key=Symbol("extra"), receipt={...shutdownResult("exited"),[key]:true};
+    expect(validShutdownResult(receipt)).toBe(false);
+    expect((await boundedShutdown(async()=>receipt)).outcome).toBe("uncertain");
+    const getter=vi.fn(()=>shutdownResult("exited")), list=new Array(1);
+    Object.defineProperty(list,"0",{get:getter});
+    expect(combineShutdown(list).outcome).toBe("uncertain");expect(getter).not.toHaveBeenCalled();
+    const extras=[shutdownResult("exited")];Object.defineProperty(extras,key,{value:true});
+    expect(combineShutdown(extras).outcome).toBe("uncertain");
+    expect(()=>shutdownGrace({allowSigkillEscalation:false,[key]:true} as never)).toThrow(/POLICY/);
+    expect(()=>shutdownGrace({allowSigkillEscalation:false,graceMs:null} as never)).toThrow(/POLICY/);
+  });
 });

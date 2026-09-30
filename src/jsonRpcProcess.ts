@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { assertJsonTextIntegrity, decodeUtf8Strict } from "./textIntegrity.js";
-import { shutdownGrace, shutdownResult, type ShutdownPolicy, type ShutdownResult } from "./shutdown.js";
+import { snapshotShutdownPolicy, shutdownResult, type ShutdownPolicy, type ShutdownResult } from "./shutdown.js";
 
 type JsonRpcId = number;
 
@@ -289,9 +289,10 @@ export class JsonRpcProcess {
   close(policy: ShutdownPolicy & { allowSigkillEscalation: false }): Promise<ShutdownResult>;
   close(policy: ShutdownPolicy): Promise<void | ShutdownResult>;
   async close(policyOrGrace: number | ShutdownPolicy = 1_500): Promise<void | ShutdownResult> {
-    const graceMs = typeof policyOrGrace === "number" ? policyOrGrace : shutdownGrace(policyOrGrace);
+    const policy = typeof policyOrGrace === "number" ? undefined : snapshotShutdownPolicy(policyOrGrace);
+    const graceMs = policy ? policy.graceMs : policyOrGrace as number;
     if (this.nonforcingClose) return this.nonforcingClose;
-    if (typeof policyOrGrace !== "number" && policyOrGrace.allowSigkillEscalation === false) {
+    if (policy?.allowSigkillEscalation === false) {
       const child = this.child, identity = this.identity, alreadyClosing = this.closing;
       this.closing = true;
       this.rejectPending(new Error(`${this.options.debugLabel} process was closed.`));

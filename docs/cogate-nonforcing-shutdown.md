@@ -34,7 +34,12 @@ receipts. Ordinary cleanup on unpinned handles retains SIGKILL escalation.
 `boundedShutdown()` and `observeShutdown()` copy validated exact-field data
 receipts into immutable snapshots. Missing, void, accessor-based, inconsistent,
 rejected or late evidence is uncertain. `combineShutdown()` rejects missing
-members and count overflow; a fulfilled promise is not exit proof.
+members and count overflow; a fulfilled promise is not exit proof. Collections
+must contain 1 to 4096 own data slots, with no holes, inherited/accessor slots or
+extra keys. Exact receipt fields reject symbol extras. The policy is read into
+an immutable data-only snapshot once before state changes; policy accessors are
+rejected without invocation. Fresh observation includes property access inside
+its bounded rejection boundary and cannot wait forever on an unresolved Promise.
 
 Remaining work: propagate the explicit policy and bounded generation-bound
 receipts through the new App Server pool, execution/state/read/telemetry
