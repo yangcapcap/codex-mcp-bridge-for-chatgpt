@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add bounded nonforcing transport and owned-child shutdown primitives with retained, fail-closed exit evidence.",
+  "breaking": false,
+  "migration": null
+}

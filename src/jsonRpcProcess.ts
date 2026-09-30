@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import { assertJsonTextIntegrity, decodeUtf8Strict } from "./textIntegrity.js";
+import { shutdownGrace, shutdownResult, type ShutdownPolicy, type ShutdownResult } from "./shutdown.js";
 
 type JsonRpcId = number;
 
@@ -138,6 +140,9 @@ export class JsonRpcProcess {
   private resolveExit?: () => void;
   private closing = false;
   private exitNotified = false;
+  private nonforcingClose?: Promise<ShutdownResult>;
+  private nonforcingObservation?: { child?: ChildProcessWithoutNullStreams;
+    identity?: JsonRpcProcessIdentity; settled: boolean };
 
   constructor(private readonly options: JsonRpcProcessOptions) {}
 
@@ -163,6 +168,7 @@ export class JsonRpcProcess {
   }
 
   async start(): Promise<JsonRpcProcessIdentity> {
+    if (this.nonforcingClose) throw new Error(`${this.options.debugLabel} process is closed.`);
     if (this.child) {
       const identity = this.identity;
       if (!identity || this.exited) throw new Error(`${this.options.debugLabel} process is not running.`);
@@ -232,6 +238,7 @@ export class JsonRpcProcess {
       ? boundedLateResponseContext(options.lateResponseContext)
       : undefined;
     await this.start();
+    if (this.nonforcingClose) throw new Error(`${this.options.debugLabel} process is closed.`);
     const id = this.nextRequestId++;
     const requestParams = options.progress ? addProgressToken(params, id) : params;
     const promise = new Promise<T>((resolve, reject) => {
@@ -274,10 +281,29 @@ export class JsonRpcProcess {
 
   async notify(method: string, params?: unknown): Promise<void> {
     await this.start();
+    if (this.nonforcingClose) throw new Error(`${this.options.debugLabel} process is closed.`);
     this.write({ jsonrpc: "2.0", method, ...(params === undefined ? {} : { params }) });
   }
 
-  async close(graceMs = 1_500): Promise<void> {
+  close(graceMs?: number): Promise<void>;
+  close(policy: ShutdownPolicy & { allowSigkillEscalation: false }): Promise<ShutdownResult>;
+  close(policy: ShutdownPolicy): Promise<void | ShutdownResult>;
+  async close(policyOrGrace: number | ShutdownPolicy = 1_500): Promise<void | ShutdownResult> {
+    const graceMs = typeof policyOrGrace === "number" ? policyOrGrace : shutdownGrace(policyOrGrace);
+    if (this.nonforcingClose) return this.nonforcingClose;
+    if (typeof policyOrGrace !== "number" && policyOrGrace.allowSigkillEscalation === false) {
+      const child = this.child, identity = this.identity, alreadyClosing = this.closing;
+      this.closing = true;
+      this.rejectPending(new Error(`${this.options.debugLabel} process was closed.`));
+      const observation = { child, identity, settled: false };
+      this.nonforcingObservation = observation;
+      // Pin the nonforcing decision synchronously, before any timeout/recovery
+      // continuation can request escalation through this retained transport.
+      return this.nonforcingClose = Promise.resolve().then(() =>
+        this.closeNonforcing(child, identity, graceMs, alreadyClosing)).then(result => {
+          observation.settled = !alreadyClosing; return result;
+        });
+    }
     if (this.closing) {
       await this.exitPromise;
       return;
@@ -295,6 +321,11 @@ export class JsonRpcProcess {
   }
 
   async forceTerminate(graceMs = 1_500): Promise<JsonRpcTerminationResult> {
+    if (this.nonforcingClose) {
+      const result = await this.nonforcingClose;
+      return { pid: this.identity?.pid || 0, processGroupId: this.identity?.processGroupId ?? null,
+        exited: result.exited, workerExited: result.exited, escalated: false, signal: null, mode: "process-group" };
+    }
     const identity = this.identity;
     if (!identity || this.exited) {
       return {
@@ -309,7 +340,66 @@ export class JsonRpcProcess {
     }
 
     this.closing = true;
-    return terminateJsonRpcProcessIdentity(identity, graceMs);
+    if (!Number.isSafeInteger(graceMs) || graceMs < 0) throw new Error("Invalid termination grace period.");
+    if (!processIdentityAlive(identity)) {
+      return { ...identity, exited:true,workerExited:true,escalated:false,signal:null,mode:"process-group" };
+    }
+    signalExactProcess(identity, "SIGTERM");
+    if (await waitForProcessIdentityExit(identity, graceMs)) {
+      return { ...identity, exited:true,workerExited:true,escalated:false,signal:"SIGTERM",mode:"process-group" };
+    }
+    if (this.nonforcingClose) {
+      return { ...identity, exited:false,workerExited:false,escalated:false,signal:"SIGTERM",mode:"process-group" };
+    }
+    signalExactProcess(identity,"SIGKILL");
+    const exited=await waitForProcessIdentityExit(identity,graceMs);
+    return { ...identity,exited,workerExited:exited,escalated:true,signal:"SIGKILL",mode:"process-group" };
+  }
+
+  observeNonforcingExit(): ShutdownResult {
+    const observation = this.nonforcingObservation;
+    if (!observation?.settled) return shutdownResult("uncertain");
+    return this.nonforcingAbsence(observation.child, observation.identity);
+  }
+
+  private nonforcingAbsence(child: ChildProcessWithoutNullStreams | undefined,
+    identity: JsonRpcProcessIdentity | undefined): ShutdownResult {
+    if (!child) return this.child ? shutdownResult("uncertain",1,0,1) : shutdownResult("exited");
+    if (!identity) return shutdownResult("uncertain",1);
+    if (this.child !== child || child.pid !== identity.pid) return shutdownResult("uncertain",1,0,1);
+    try {
+      return shutdownResult(process.kill(identity.processGroupId ? -identity.processGroupId : identity.pid,0) === true ?
+        "timeout" : "uncertain",1);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH" &&
+        (child.exitCode !== null || child.signalCode !== null) ? shutdownResult("exited") : shutdownResult("uncertain",1);
+    }
+  }
+
+  private async closeNonforcing(child: ChildProcessWithoutNullStreams | undefined,
+    identity: JsonRpcProcessIdentity | undefined, graceMs: number, alreadyClosing: boolean): Promise<ShutdownResult> {
+    if (alreadyClosing) return shutdownResult("uncertain",child ? 1 : 0);
+    if (!child) return shutdownResult("exited");
+    if (!identity) return shutdownResult("uncertain",1);
+    let failures = 0;
+    const same = () => this.child === child && child.pid === identity.pid;
+    const exited = () => child.exitCode !== null || child.signalCode !== null;
+    const wait = async (): Promise<ShutdownResult> => {
+      const deadline = performance.now()+graceMs;
+      do {
+        const result = this.nonforcingAbsence(child,identity);
+        if (result.outcome !== "timeout") return result;
+        if (performance.now() >= deadline) return result;
+        await delay(Math.min(25,Math.max(0,deadline-performance.now())));
+      } while (true);
+    };
+    if (same() && !exited()) { try { child.stdin.end(); } catch { failures++; } }
+    let result = await wait();
+    if (result.outcome === "timeout" && same() && !exited()) {
+      try { if (!child.kill("SIGTERM")) failures++; } catch { failures++; }
+      result = await wait();
+    }
+    return failures ? shutdownResult("uncertain",result.survivors,failures,result.identityChanges) : result;
   }
 
   private async waitForExit(timeoutMs: number): Promise<boolean> {
@@ -381,7 +471,7 @@ export class JsonRpcProcess {
     this.stdoutBuffer = Buffer.alloc(0);
     const identity = this.identity;
     if (identity) {
-      void terminateJsonRpcProcessIdentity(identity, 1_500).catch(() => undefined);
+      void this.forceTerminate(1_500).catch(() => undefined);
     }
     try {
       this.child?.stdin.end();

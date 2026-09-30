@@ -25,6 +25,38 @@ describe("managed child shutdown", () => {
     expect(child.signals).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
     expect(child.exitCode).toBe(0);
   });
+
+  it("explicit nonforcing mode preserves an actual survivor and never sends SIGKILL", async () => {
+    const child=new FakeChild("SIGKILL");
+    const result=await terminateManagedChildren([child],{allowSigkillEscalation:false,
+      interruptTimeoutMs:1,terminateTimeoutMs:1,killTimeoutMs:0});
+    expect(result).toEqual({exited:false,remaining:[child]});
+    expect(child.signals).toEqual(["SIGINT","SIGTERM"]);
+    expect(child.listenerCount("exit")).toBe(0);
+  });
+  it("nonforcing mode observes a graceful TERM exit", async () => {
+    const child=new FakeChild("SIGTERM");
+    const result=await terminateManagedChildren([child],{allowSigkillEscalation:false,
+      interruptTimeoutMs:1,terminateTimeoutMs:100,killTimeoutMs:0});
+    expect(result).toEqual({exited:true,remaining:[]});
+    expect(child.signals).toEqual(["SIGINT","SIGTERM"]);
+  });
+  it("pins a nonforcing decision against concurrent and later default cleanup", async () => {
+    const child=new FakeChild("SIGKILL");
+    const ordinary=terminateManagedChildren([child],{interruptTimeoutMs:5,terminateTimeoutMs:1,killTimeoutMs:0});
+    const explicit=terminateManagedChildren([child],{allowSigkillEscalation:false,
+      interruptTimeoutMs:1,terminateTimeoutMs:1,killTimeoutMs:0});
+    expect((await explicit).exited).toBe(false);expect((await ordinary).exited).toBe(false);
+    expect((await terminateManagedChildren([child],{interruptTimeoutMs:0,terminateTimeoutMs:0,killTimeoutMs:0})).exited)
+      .toBe(false);
+    expect(child.signals).not.toContain("SIGKILL");
+  });
+  it("rejects invalid policy before sending any signal", async () => {
+    const child=new FakeChild("SIGKILL");
+    await expect(terminateManagedChildren([child],{allowSigkillEscalation:false,interruptTimeoutMs:NaN}))
+      .rejects.toThrow(/POLICY/);
+    expect(child.signals).toEqual([]);
+  });
 });
 
 class FakeChild extends EventEmitter {

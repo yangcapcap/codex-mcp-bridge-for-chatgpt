@@ -264,6 +264,54 @@ describe("JsonRpcProcess", () => {
     expect(rpc.pendingRequestCount).toBe(0);
     expect(exits).toHaveLength(1);
   });
+
+  it("nonforcing EOF verifies a real child exit and original group absence", async () => {
+    const rpc=processFor(); await rpc.request("echo",{}, {timeoutMs:2000});
+    const receipt=await rpc.close({allowSigkillEscalation:false,graceMs:1000});
+    expect(receipt).toMatchObject({exited:true,outcome:"exited",survivors:0});
+    expect(rpc.observeNonforcingExit()).toEqual(receipt);
+  });
+
+  it.runIf(process.platform!=="win32")("nonforcing parent exit retains a live group descendant", async () => {
+    const rpc=processFor(); const identity=await rpc.start();
+    const {childPid}=await rpc.request<{childPid:number}>("spawn-child",{}, {timeoutMs:2000});
+    try {
+      const receipt=await rpc.close({allowSigkillEscalation:false,graceMs:100});
+      expect(receipt).toMatchObject({exited:false,outcome:"timeout",survivors:1});
+      expect(rpc.exited).toBe(true); expect(processAlive(childPid)).toBe(true);
+      expect(rpc.observeNonforcingExit().exited).toBe(false);
+      // Independent test harness cleanup of its own synthetic descendant.
+      // The tested nonforcing API must not perform this escalation itself.
+      process.kill(childPid,"SIGTERM");
+      await eventually(()=>!processAlive(childPid));
+      await eventually(()=>rpc.observeNonforcingExit().exited);
+      expect(await rpc.close({allowSigkillEscalation:false})).toBe(receipt);
+      expect(identity.processGroupId).not.toBeNull();
+    } finally {
+      if (processAlive(childPid)) process.kill(childPid,"SIGKILL");
+      await rpc.close();
+    }
+  });
+
+  it("nonforcing stubborn child stays alive through a bounded timeout and cannot later escalate", async () => {
+    const rpc=new JsonRpcProcess({command:process.execPath,args:["-e",
+      'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);'+FAKE_SERVER],debugLabel:"owned-stubborn-fixture"});
+    const identity=await rpc.start(); await rpc.request("echo",{}, {timeoutMs:2000});
+    try {
+      const receipt=await rpc.close({allowSigkillEscalation:false,graceMs:25});
+      expect(receipt).toMatchObject({exited:false,outcome:"timeout",survivors:1});
+      expect(processAlive(identity.pid)).toBe(true);
+      expect(await rpc.forceTerminate(1)).toMatchObject({exited:false,escalated:false,signal:null});
+      expect(processAlive(identity.pid)).toBe(true);
+      // Only the fixture owner may clean up after the verified timeout.
+      process.kill(identity.pid,"SIGKILL");
+      await eventually(()=>rpc.observeNonforcingExit().exited);
+      expect(receipt.exited).toBe(false);
+    } finally {
+      if (processAlive(identity.pid)) process.kill(identity.pid,"SIGKILL");
+      await rpc.close();
+    }
+  });
 });
 
 function processAlive(pid: number): boolean {
