@@ -142,3 +142,26 @@ whose registration is pending. Completing registration after parent exit cannot
 reconstruct an escaped descendant that was never captured, so it does not clear
 this UNKNOWN. Transport prohibition still pins immediately; no wait for the
 registration callback can defer or reopen ordinary force recovery.
+
+The retained execution peer has a synchronous local nonforcing fence. It freezes
+an already authenticated owner generation/PID and controller ID, drops unsent
+ordinary requests with explicit delivery errors, prevents new owner launches and
+all signal controls, and refuses ordinary close/termination or execution frames
+on the pinned link. Only strict matching close/observation frames may cross it;
+the original close request and normalized grace remain sealed. Reconnect is
+restricted to the captured owner; another generation/PID keeps uncertainty.
+
+Peer observation proves only an actual exit of its exact retained owned child
+handle. A reattached lease, unknown owner, changed handle/PID or prior ordinary
+close/signal history cannot approve that proof. It does not certify descendants,
+whole execution-service shutdown, authenticated receipt provenance or operator
+activation. Owner-side IPC and controller close still need policy propagation,
+real supervised-tree receipts and retention. This fence is not invoked by the
+current runtime until that complete integration is implemented and reviewed.
+
+The peer serializes each accepted outbound message once, classifies ordinary
+close/termination history from those exact bytes, and retains private bytes in
+the queue. Caller mutation, accessors and `toJSON` cannot change the transmitted
+representation after acceptance. An ordinary serialization that reentrantly
+installs the nonforcing fence is rejected before enqueueing. Prior serialized
+ordinary shutdown history remains unknown even after actual owned-child exit.
