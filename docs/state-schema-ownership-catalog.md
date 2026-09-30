@@ -1,6 +1,6 @@
 # State schema ownership catalog
 
-This catalog is the schema-30 operational inventory and telemetry schema
+This catalog is the schema-31 operational inventory and telemetry schema
 inventory required by issues #142 and #143. In production the operational
 state-owner process is the only `state.sqlite` writer, the read process opens it
 read-only, and the telemetry process is the only `telemetry.sqlite` writer.
@@ -151,7 +151,62 @@ diagnostic events.
 
 ## Coverage rule
 
-`test/stateSchemaOwnership.test.ts` opens a fresh schema-30 fixture and requires
+`test/stateSchemaOwnership.test.ts` opens a fresh schema-31 fixture and requires
 every non-SQLite-internal table, explicit index and trigger in `sqlite_master` to
 appear in this catalog. Adding or renaming a schema object without updating its
 owner and destination therefore fails the test.
+
+## Schema31 CoGate storage extension
+
+The state-service migration owns creation and the disabled control initializer.
+Workspace/HMAC actor integration and the operator converter remain unavailable.
+The read-only startup probe authenticates all extension DDL before any state
+initialization; storing a conversion binding never supplies operating authority.
+There is no retention/delete path for archived lineage evidence.
+
+| Table | Current write owner | Read boundary | Maintenance |
+| --- | --- | --- | --- |
+| `workspace_control` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `workspaces` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `workspace_events` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `workspace_git_operations` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `workspace_legacy_hazards` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `scope_aliases` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `scope_rotation_lookup_evidence` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `security_hmac_keys` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `security_key_rotation_plans` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `security_key_rotation_events` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `cogate_lineage_conversions` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `cogate_legacy_metadata` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+| `cogate_legacy_execution_modes` | State-service schema migration only; actor/converter writes pending | Exact DDL authentication at admission; no new public API | No deletion or forced reconciliation |
+
+Retained explicit indexes and triggers:
+
+- `scope_aliases_canonical` on `scope_aliases` retains the fixed legacy constraint.
+- `scope_rotation_lookup_canonical` on `scope_rotation_lookup_evidence` retains the fixed legacy constraint.
+- `security_hmac_one_active` on `security_hmac_keys` retains the fixed legacy constraint.
+- `security_hmac_one_pending` on `security_hmac_keys` retains the fixed legacy constraint.
+- `security_key_rotation_event_order` on `security_key_rotation_events` retains the fixed legacy constraint.
+- `security_key_rotation_one_applied` on `security_key_rotation_events` retains the fixed legacy constraint.
+- `security_key_rotation_one_applying` on `security_key_rotation_events` retains the fixed legacy constraint.
+- `security_key_rotation_one_prepared` on `security_key_rotation_events` retains the fixed legacy constraint.
+- `workspace_repository` on `workspaces` retains the fixed legacy constraint.
+- `workspace_scope` on `workspaces` retains the fixed legacy constraint.
+- `scope_alias_rejects_existing_scope` on `scope_aliases` retains the fixed legacy constraint.
+- `scope_aliases_no_delete` on `scope_aliases` retains the fixed legacy constraint.
+- `scope_aliases_no_update` on `scope_aliases` retains the fixed legacy constraint.
+- `scope_rotation_lookup_evidence_guard_insert` on `scope_rotation_lookup_evidence` retains the fixed legacy constraint.
+- `scope_rotation_lookup_evidence_no_delete` on `scope_rotation_lookup_evidence` retains the fixed legacy constraint.
+- `scope_rotation_lookup_evidence_no_update` on `scope_rotation_lookup_evidence` retains the fixed legacy constraint.
+- `security_hmac_keys_guard_update` on `security_hmac_keys` retains the fixed legacy constraint.
+- `security_hmac_keys_no_delete` on `security_hmac_keys` retains the fixed legacy constraint.
+- `security_key_rotation_events_no_delete` on `security_key_rotation_events` retains the fixed legacy constraint.
+- `security_key_rotation_events_no_update` on `security_key_rotation_events` retains the fixed legacy constraint.
+- `security_key_rotation_plans_no_delete` on `security_key_rotation_plans` retains the fixed legacy constraint.
+- `security_key_rotation_plans_no_update` on `security_key_rotation_plans` retains the fixed legacy constraint.
+- `cogate_lineage_conversions_no_update` on `cogate_lineage_conversions` rejects mutation of archived evidence.
+- `cogate_lineage_conversions_no_delete` on `cogate_lineage_conversions` rejects mutation of archived evidence.
+- `cogate_legacy_metadata_no_update` on `cogate_legacy_metadata` rejects mutation of archived evidence.
+- `cogate_legacy_metadata_no_delete` on `cogate_legacy_metadata` rejects mutation of archived evidence.
+- `cogate_legacy_execution_modes_no_update` on `cogate_legacy_execution_modes` rejects mutation of archived evidence.
+- `cogate_legacy_execution_modes_no_delete` on `cogate_legacy_execution_modes` rejects mutation of archived evidence.

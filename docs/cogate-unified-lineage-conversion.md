@@ -1,7 +1,7 @@
 # CoGate source21 to the single upstream runtime
 
 Status: implementation contract; source inspection and read-only preservation
-ledger are implemented, conversion and runtime integration are not. The operator command must remain unavailable
+ledger and schema31 storage are implemented; conversion and actor/runtime integration are not. The operator command must remain unavailable
 until all of this contract has independent exact-head review and validation.
 
 The integration base is upstream dev 8b8d40a55a16f9d60ee0fb0397ac16a4e31ea239.
@@ -36,10 +36,13 @@ cannot be recorded as upstream 19->20 asynchronous-execution or 20->21 completio
 delivery receipts. No old receipt, provenance gap, rollback record, retirement
 plan, writer or UNKNOWN outcome is deleted or overwritten to admit the target.
 
-The unified target needs a new append-only upstream 30->31 migration. Schema31
+The unified target adds an append-only upstream 30->31 storage migration. Schema31
 adds Workspace/HMAC storage, retained execution-mode history, legacy provenance
 storage and a separately typed conversion receipt. Existing upstream migrations
-and their hashes remain unchanged. The conversion has its own named implementation
+and their hashes remain unchanged. An ordinary upstream upgrade initializes disabled
+Workspace control and empty security/conversion stores; it produces no legacy
+conversion receipt or execution grant. Exact schema31 storage objects are verified
+before startup writes, including all legacy safety triggers and archive guards. The conversion has its own named implementation
 digest and fixed source/target profiles; it is not an ordinary 21->22 migration.
 Old provenance remains byte-for-byte in immutable archival rows before active
 upstream provenance is established. The archive includes source schema-origin,

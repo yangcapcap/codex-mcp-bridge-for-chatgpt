@@ -31,6 +31,10 @@ import {
   type StateMigrationCatalogEntry
 } from "./stateCompatibility.js";
 
+import {
+  COGATE_UNIFIED_SCHEMA_TABLES, COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256
+} from "./cogateUnifiedSchema.js";
+
 const UPGRADE_HEADROOM_BYTES = 16 * 1024 * 1024;
 const MAX_PRIVATE_JSON_BYTES = 1024 * 1024;
 export const STATE_MIGRATION_PROGRESS_FRESH_MS = 30_000;
@@ -398,7 +402,11 @@ function assertStateLineageAdmission(
       }
     }
   }
-  if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion) || schemaVersion < 20) return;
+  if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion)) return;
+  if (schemaVersion < 31 && COGATE_UNIFIED_SCHEMA_TABLES.some(table => tableExists(database, table))) {
+    throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
+  }
+  if (schemaVersion < 20) return;
   const columns = (table: string) => new Set(
     (database.pragma(`table_info(${table})`) as Array<{ name: string }>).map(column => column.name)
   );
@@ -407,7 +415,6 @@ function assertStateLineageAdmission(
   if (
     !jobs.has("job_id") || !activities.has("activity_id") ||
     jobs.has("execution_mode") || activities.has("execution_mode") ||
-    ["workspace_control", "workspaces", "security_hmac_keys"].some(table => tableExists(database, table)) ||
     (schemaVersion >= 21 && ![
       "job_id", "scope_id", "terminal_version", "receipt", "state", "attempt_count",
       "next_attempt_at", "lease_owner", "lease_expires_at", "last_host_rejected_at",
@@ -415,6 +422,16 @@ function assertStateLineageAdmission(
       "created_at", "updated_at"
     ].every(column => completions.has(column)))
   ) throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
+  if (schemaVersion >= 31) {
+    const placeholders = COGATE_UNIFIED_SCHEMA_TABLES.map(() => "?").join(",");
+    const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
+      FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+        AND tbl_name IN (${placeholders}) ORDER BY type,name`).all(...COGATE_UNIFIED_SCHEMA_TABLES);
+    if (createHash("sha256").update(JSON.stringify(objects)).digest("hex") !==
+        COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256) {
+      throw new Error("State schema31 CoGate storage objects conflict with the fixed contract.");
+    }
+  }
 }
 
 /**

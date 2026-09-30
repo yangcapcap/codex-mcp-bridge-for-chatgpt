@@ -575,7 +575,7 @@ describe("BridgeStateStore", () => {
     expect(readFileSync(file).includes(Buffer.from(rawPrompt))).toBe(false);
 
     const reopened = new BridgeStateStore({ file });
-    expect(reopened.schemaVersion).toBe(30);
+    expect(reopened.schemaVersion).toBe(31);
     expect(reopened.listSteeringDeliveries(SCOPE_A)).toEqual([
       expect.objectContaining({
         requestId,
@@ -643,7 +643,7 @@ describe("BridgeStateStore", () => {
     store.close();
 
     const restored = new BridgeStateStore({ file });
-    expect(restored.schemaVersion).toBe(30);
+    expect(restored.schemaVersion).toBe(31);
     expect(restored.getActivityProjectAdmission(activityId)?.projectId).toBe(project.id);
     expect(restored.listJobs()).toEqual([
       expect.objectContaining({ projectId: project.id, projectName: "Codex MCP Bridge" })
@@ -896,7 +896,7 @@ describe("BridgeStateStore", () => {
     store.close();
 
     const restored = new BridgeStateStore({ file });
-    expect(restored.schemaVersion).toBe(30);
+    expect(restored.schemaVersion).toBe(31);
     expect(restored.getCancellationOperation(SCOPE_A, requestId)).toMatchObject({
       source: "model-tool",
       reason: "The user changed direction. Stop the obsolete job."

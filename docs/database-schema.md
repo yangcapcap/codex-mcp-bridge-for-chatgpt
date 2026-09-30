@@ -5,7 +5,7 @@ DDL and projections used for a new installation. `src/stateStore.ts` contains
 upgrade code for schemas 3 through 29; schemas 1 and 2 are rejected. The published v0.2 and
 v0.3 line used schema 3, and the pre-change development installation used schema
 18. Every supported upgrade ends with the same tables, columns, constraints,
-indexes, and triggers as direct schema-30 creation.
+indexes, and triggers as direct schema-31 creation.
 
 The database is the durable authority for Bridge business state: admission,
 scope and permission decisions, project and Activity relationships, request
@@ -318,3 +318,8 @@ The complete schema-30 table, explicit index and trigger ownership inventory,
 including command/query consumers, recovery dependencies, future destination and
 two-database file security rules, is in
 [State schema ownership catalog](state-schema-ownership-catalog.md).
+
+Schema31 additionally retains the ten CoGate Workspace/HMAC storage tables and
+three immutable lineage archive tables. Their current ownership and constraints
+are listed in [the schema ownership catalog](state-schema-ownership-catalog.md#schema31-cogate-storage-extension).
+The legacy operator conversion and actor integration remain unavailable.

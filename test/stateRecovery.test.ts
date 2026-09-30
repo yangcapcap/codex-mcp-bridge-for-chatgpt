@@ -20,15 +20,15 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     const file = path.join(root, "state.sqlite");
     seedKnownSourceRuntime(file);
     const store = new BridgeStateStore({ file });
-    expect(store.schemaVersion).toBe(30);
+    expect(store.schemaVersion).toBe(31);
     store.close();
-    const backup = `${file}.pre-v18-to-v30.sqlite`;
+    const backup = `${file}.pre-v18-to-v31.sqlite`;
     const backupBefore = readFileSync(backup);
 
     expect(inspectStateRecovery({ databaseFile: file, backupFile: backup })).toMatchObject({
       eligible: true,
       sourceSchema: 18,
-      targetSchema: 30,
+      targetSchema: 31,
       sourceRuntimeKnown: true,
       serviceOpenedAfterMigration: false
     });
@@ -43,7 +43,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     expect(existsSync(result.receiptFile)).toBe(true);
     expect(result.receipt).toMatchObject({
       sourceSchema: 18,
-      replacedSchema: 30,
+      replacedSchema: 31,
       sourceRuntimeProvenance: "recorded",
       serviceRestartVerified: false
     });
@@ -58,7 +58,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
       const store = new BridgeStateStore({ file });
       store.markServiceOpen(transport);
       store.close();
-      const backup = `${file}.pre-v18-to-v30.sqlite`;
+      const backup = `${file}.pre-v18-to-v31.sqlite`;
 
       expect(inspectStateRecovery({ databaseFile: file, backupFile: backup })).toMatchObject({
         eligible: false,
@@ -69,7 +69,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
         backupFile: backup,
         sourceRuntime: { productVersion: "0.3.0-dev-source", buildId: "source-build-18" }
       })).toThrow(/forbidden after the migrated service has opened/);
-      expect(readSchema(file)).toBe(30);
+      expect(readSchema(file)).toBe(31);
     }
   });
 
@@ -81,8 +81,8 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     createSchema18Fixture(second, { malformedJobPayload: true });
     expect(() => new BridgeStateStore({ file: first })).toThrow(/malformed JSON|Invalid job payload/);
     expect(() => new BridgeStateStore({ file: second })).toThrow(/malformed JSON|Invalid job payload/);
-    const firstBackup = `${first}.pre-v18-to-v30.sqlite`;
-    const secondBackup = `${second}.pre-v18-to-v30.sqlite`;
+    const firstBackup = `${first}.pre-v18-to-v31.sqlite`;
+    const secondBackup = `${second}.pre-v18-to-v31.sqlite`;
 
     const original = readFileSync(firstBackup);
     appendFileSync(firstBackup, "corrupt-checksum");
@@ -99,7 +99,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     createSchema18Fixture(file);
     const store = new BridgeStateStore({ file });
     store.close();
-    const backup = `${file}.pre-v18-to-v30.sqlite`;
+    const backup = `${file}.pre-v18-to-v31.sqlite`;
 
     expect(() => restoreStateDatabase({
       databaseFile: file,
@@ -122,7 +122,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     seedKnownSourceRuntime(file);
     const store = new BridgeStateStore({ file });
     store.close();
-    const backup = `${file}.pre-v18-to-v30.sqlite`;
+    const backup = `${file}.pre-v18-to-v31.sqlite`;
     appendFileSync(backup, "corrupt-after-migration");
 
     const inspection = inspectStateRecovery({ databaseFile: file, backupFile: backup });
@@ -133,7 +133,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
       backupFile: backup,
       sourceRuntime: { productVersion: "0.3.0-dev-source", buildId: "source-build-18" }
     })).toThrow(/checksum/);
-    expect(readSchema(file)).toBe(30);
+    expect(readSchema(file)).toBe(31);
   });
 
   it("rejects partially recorded source-runtime identity in backup metadata", () => {
@@ -142,8 +142,8 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     seedKnownSourceRuntime(file);
     const store = new BridgeStateStore({ file });
     store.close();
-    const backup = `${file}.pre-v18-to-v30.sqlite`;
-    const metadataFile = `${file}.migration-v18-to-v30.backup.json`;
+    const backup = `${file}.pre-v18-to-v31.sqlite`;
+    const metadataFile = `${file}.migration-v18-to-v31.backup.json`;
     const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
     metadata.sourceRuntime.buildId = null;
     metadata.restoreContract.sourceRuntimeKnown = false;
@@ -167,8 +167,8 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
     seedKnownSourceRuntime(file);
     const store = new BridgeStateStore({ file });
     store.close();
-    const backup = `${file}.pre-v18-to-v30.sqlite`;
-    const metadataFile = `${file}.migration-v18-to-v30.backup.json`;
+    const backup = `${file}.pre-v18-to-v31.sqlite`;
+    const metadataFile = `${file}.migration-v18-to-v31.backup.json`;
     const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
     metadata.targetRuntime.buildId = "another-target-build";
     writeFileSync(metadataFile, `${JSON.stringify(metadata, null, 2)}\n`);
@@ -194,7 +194,7 @@ describe("state recovery boundary", { timeout: 15_000 }, () => {
       "UPDATE bridge_meta SET value='invalid' WHERE key='state_service_opened_after_migration'"
     ).run();
     database.close();
-    const backup = `${file}.pre-v18-to-v30.sqlite`;
+    const backup = `${file}.pre-v18-to-v31.sqlite`;
 
     expect(inspectStateRecovery({ databaseFile: file, backupFile: backup })).toMatchObject({
       eligible: false,

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "minor",
+  "summary": "Add schema31 Workspace/HMAC storage and immutable lineage archives for the unified runtime.",
+  "breaking": false,
+  "migration": null
+}

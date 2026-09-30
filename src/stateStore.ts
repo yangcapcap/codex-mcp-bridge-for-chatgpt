@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
+import { V31_COGATE_UNIFIED_MIGRATION_SCHEMA } from "./cogateUnifiedSchema.js";
 import { McpEventStore } from "./mcpEventStore.js";
 import { TaskFollowupStore, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
 import { canonicalHumanText, parseJsonTextStrict } from "./textIntegrity.js";
@@ -756,6 +757,7 @@ export class BridgeStateStore {
           this.database.exec(V28_JOB_HISTORY_INDEX_MIGRATION_SCHEMA);
           this.database.exec(V29_BACKGROUND_WORK_INDEX_MIGRATION_SCHEMA);
           this.database.exec(V30_SESSION_AUTH_BOUNDARY_MIGRATION_SCHEMA);
+          this.database.exec(V31_COGATE_UNIFIED_MIGRATION_SCHEMA);
           this.setMeta("schema_version", CURRENT_SCHEMA_VERSION);
           this.setMeta("schema_v21_created_at", new Date().toISOString());
           this.setMeta("schema_v22_created_at", new Date().toISOString());
@@ -767,6 +769,8 @@ export class BridgeStateStore {
           this.setMeta("schema_v28_created_at", new Date().toISOString());
           this.setMeta("schema_v29_created_at", new Date().toISOString());
           this.setMeta("schema_v30_created_at", new Date().toISOString());
+          this.setMeta("schema_v31_created_at", new Date().toISOString());
+          this.setMeta("schema_v31_cogate_storage", "workspace-hmac-and-lineage-evidence-v1");
           this.setMeta("state_migration_catalog_version", String(STATE_MIGRATION_CATALOG_VERSION));
           this.setMeta("state_database_id", randomUUID());
           this.recordSchemaOrigin("fresh");
@@ -4340,6 +4344,7 @@ export class BridgeStateStore {
     this.runMigration("27", "28", originalSourceSchema, () => this.migrateV27ToV28());
     this.runMigration("28", "29", originalSourceSchema, () => this.migrateV28ToV29());
     this.runMigration("29", "30", originalSourceSchema, () => this.migrateV29ToV30());
+    this.runMigration("30", "31", originalSourceSchema, () => this.migrateV30ToV31());
     if (this.getMeta("schema_version") !== CURRENT_SCHEMA_VERSION) {
       throw new Error(`Bridge state migration stopped at unsupported schema version ${this.getMeta("schema_version")}.`);
     }
@@ -5797,6 +5802,15 @@ export class BridgeStateStore {
       this.setMeta("schema_version", "30");
       this.setMeta("schema_v30_session_auth_boundary", "nullable-owner-v1");
       this.setMeta("schema_v30_migrated_at", new Date().toISOString());
+    });
+  }
+
+  private migrateV30ToV31(): void {
+    this.transaction(() => {
+      this.database.exec(V31_COGATE_UNIFIED_MIGRATION_SCHEMA);
+      this.setMeta("schema_version", "31");
+      this.setMeta("schema_v31_cogate_storage", "workspace-hmac-and-lineage-evidence-v1");
+      this.setMeta("schema_v31_migrated_at", new Date().toISOString());
     });
   }
 

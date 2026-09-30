@@ -1,10 +1,14 @@
 # State upgrade and recovery runbook
 
 This runbook owns the release-time contract for the bridge SQLite database.
-The current target is schema 30. Supported source schemas are 3 through 29;
-schemas 1 and 2, databases newer than 30, and the retired standalone Settings,
+The current target is schema 31. Supported upstream source schemas are 3 through 30;
+schemas 1 and 2, databases newer than 31, and the retired standalone Settings,
 session, and Job JSON stores are rejected. `release-manifest.json` and
 `state-migrations.json` are the machine-readable authorities.
+
+Legacy CoGate schema21 is a distinct lineage and remains rejected before startup
+writes. Schema31 adds storage only; the explicit operator conversion and actor
+integration are not available. See [the conversion contract](cogate-unified-lineage-conversion.md).
 
 Product SemVer, SQLite schema, Settings schema, protocol versions, and the
 SQLite engine version are separate compatibility axes. A bridge executable is
@@ -74,8 +78,8 @@ For a source schema `S`, the migration creates these mode-0600 files beside the
 database:
 
 ```text
-state.sqlite.pre-vS-to-v30.sqlite
-state.sqlite.migration-vS-to-v30.backup.json
+state.sqlite.pre-vS-to-v31.sqlite
+state.sqlite.migration-vS-to-v31.backup.json
 ```
 
 The JSON sidecar binds the snapshot to the logical and physical source database,
@@ -138,7 +142,7 @@ Stop every bridge/helper process, then inspect the exact pair:
 ```bash
 node dist/stateRecovery.js inspect \
   --database /absolute/path/state.sqlite \
-  --backup /absolute/path/state.sqlite.pre-v18-to-v30.sqlite
+  --backup /absolute/path/state.sqlite.pre-v18-to-v31.sqlite
 ```
 
 Inspection verifies the current target schema, service-open marker, live owners,
@@ -161,7 +165,7 @@ rollback pair. Then run:
 ```bash
 node dist/stateRecovery.js restore \
   --database /absolute/path/state.sqlite \
-  --backup /absolute/path/state.sqlite.pre-v18-to-v30.sqlite \
+  --backup /absolute/path/state.sqlite.pre-v18-to-v31.sqlite \
   --source-product-version 0.3.0 \
   --source-build-id exact-recorded-build-id
 ```

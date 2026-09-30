@@ -91,7 +91,7 @@ describe("state lineage admission before writes", () => {
       database.close();
       const store = new BridgeStateStore({ file });
       try {
-        expect(store.schemaVersion).toBe(30);
+        expect(store.schemaVersion).toBe(31);
         expect(store.getMeta("state_migration_provenance_gap")).toBe(gap);
         expect(store.getMeta("state_last_migration_source_schema")).toBe("18");
       } finally { store.close(); }
@@ -184,7 +184,7 @@ describe("state lineage admission before writes", () => {
       if (progress.targetSchema === targetSchema) throw new Error(`fixture-pending-${targetSchema}`);
     } })).toThrow(`fixture-pending-${targetSchema}`);
     const store = new BridgeStateStore({ file });
-    try { expect(store.schemaVersion).toBe(30); }
+    try { expect(store.schemaVersion).toBe(31); }
     finally { store.close(); }
   });
   it("rejects a conflicting applied migration before creating upgrade sidecars or modifying the database", () => {
@@ -235,7 +235,7 @@ describe("state lineage admission before writes", () => {
     const file = fixture();
     upstream21(file);
     const store = new BridgeStateStore({ file });
-    try { expect(store.schemaVersion).toBe(30); }
+    try { expect(store.schemaVersion).toBe(31); }
     finally { store.close(); }
   });
 
@@ -254,7 +254,7 @@ describe("state lineage admission before writes", () => {
     } })).toThrow("fixture-later-upgrade-22");
     const store = new BridgeStateStore({ file });
     try {
-      expect(store.schemaVersion).toBe(30);
+      expect(store.schemaVersion).toBe(31);
       expect(store.getMeta("state_last_migration_source_schema")).toBe("21");
       expect(JSON.parse(store.getMeta("state_migration:bridge-state-19-to-20")!).originalSourceSchema).toBe(18);
       expect(JSON.parse(store.getMeta("state_migration:bridge-state-21-to-22")!).originalSourceSchema).toBe(21);
@@ -314,7 +314,7 @@ describe("state lineage admission before writes", () => {
       database.close();
       const store = new BridgeStateStore({ file });
       try {
-        expect(store.schemaVersion).toBe(30);
+        expect(store.schemaVersion).toBe(31);
         expect(store.getMeta("state_last_migration_source_schema")).toBe("21");
         expect(JSON.parse(store.getMeta("state_migration:bridge-state-19-to-20")!).originalSourceSchema).toBe(18);
       } finally { store.close(); }
@@ -370,7 +370,7 @@ describe("state lineage admission before writes", () => {
       if (progress.targetSchema === 20) throw new Error("fixture-pending-20");
     } })).toThrow("fixture-pending-20");
     const store = new BridgeStateStore({ file });
-    try { expect(store.schemaVersion).toBe(30); }
+    try { expect(store.schemaVersion).toBe(31); }
     finally { store.close(); }
   });
 });

@@ -18,7 +18,7 @@ product. They never receive independent product versions.
 | Build identity | `CFBundleVersion`, `dist/build-info.json` commit/time/source hash | Identifies a build, not the product version |
 | Manifest schema | `manifestVersion` (currently 6) | Release metadata plus state and UI compatibility contracts |
 | UI resource policy | `ui-release-catalog.json`, its manifest digest, generated release inventory, UI contract generations and explicit URI versions | One current file per active card; compatible updates keep the URI, independent of SemVer |
-| State compatibility | `stateCompatibility` plus `state-migrations.json` (currently source schemas 3–28 to 29) | Local data, applied-migration provenance, state-profile, backup, and recovery axes; see the [state upgrade and recovery runbook](state-upgrade-recovery.md) |
+| State compatibility | `stateCompatibility` plus `state-migrations.json` (currently source schemas 3–30 to 31) | Local data, applied-migration provenance, state-profile, backup, and recovery axes; see the [state upgrade and recovery runbook](state-upgrade-recovery.md) |
 | Tool/runtime contracts | Task input contract 6, helper protocol 2, local companion protocol 10, remote companion protocol 8, execution-policy references, App Server schema lock and pinned Codex CLI | Independent protocol and state axes |
 | Runtime state | `.env`, authentication material, SQLite data, process locks | Never a version authority or release payload |
 

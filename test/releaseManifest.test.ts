@@ -90,12 +90,12 @@ describe("release manifest", () => {
     expect(() => validateReleaseManifest(manifest)).toThrow("manifestVersion must be 6");
   });
 
-  it("publishes one complete schema-3-through-30 compatibility and recovery contract", () => {
+  it("publishes one complete schema-3-through-31 compatibility and recovery contract", () => {
     const manifest = loadReleaseManifest(REPO_ROOT);
     const catalog = readJson(path.join(REPO_ROOT, "state-migrations.json"));
     expect(manifest.stateCompatibility).toMatchObject({
-      currentSchema: 30,
-      supportedSourceSchemas: Array.from({ length: 27 }, (_, index) => index + 3),
+      currentSchema: 31,
+      supportedSourceSchemas: Array.from({ length: 28 }, (_, index) => index + 3),
       unsupportedSourceSchemas: [1, 2],
       retiredLegacyImports: [
         "settings-state-json",
@@ -116,7 +116,7 @@ describe("release manifest", () => {
     expect(catalog).toMatchObject({
       catalogVersion: 1,
       immutabilityPolicy: "append-only-after-release-v1",
-      currentSchema: 30,
+      currentSchema: 31,
       supportedSourceSchemas: manifest.stateCompatibility.supportedSourceSchemas
     });
     expect(catalog.fixtures).toEqual(expect.arrayContaining([
@@ -127,7 +127,7 @@ describe("release manifest", () => {
     for (const source of manifest.stateCompatibility.supportedSourceSchemas) {
       let schema = source;
       const visited = new Set<number>();
-      while (schema !== 30) {
+      while (schema !== 31) {
         expect(visited.has(schema)).toBe(false);
         visited.add(schema);
         const migration = catalog.migrations.find((entry: any) => entry.fromSchema === schema);
@@ -484,6 +484,7 @@ function fixtureRoot(): string {
     "state-migrations.json",
     "src/stateStore.ts",
     "src/stateSchema.ts",
+    "src/cogateUnifiedSchema.ts",
     "src/operationalCommandReceipt.ts",
     "src/decisionCardStore.ts",
     "src/questionStore.ts",

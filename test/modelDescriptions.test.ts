@@ -1,3 +1,4 @@
+import { COGATE_UNIFIED_SCHEMA_TABLES } from "../src/cogateUnifiedSchema.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -168,6 +169,9 @@ describe("user model descriptions", () => {
     state.close();
     const database = new Database(file);
     database.exec(V24_DECISION_CARD_MIGRATION_SCHEMA);
+    for (const table of [...COGATE_UNIFIED_SCHEMA_TABLES].reverse()) {
+      database.exec(`DROP TABLE ${table}`);
+    }
     database.exec("ALTER TABLE sessions DROP COLUMN auth_boundary");
     database.exec(`DROP TABLE model_description_versions;
       UPDATE bridge_meta SET value='25' WHERE key='schema_version';
@@ -175,8 +179,8 @@ describe("user model descriptions", () => {
     database.close();
     const upgradedState = new BridgeStateStore({ file });
     const upgraded = new UserSettingsStore(config(), { stateStore: upgradedState });
-    expect(upgradedState.schemaVersion).toBe(30);
-    expect(existsSync(`${file}.pre-v25-to-v30.sqlite`)).toBe(true);
+    expect(upgradedState.schemaVersion).toBe(31);
+    expect(existsSync(`${file}.pre-v25-to-v31.sqlite`)).toBe(true);
     expect(upgraded.current.modelDescriptionOverrides).toEqual({ "model-a": "Saved before versions" });
     expect(upgraded.modelDescriptionHistory("model-a").versions).toEqual([
       { version: 1, description: "Saved before versions", createdAt: null }
