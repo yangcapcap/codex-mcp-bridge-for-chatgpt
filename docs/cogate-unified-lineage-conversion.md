@@ -249,3 +249,21 @@ initialization writer, live lease, trusted approval source, backup proof,
 promotion operation or permission to launch. The existing projection-only
 function retains its original `targetInitializationVerification: "not-performed"`
 result. Neither function is connected to an operator or runtime activation path.
+
+## Temporary ordinary runtime admission gate
+
+Until the authenticated conversion/activation path and Workspace/HMAC actors are
+implemented and independently reviewed, ordinary schema31 runtime startup only
+admits the fixed empty CoGate extension with its original disabled control row.
+Both read-only state-store startup and writable migration preflight reject any
+retained Workspace/security/conversion rows, changed or absent control baseline,
+conversion marker, conversion origin, or malformed origin. Content inspection
+success does not grant runtime admission. There is no bypass flag or supplied
+approval argument. Ordinary fresh upstream schema31 remains usable.
+
+The guard reads the exact main-schema objects and all evidence within one SQLite
+snapshot, retaining any caller-owned transaction and rolling back only a snapshot
+it owns. Rejection precedes runtime owner/maintenance leases, status/backup writes
+and business mutations. A read-only SQLite WAL connection can create an empty WAL
+and coordination SHM sidecar; this is not a guarantee of zero filesystem I/O.
+Retained database bytes and historical evidence are not repaired or erased.
