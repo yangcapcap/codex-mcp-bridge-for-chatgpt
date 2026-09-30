@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import type { JsonRpcProcessIdentity } from "./jsonRpcProcess.js";
 import { decodeUtf8Strict } from "./textIntegrity.js";
+import { boundedShutdown, shutdownResult, type ShutdownResult } from "./shutdown.js";
 
 const PROCESS_TABLE_MAX_BYTES = 4 * 1024 * 1024;
 // /bin/ps is normally quick, but the installed runtime has observed genuine
@@ -74,14 +75,17 @@ export function processObservationFailure(error: unknown): ProcessObservationFai
 export class SupervisedProcessTreeRegistry {
   private readonly trees = new Map<string, SupervisedProcessTree>();
   private tail: Promise<void> = Promise.resolve();
+  private nonforcingEvidence?: Map<string, SupervisedProcessTree>;
+  private forceOperations = 0;
+  private nonforcingHistoryUncertain = false;
   constructor(private readonly readTable: () => Promise<ProcessTableEntry[]> = readProcessTable) {}
 
   get size(): number {
-    return this.trees.size;
+    return (this.nonforcingEvidence ?? this.trees).size;
   }
 
   get capturedProcessCount(): number {
-    return [...this.trees.values()].reduce(
+    return [...(this.nonforcingEvidence ?? this.trees).values()].reduce(
       (total, tree) => total + tree.captured.size,
       0
     );
@@ -92,7 +96,7 @@ export class SupervisedProcessTreeRegistry {
   }
 
   snapshots(): SupervisedProcessTreeSnapshot[] {
-    return [...this.trees.values()].map((tree) => ({
+    return [...(this.nonforcingEvidence ?? this.trees).values()].map((tree) => ({
       root: { ...tree.root },
       rootExited: tree.rootExited,
       processes: [...tree.captured.values()].map((entry) => ({ ...entry }))
@@ -114,9 +118,11 @@ export class SupervisedProcessTreeRegistry {
           ? previous.startedAt : undefined)
       });
     }
+    this.retainObservedTree(supervisedProcessKey(snapshot.root), tree);
   }
 
   forget(identity: JsonRpcProcessIdentity): void {
+    if (this.nonforcingEvidence) return;
     this.trees.delete(supervisedProcessKey(identity));
   }
 
@@ -127,11 +133,14 @@ export class SupervisedProcessTreeRegistry {
     this.trees.set(key, { root: { ...identity }, ownedRoot, rootExited: false,
       captured: new Map([[identity.pid, { pid: identity.pid, parentPid: 0,
         processGroupId: identity.processGroupId ?? identity.pid }]]) });
+    if (this.nonforcingEvidence) this.nonforcingEvidence.set(key, cloneTree(this.trees.get(key)!));
   }
 
   markExited(identity: JsonRpcProcessIdentity): void {
     const tree = this.trees.get(supervisedProcessKey(identity));
     if (tree) { tree.rootExited = true; tree.ownedRoot = false; }
+    const retained = this.nonforcingEvidence?.get(supervisedProcessKey(identity));
+    if (retained) { retained.rootExited = true; retained.ownedRoot = false; }
   }
 
   register(identity: JsonRpcProcessIdentity): Promise<void> {
@@ -146,6 +155,7 @@ export class SupervisedProcessTreeRegistry {
       try {
         const rows = await this.readTable();
         observeTree(tree, rows);
+        this.retainObservedTree(key, tree);
         const root = rows.find((entry) => entry.pid === identity.pid);
         if (!root || root.processGroupId !== identity.processGroupId || isZombie(root)) {
           throw new ProcessObservationError({
@@ -166,7 +176,10 @@ export class SupervisedProcessTreeRegistry {
       const startedAt = performance.now();
       try {
         const rows = await this.readTable();
-        for (const tree of this.trees.values()) observeTree(tree, rows);
+        for (const [key, tree] of this.trees) {
+          observeTree(tree, rows);
+          this.retainObservedTree(key, tree);
+        }
       } catch (error) {
         throw withObservationDuration(error, startedAt);
       }
@@ -176,29 +189,105 @@ export class SupervisedProcessTreeRegistry {
   release(identity: JsonRpcProcessIdentity, graceMs: number): Promise<boolean> {
     const key = supervisedProcessKey(identity);
     return this.enqueue(async () => {
+      if (this.nonforcingEvidence) {
+        const retained = this.nonforcingEvidence.get(key);
+        return retained ? (await this.observeRetainedTrees([retained])).exited : false;
+      }
       const tree = this.trees.get(key);
       if (!tree) return true;
-      const exited = await terminateTree(tree, graceMs, this.readTable);
-      if (exited) this.trees.delete(key);
-      return exited;
+      this.forceOperations++;
+      try {
+        const exited = await terminateTree(tree, graceMs, this.readTable, () => !this.nonforcingEvidence);
+        this.retainObservedTree(key, tree);
+        if (exited && !this.nonforcingEvidence) this.trees.delete(key);
+        return exited && !this.nonforcingHistoryUncertain;
+      } finally { this.forceOperations--; }
     });
   }
 
   cleanupAll(graceMs: number): Promise<boolean> {
     return this.enqueue(async () => {
+      if (this.nonforcingEvidence) {
+        return (await this.observeRetainedTrees([...this.nonforcingEvidence.values()], true)).exited;
+      }
       const entries = [...this.trees.entries()];
       if (entries.length === 0) return true;
       const results = await Promise.all(entries.map(async ([key, tree]) => {
+        this.forceOperations++;
         try {
-          const exited = await terminateTree(tree, graceMs, this.readTable);
-          if (exited) this.trees.delete(key);
-          return exited;
+          const exited = await terminateTree(tree, graceMs, this.readTable, () => !this.nonforcingEvidence);
+          this.retainObservedTree(key, tree);
+          if (exited && !this.nonforcingEvidence) this.trees.delete(key);
+          return exited && !this.nonforcingHistoryUncertain;
         } catch {
           return false;
-        }
+        } finally { this.forceOperations--; }
       }));
       return results.every(Boolean) && this.trees.size === 0;
     });
+  }
+
+  /** Synchronous sticky fence; queued/default cleanup cannot escalate or erase
+   * this retained ledger after explicit nonforcing shutdown starts. */
+  pinNonforcingShutdown(): void {
+    if (this.nonforcingEvidence) return;
+    this.nonforcingHistoryUncertain = this.forceOperations > 0;
+    this.nonforcingEvidence = new Map([...this.trees].map(([key, tree]) => [key, cloneTree(tree)]));
+  }
+
+  /** Read-only fresh process-table proof, not a worker/generation receipt.
+   * Retains prior evidence and sends no worker signal. */
+  observeNonforcingExit(timeoutMs = 6000): Promise<ShutdownResult> {
+    return boundedShutdown(() => this.enqueue(async () => {
+      if (!this.nonforcingEvidence) return shutdownResult("uncertain");
+      return this.observeRetainedTrees([...this.nonforcingEvidence.values()], true);
+    }), timeoutMs);
+  }
+
+  private retainObservedTree(key: string, tree: SupervisedProcessTree): void {
+    const retained = this.nonforcingEvidence?.get(key);
+    if (!retained) return;
+    for (const [pid, entry] of tree.captured) {
+      const previous = retained.captured.get(pid);
+      if (!previous || previous.processGroupId === entry.processGroupId && previous.startedAt === undefined) {
+        retained.captured.set(pid, { ...entry });
+      }
+    }
+  }
+
+  private async observeRetainedTrees(trees: readonly SupervisedProcessTree[], all = false): Promise<ShutdownResult> {
+    if (this.nonforcingHistoryUncertain || process.platform === "win32") return shutdownResult("uncertain");
+    if (trees.length === 0) return shutdownResult("exited");
+    const rows = await this.readTable();
+    const survivors = new Set<number>();
+    const changed = new Set<number>();
+    let unknown = all && this.nonforcingEvidence?.size !== trees.length;
+    for (const retained of trees) {
+      const observedTree = cloneTree(retained);
+      observeTree(observedTree, rows);
+      this.retainObservedTree(supervisedProcessKey(retained.root), observedTree);
+      for (const [pid, entry] of retained.captured) {
+        const observed = rows.find(row => row.pid === pid);
+        if (!observed || isZombie(observed)) {
+          if (pid === retained.root.pid && !retained.rootExited && entry.startedAt === undefined) unknown = true;
+          continue;
+        }
+        if (entry.processGroupId !== observed.processGroupId || entry.startedAt !== undefined &&
+            observed.startedAt !== undefined && entry.startedAt !== observed.startedAt) changed.add(pid);
+        else if (entry.startedAt === undefined || observed.startedAt === undefined) unknown = true;
+      }
+      for (const row of rows) {
+        if (isZombie(row)) continue;
+        const captured = observedTree.captured.get(row.pid);
+        if (captured?.processGroupId === row.processGroupId && captured.startedAt !== undefined &&
+            captured.startedAt === row.startedAt) survivors.add(row.pid);
+        else if (row.processGroupId === retained.root.processGroupId || retained.captured.has(row.pid)) {
+          survivors.add(row.pid);unknown = true;
+        }
+      }
+    }
+    return shutdownResult(unknown || changed.size ? "uncertain" : survivors.size ? "timeout" : "exited",
+      survivors.size, 0, changed.size);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -206,6 +295,11 @@ export class SupervisedProcessTreeRegistry {
     this.tail = result.then(() => undefined, () => undefined);
     return result;
   }
+}
+
+function cloneTree(tree: SupervisedProcessTree): SupervisedProcessTree {
+  return { root: { ...tree.root }, ownedRoot: tree.ownedRoot, rootExited: tree.rootExited,
+    captured: new Map([...tree.captured].map(([pid, entry]) => [pid, { ...entry }])) };
 }
 
 function withObservationDuration(error: unknown, startedAt: number): ProcessObservationError {
@@ -224,7 +318,8 @@ export function supervisedProcessKey(identity: JsonRpcProcessIdentity): string {
 async function terminateTree(
   tree: SupervisedProcessTree,
   graceMs: number,
-  readTable: () => Promise<ProcessTableEntry[]> = readProcessTable
+  readTable: () => Promise<ProcessTableEntry[]> = readProcessTable,
+  mayEscalate: () => boolean = () => true
 ): Promise<boolean> {
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
     throw new Error("Invalid supervised process termination grace period.");
@@ -233,7 +328,7 @@ async function terminateTree(
     if (!processAlive(tree.root.pid)) return true;
     signalPid(tree.root.pid, "SIGTERM");
     if (await waitForPidExit(tree.root.pid, graceMs)) return true;
-    signalPid(tree.root.pid, "SIGKILL");
+    if (mayEscalate()) signalPid(tree.root.pid, "SIGKILL");
     return waitForPidExit(tree.root.pid, graceMs);
   }
 
@@ -251,7 +346,7 @@ async function terminateTree(
   rows = await readTable();
   observeTree(tree, rows);
   running = runningTreeProcesses(tree, rows);
-  signalTreeProcesses(running, rows, "SIGKILL");
+  signalTreeProcesses(running, rows, "SIGKILL", mayEscalate);
   observed = await waitForTreeExit(tree, graceMs, readTable);
   return observed.running.length === 0 && !hasPotentialLiveOwner(tree, observed.rows);
 }
@@ -378,11 +473,15 @@ async function waitForTreeExit(
 function signalTreeProcesses(
   running: readonly ProcessTableEntry[],
   _rows: readonly ProcessTableEntry[],
-  signal: NodeJS.Signals
+  signal: NodeJS.Signals,
+  mayEscalate: () => boolean = () => true
 ): void {
   // Signal only birth-verified PIDs. A remembered numeric process group may
   // have gained unrelated members; group-wide signaling would include them.
-  for (const entry of running) signalPid(entry.pid, signal);
+  for (const entry of running) {
+    if (signal === "SIGKILL" && !mayEscalate()) return;
+    signalPid(entry.pid, signal);
+  }
 }
 
 function signalPid(pid: number, signal: NodeJS.Signals): void {

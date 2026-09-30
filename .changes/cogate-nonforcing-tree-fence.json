@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add a sticky supervised-tree nonforcing fence with retained birth-bound evidence and bounded read-only absence observations.",
+  "breaking": false,
+  "migration": null
+}
