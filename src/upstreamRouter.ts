@@ -3,6 +3,8 @@ import { executionAccessArguments } from "./executionAccess.js";
 import type { JsonRpcTerminationResult } from "./jsonRpcProcess.js";
 import type { BackendCapabilities, ModelSelection } from "./modelPolicy.js";
 import { backendSupports } from "./modelPolicy.js";
+import { boundedShutdown, combineShutdown, observeShutdown, snapshotShutdownPolicy, shutdownResult,
+  type ShutdownPolicy, type ShutdownResult } from "./shutdown.js";
 import type { WorkerTerminationCorrelation } from "./cancellation.js";
 import type {
   CodexThreadContinueRequest,
@@ -30,6 +32,10 @@ export class CodexBackendRouter implements CodexUpstream {
   private readonly threadBackends = new Map<string, CodexBackendKind>();
   private readonly workerBackends = new Map<string, CodexBackendKind>();
   private readonly backends: ReadonlyMap<CodexBackendKind, CodexUpstream>;
+  private nonforcingClose?: Promise<ShutdownResult>;
+  private nonforcingSettled = false;
+  private ordinaryCloseStarted = false;
+  private nonforcingHistoryUncertain = false;
 
   constructor(
     private readonly defaultBackend: CodexBackendKind,
@@ -69,6 +75,7 @@ export class CodexBackendRouter implements CodexUpstream {
   }
 
   async listTools(): Promise<unknown> {
+    this.assertOpen();
     const entries = [...this.backends];
     const results = await Promise.allSettled(entries.map(([, backend]) => backend.listTools()));
     return {
@@ -351,12 +358,56 @@ export class CodexBackendRouter implements CodexUpstream {
   }
 
   async close(): Promise<void> {
+    if(this.nonforcingClose) {
+      if(!(await this.nonforcingClose).exited) throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+      return;
+    }
+    this.ordinaryCloseStarted=true;
     this.threadBackends.clear();
     this.workerBackends.clear();
     await Promise.allSettled([...this.backends.values()].map(backend => backend.close()));
   }
 
+  closeNonforcing(policy: ShutdownPolicy & {allowSigkillEscalation:false}): Promise<ShutdownResult> {
+    const supplied=snapshotShutdownPolicy(policy);
+    if(supplied.allowSigkillEscalation!==false) throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
+    if(this.nonforcingClose) return this.nonforcingClose;
+    const pinned=Object.freeze({...supplied,allowSigkillEscalation:false as const});
+    this.nonforcingHistoryUncertain=this.ordinaryCloseStarted;
+    let seal!: (result:ShutdownResult)=>void;
+    this.nonforcingClose=new Promise(resolve=>{seal=resolve;});
+    const receipts: Promise<ShutdownResult>[]=[];
+    // Invoke each explicit capability synchronously before yielding. Missing
+    // capability is uncertain; never fall back to its ordinary force close.
+    for(const backend of this.backends.values()) {
+      let operation: Promise<ShutdownResult>;
+      try {
+        const close=backend.closeNonforcing;
+        operation=typeof close==="function" ? Promise.resolve(close.call(backend,pinned)) :
+          Promise.resolve(shutdownResult("uncertain"));
+      } catch {operation=Promise.resolve(shutdownResult("uncertain"));}
+      receipts.push(boundedShutdown(()=>operation,pinned.graceMs*2+6000));
+    }
+    void Promise.all(receipts).then(results=> {
+      if(this.nonforcingHistoryUncertain) results.push(shutdownResult("uncertain"));
+      this.nonforcingSettled=true;seal(combineShutdown(results));
+    });
+    return this.nonforcingClose;
+  }
+
+  async observeNonforcingExit(): Promise<ShutdownResult> {
+    if(!this.nonforcingClose || !this.nonforcingSettled) return shutdownResult("uncertain");
+    const results=await Promise.all([...this.backends.values()].map(backend=>observeShutdown(backend)));
+    if(this.nonforcingHistoryUncertain) results.push(shutdownResult("uncertain"));
+    return combineShutdown(results);
+  }
+
+  private assertOpen(): void {
+    if(this.nonforcingClose) throw new Error("Codex upstream router is closed for nonforcing shutdown.");
+  }
+
   private backend(kind: CodexBackendKind): CodexUpstream {
+    this.assertOpen();
     if (kind !== "app-server") throw new Error("CODEX_BACKEND_RETIRED: This execution path was removed. Start a fresh App Server context with an explicit handoff summary; existing history is preserved.");
     const backend = this.backends.get(kind);
     if (!backend) throw new Error(`Codex backend ${kind} is not installed or enabled. The thread was not moved to another backend.`);
