@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject ambiguous conversion origins and conversion markers before old-schema automatic upgrades can activate CoGate state.",
+  "breaking": false,
+  "migration": null
+}

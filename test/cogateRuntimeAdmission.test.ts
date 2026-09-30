@@ -9,6 +9,7 @@ import { inspectCoGateTargetInitialization } from "../src/cogateLegacyProjection
 import { projectionFixture } from "./helpers/cogateProjectionFixtures.js";
 import { assertCoGateUnifiedRuntimeAdmission } from "../src/cogateRuntimeAdmission.js";
 import { V31_COGATE_UNIFIED_MIGRATION_SCHEMA } from "../src/cogateUnifiedSchema.js";
+import { createSchema18Fixture } from "./helpers/stateSchemaFixtures.js";
 
 describe("runtime activation remains closed until unified CoGate actors and authority are implemented", () => {
   test.each([false,true])("content initialization proof does not grant runtime readOnly=%s admission", readOnly => {
@@ -94,5 +95,62 @@ describe("runtime activation remains closed until unified CoGate actors and auth
       value.target.exec("ROLLBACK");
       expect(value.target.prepare("SELECT 1 FROM bridge_meta WHERE key='pending_evidence'").get()).toBeUndefined();
     } finally {value.close();}
+  });
+  test.each([
+    '{"kind":"lineage-conversion","kind":"fresh"}',
+    '{"k\\u0069nd":"lineage-conversion","kind":"fresh"}',
+    '{"format":"cogate-unified-origin/v1","format":"ordinary"}',
+    '{"for\\u006dat":"cogate-unified-origin/v1","format":"ordinary"}'
+  ])("ambiguous decoded conversion-origin fields reject both current startup paths: %s", origin => {
+    const root=mkdtempSync(path.join(tmpdir(),"cogate-ambiguous-origin-")),file=path.join(root,"candidate.sqlite");
+    try {
+      new BridgeStateStore({file}).close();const db=new Database(file);
+      db.prepare("UPDATE bridge_meta SET value=? WHERE key='state_schema_origin'").run(origin);
+      db.pragma("journal_mode = DELETE");db.close();
+      const before=readFileSync(file),names=readdirSync(root);
+      for (const readOnly of [true,false]) {
+        let store:BridgeStateStore|undefined;
+        try {expect(()=>{store=new BridgeStateStore({file,readOnly});}).toThrow(/ACTIVATION_UNAVAILABLE/);}
+        finally {store?.close();}
+      }
+      expect(()=>prepareStateDatabaseOpen(file)).toThrow(/ACTIVATION_UNAVAILABLE/);
+      expect(readFileSync(file)).toEqual(before);expect(readdirSync(root)).toEqual(names);
+    } finally {rmSync(root,{recursive:true});}
+  });
+  test.each([
+    ['state_schema_origin','{"kind":"lineage-conversion"}'],
+    ['state_schema_origin','{"format":"cogate-unified-origin/v1"}'],
+    ['state_schema_origin','{"kind":"lineage-conversion","kind":"fresh"}'],
+    ['cogate_lineage_conversion_v1','UNKNOWN']
+  ])("conversion evidence blocks schema30 automatic upgrade before any new sidecar: %s", (key,value) => {
+    const root=mkdtempSync(path.join(tmpdir(),"cogate-old-origin-")),file=path.join(root,"candidate.sqlite");
+    try {
+      createSchema18Fixture(file);
+      expect(()=>new BridgeStateStore({file,onMigrationProgress(progress) {
+        if(progress.targetSchema===30) throw Error("fixture-stop30");
+      }})).toThrow("fixture-stop30");
+      const db=new Database(file);db.prepare("INSERT OR REPLACE INTO bridge_meta VALUES(?,?)").run(key,value);
+      db.pragma("journal_mode = DELETE");db.close();
+      const before=readFileSync(file),names=readdirSync(root);
+      let store:BridgeStateStore|undefined;
+      try {expect(()=>{store=new BridgeStateStore({file});}).toThrow(/ACTIVATION_UNAVAILABLE/);}
+      finally {store?.close();}
+      expect(()=>prepareStateDatabaseOpen(file)).toThrow(/ACTIVATION_UNAVAILABLE/);
+      expect(readFileSync(file)).toEqual(before);expect(readdirSync(root)).toEqual(names);
+    } finally {rmSync(root,{recursive:true});}
+  });
+  test.each([
+    '{"kind":"fresh","extra":{"kind":"a","k\\u0069nd":"b"}}',
+    '{"kind":"fresh","extra":['+' '.repeat(64*1024)+']}',
+    '{"kind":"fresh","extra":"\\ud800"}'
+  ])("ambiguous or unbounded retained origin remains closed without normalization", origin => {
+    const db=new Database(":memory:");
+    try {
+      db.exec(V31_COGATE_UNIFIED_MIGRATION_SCHEMA);db.exec("CREATE TABLE bridge_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+      db.prepare("INSERT INTO bridge_meta VALUES('state_schema_origin',?)").run(origin);
+      expect(()=>assertCoGateUnifiedRuntimeAdmission(db)).toThrow(/ACTIVATION_UNAVAILABLE/);
+      expect(db.prepare("SELECT value FROM bridge_meta").get()).toEqual({value:origin});
+      expect(db.inTransaction).toBe(false);
+    } finally {db.close();}
   });
 });

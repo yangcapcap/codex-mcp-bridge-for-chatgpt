@@ -35,7 +35,7 @@ import {
   COGATE_UNIFIED_SCHEMA_TABLES,
   COGATE_UNIFIED_SCHEMA_OBJECT_NAMES
 } from "./cogateUnifiedSchema.js";
-import { assertCoGateUnifiedRuntimeAdmission } from "./cogateRuntimeAdmission.js";
+import { assertCoGateUnifiedRuntimeAdmission, assertCoGateConversionOriginUnavailable } from "./cogateRuntimeAdmission.js";
 
 const UPGRADE_HEADROOM_BYTES = 16 * 1024 * 1024;
 const MAX_PRIVATE_JSON_BYTES = 1024 * 1024;
@@ -291,6 +291,7 @@ function assertStateLineageAdmission(
   database: Database.Database, schemaVersion: number, pendingMigrationId: string | null,
   pendingOriginalSource: number | null
 ): void {
+  assertCoGateConversionOriginUnavailable(database);
   const records = database.prepare(
     "SELECT key,value FROM bridge_meta WHERE substr(key,1,16)='state_migration:'"
   ).all() as Array<{ key: string; value: string }>;

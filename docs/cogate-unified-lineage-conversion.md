@@ -267,3 +267,10 @@ it owns. Rejection precedes runtime owner/maintenance leases, status/backup writ
 and business mutations. A read-only SQLite WAL connection can create an empty WAL
 and coordination SHM sidecar; this is not a guarantee of zero filesystem I/O.
 Retained database bytes and historical evidence are not repaired or erased.
+
+Conversion-marker and origin checks apply before automatic migration for every
+numeric schema, including ordinary old upstream checkpoints. Origins are
+bounded to 64 KiB, strictly parsed for JSON/Unicode and checked iteratively for
+duplicate decoded member names at every object depth. Literal or escaped
+duplicate fields cannot hide a conversion claim behind a later ordinary value.
+These checks reject ambiguity; they do not normalize retained origin bytes.
