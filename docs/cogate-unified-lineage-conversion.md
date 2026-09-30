@@ -4,7 +4,9 @@ Status: implementation contract; source inspection is implemented, conversion
 and runtime integration are not. The operator command must remain unavailable
 until all of this contract has independent exact-head review and validation.
 
-The integration base is upstream dev 5747072d392769414fc7b82b0797b7417bdfeb71.
+The integration base is upstream dev 8b8d40a55a16f9d60ee0fb0397ac16a4e31ea239.
+The earlier admission foundation was validated against dev5747072; its evidence
+does not substitute for validation after this upstream refresh.
 The user's architecture decision on 2026-10-01 is one upstream SDK2 runtime.
 The legacy source profile is not a second executable runtime, launcher or SDK.
 
@@ -20,6 +22,11 @@ The read-only inspector authenticates every retained receipt, separate completed
 source generations, any historical gap, and the original HMAC read semantics.
 It emits `authority: none`; a successful inspection is not permission to apply.
 Unfinished source migrations require recovery in the original source runtime.
+A present schema origin, receipt or gap must match its exact fixed record keys,
+types and completed-generation relationships. A fresh source cannot carry orphan
+completion identity. A fully authenticated completed historical path may lack an
+origin that the old pre-contract runtime never recorded; the missing record stays
+missing and supplies no proof. It must never be fabricated as a fresh origin.
 
 The old 19->20 Workspace digest and 20->21 HMAC digest remain immutable. They
 cannot be recorded as upstream 19->20 asynchronous-execution or 20->21 completion
@@ -45,6 +52,7 @@ in its original namespace unless an explicit field mapping is reviewed.
 | `jobs.execution_mode`, `activities.execution_mode` | Archive each value with its original row identity and source conversion binding before removing the active projection. No historic foreground completion becomes a new delivery claim. |
 | Old sessions without `auth_boundary` | Set the new field to NULL. Existing sessions require the upstream explicit identity boundary rules; never assign the currently signed-in identity retroactively. |
 | Old terminal jobs and completion outbox | Preserve original summaries/events/outbox and UNKNOWN. Do not create accepted/host-observed completion-delivery receipts. |
+| Old jobs without authenticated MCP principals or followup grants | Preserve their history. Do not synthesize webhook registrations, event delivery acceptance, current principals or approved durable followups from legacy jobs. |
 | Source model catalog and UI history | Preserve history; current dev remains authoritative for models, API, localization, cards and generation semantics. |
 | Workspace control | Preserve revision history. Conversion cannot silently enable dispatch, clear maintenance or consume an onboarding authorization. |
 | Preserved/quarantined/ready workspaces and writer locks | Preserve ownership and cleanup evidence. No forced release, fabricated terminal receipt or git deletion. |

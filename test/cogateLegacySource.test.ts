@@ -13,6 +13,7 @@ function fixture(file = ":memory:"): Database.Database {
   for (const object of profile.objects.filter(value => value.type === "table")) db.exec(object.sql);
   for (const object of profile.objects.filter(value => value.type !== "table")) db.exec(object.sql);
   meta(db, "schema_version", "21"); meta(db, "state_database_id", randomUUID());
+  meta(db, "state_migration_catalog_version", "1");
   meta(db, "state_schema_origin", JSON.stringify({ kind: "fresh", schema: 21,
     productVersion: "0.4.1", buildId: "fixture-source", recordedAt: "2026-09-30T00:00:00Z" }));
   meta(db, "security_key_rotation_required_v1", "0");
@@ -35,6 +36,8 @@ function receipt(db: Database.Database, from: number, original = from): void {
     productVersion: "0.4.1", buildId: "fixture-source", appliedAt: "2026-09-30T00:00:00Z" }));
 }
 function completed(db: Database.Database, source: number): void {
+  meta(db, "state_schema_origin", JSON.stringify({ kind: "fresh", schema: source,
+    productVersion: "0.4.1", buildId: "fixture-source", recordedAt: "2026-09-13T00:00:00Z" }));
   meta(db, "state_last_migration_id", "bridge-state-20-to-21");
   meta(db, "state_last_migration_source_schema", String(source));
   meta(db, "state_last_migration_target_schema", "21");
@@ -98,6 +101,53 @@ describe("fixed CoGate legacy source inspection", () => {
     const row = JSON.parse((db.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as { value: string }).value);
     row.originalSourceSchema = "19"; meta(db, key, JSON.stringify(row));
     expect(() => inspectCoGateLegacySource(db)).toThrow(/conflicting retained/);
+  }));
+  test("rejects orphan completed identity on a fresh source", () => withFixture(db => {
+    meta(db, "state_last_migration_source_schema", "999"); meta(db, "state_last_migration_target_schema", "30");
+    meta(db, "state_last_migration_completed_at", "not-a-date"); const before = db.serialize();
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/authenticated current fresh/);
+    expect(db.serialize()).toEqual(before);
+  }));
+  test("rejects a conflicting catalog even with a valid fresh origin", () => withFixture(db => {
+    meta(db, "state_migration_catalog_version", "2");
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/catalog identity/);
+  }));
+  test.each(["not-json", JSON.stringify({ kind: "fresh", schema: 30,
+    productVersion: "0.4.1", buildId: "fixture-source", recordedAt: "2026-09-30T00:00:00Z" })])(
+    "rejects present corrupt or foreign origin on a completed source: %s", value => withFixture(db => {
+      receipt(db, 20); completed(db, 20); meta(db, "state_schema_origin", value);
+      const before = db.serialize(); expect(() => inspectCoGateLegacySource(db)).toThrow();
+      expect(db.serialize()).toEqual(before);
+    }));
+  test("rejects a valid but contradictory fresh21 origin on a source20 completed path", () => withFixture(db => {
+    receipt(db, 20); completed(db, 20); meta(db, "state_schema_origin", JSON.stringify({ kind: "fresh", schema: 21,
+      productVersion: "0.4.1", buildId: "fixture-source", recordedAt: "2026-09-30T00:00:00Z" }));
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/fresh origin conflicts/);
+  }));
+  test("retains a missing pre-contract origin on a fully authenticated completed path", () => withFixture(db => {
+    receipt(db, 20); completed(db, 20); db.prepare("DELETE FROM bridge_meta WHERE key='state_schema_origin'").run();
+    const before = db.serialize(); expect(inspectCoGateLegacySource(db).appliedReceiptCount).toBe(1);
+    expect(db.serialize()).toEqual(before);
+    expect(db.prepare("SELECT value FROM bridge_meta WHERE key='state_schema_origin'").get()).toBeUndefined();
+  }));
+  test("rejects extra receipt authority fields and preserves the rejected raw record", () => withFixture(db => {
+    receipt(db, 20); completed(db, 20); const key = "state_migration:bridge-state-20-to-21";
+    const value = JSON.parse((db.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as { value: string }).value);
+    value.authority = "approved"; const raw = JSON.stringify(value); meta(db, key, raw);
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/conflicting retained/);
+    expect(db.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key)).toEqual({ value: raw });
+  }));
+  test("rejects uncontracted origin and gap extensions without deleting them", () => withFixture(db => {
+    const origin = { kind: "fresh", schema: 21, productVersion: "0.4.1", buildId: "fixture-source",
+      recordedAt: "2026-09-30T00:00:00Z", authority: "approved" };
+    meta(db, "state_schema_origin", JSON.stringify(origin));
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/schema-origin/);
+    receipt(db, 20, 19); completed(db, 19);
+    const gap = JSON.stringify({ kind: "pre-contract-intermediate-checkpoint", originalSourceSchema: 19,
+      observedSchema: 20, recordedAt: "2026-09-30T00:00:00Z", authority: "approved" });
+    meta(db, "state_migration_provenance_gap", gap);
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/provenance-gap/);
+    expect(db.prepare("SELECT value FROM bridge_meta WHERE key='state_migration_provenance_gap'").get()).toEqual({ value: gap });
   }));
   test("rejects an unfinished source migration without recovery writes", () => withFixture(db => {
     meta(db, "state_migration_pending", "{}"); const before = db.serialize();

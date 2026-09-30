@@ -117,12 +117,24 @@ export function inspectCoGateLegacySource(database: Database.Database): CoGateLe
 }
 
 function inspectReceipts(meta: Map<string, string>): { receiptCount: number; historicalGapRetained: boolean } {
+  const originRaw = meta.get("state_schema_origin");
+  const origin = originRaw === undefined ? null : parseRecord(originRaw);
+  if (origin && (!hasKeys(origin, ["kind", "schema", "productVersion", "buildId", "recordedAt"]) ||
+      !["fresh", "pre-contract-current"].includes(String(origin.kind)) || !isSource(origin.schema) ||
+      !isText(origin.productVersion) || !isText(origin.buildId) || !isDate(origin.recordedAt))) {
+    throw new Error("CoGate source has invalid retained schema-origin evidence.");
+  }
+  if (meta.get("state_migration_catalog_version") !== "1") {
+    throw new Error("CoGate source migration catalog identity conflicts with the fixed profile.");
+  }
   const receipts = new Map<string, Receipt>();
   for (const [key, raw] of meta) {
     if (!key.startsWith("state_migration:")) continue;
     const record = parseRecord(raw);
     const entry = profile.migrations.find(candidate => key === `state_migration:${candidate.id}`);
-    if (!entry || record.id !== entry.id || record.fromSchema !== entry.fromSchema ||
+    if (!entry || !hasKeys(record, ["id", "fromSchema", "toSchema", "implementationSha256",
+        "originalSourceSchema", "productVersion", "buildId", "appliedAt"]) ||
+        record.id !== entry.id || record.fromSchema !== entry.fromSchema ||
         record.toSchema !== entry.toSchema || record.implementationSha256 !== entry.sha256 ||
         !isSource(record.originalSourceSchema) || Number(record.originalSourceSchema) > entry.fromSchema ||
         !isText(record.productVersion) || !isText(record.buildId) || !isDate(record.appliedAt)) {
@@ -134,7 +146,8 @@ function inspectReceipts(meta: Map<string, string>): { receiptCount: number; his
   let gap: { originalSourceSchema: number; observedSchema: number } | null = null;
   if (gapRaw !== undefined) {
     const value = parseRecord(gapRaw);
-    if (value.kind !== "pre-contract-intermediate-checkpoint" || !isSource(value.originalSourceSchema) ||
+    if (!hasKeys(value, ["kind", "originalSourceSchema", "observedSchema", "recordedAt"]) ||
+        value.kind !== "pre-contract-intermediate-checkpoint" || !isSource(value.originalSourceSchema) ||
         !Number.isSafeInteger(value.observedSchema) || !isDate(value.recordedAt) ||
         !migrationPath(Number(value.originalSourceSchema)).some(entry => entry.toSchema === value.observedSchema)) {
       throw new Error("CoGate source has invalid retained provenance-gap evidence.");
@@ -145,9 +158,9 @@ function inspectReceipts(meta: Map<string, string>): { receiptCount: number; his
   if (last === undefined) {
     // A current fresh source has no synthetic applied receipts. Historical
     // checkpoints must finish in the legacy runtime, not be reclassified here.
-    const originRaw = meta.get("state_schema_origin");
-    const origin = originRaw === undefined ? null : parseRecord(originRaw);
-    if (receipts.size || gap || !origin || origin.kind !== "fresh" || origin.schema !== 21 ||
+    const orphanCompletion = ["state_last_migration_source_schema", "state_last_migration_target_schema",
+      "state_last_migration_completed_at"].some(key => meta.has(key));
+    if (receipts.size || gap || orphanCompletion || !origin || origin.kind !== "fresh" || origin.schema !== 21 ||
         !isText(origin.productVersion) || !isText(origin.buildId) || !isDate(origin.recordedAt)) {
       throw new Error("CoGate source has no authenticated current fresh origin or completed path.");
     }
@@ -175,6 +188,13 @@ function inspectReceipts(meta: Map<string, string>): { receiptCount: number; his
     }
     if (path.at(-1)?.id !== last || !receipts.has(last)) {
       throw new Error("CoGate source last migration does not reach the fixed schema21 checkpoint.");
+    }
+    // A missing pre-contract historical origin remains missing. Never invent a
+    // fresh origin for an upgraded source. When present, a fresh origin cannot
+    // be newer than the source of any authenticated retained generation.
+    if (origin?.kind === "fresh" && [...receipts.values()].some(receipt =>
+      Number(origin.schema) > receipt.originalSourceSchema)) {
+      throw new Error("CoGate source fresh origin conflicts with its retained migration generations.");
     }
   }
   // Older completed generations can have their own original source (for
@@ -222,6 +242,10 @@ function parseRecord(raw: string): Record<string, unknown> {
 }
 function isText(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
 function isDate(value: unknown): boolean { return isText(value) && Number.isFinite(Date.parse(value)); }
+function hasKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every(key => keys.includes(key));
+}
 function digest(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 function count(database: Database.Database, sql: string): number {
   return (database.prepare(sql).get() as { count: number }).count;
