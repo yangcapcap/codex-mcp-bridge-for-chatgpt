@@ -1,3 +1,7 @@
+import { boundedShutdown, combineShutdown, observeShutdown, snapshotShutdownPolicy, shutdownResult,
+  type ShutdownPolicy, type ShutdownResult } from "./shutdown.js";
+import { snapshotWorkerShutdownBinding, snapshotWorkerShutdownSupervisor, workerShutdownResult,
+  type WorkerShutdownBinding, type WorkerShutdownSupervisor } from "./workerShutdownReceipt.js";
 import { validateInitializeResponse } from "./runtimeCompatibility.js";
 import type { ThreadPersistence, ThreadReleaseEvidence, ThreadReleaseOptions, ThreadReleaseResult } from "./threadConnections.js";
 import { elicitationResponse, readElicitationInput } from "./mcpElicitation.js";
@@ -100,9 +104,14 @@ export type CodexAppServerProtocolOptions = {
   onWorkerProcessStarted?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
   /** Resolves after cleanup of the retained owned tree; reserves only this worker until then. */
   onWorkerProcessExited?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
+  /** Synchronous lifetime observation only; must never signal or release a tree. */
+  onWorkerProcessExitObserved?: (identity: JsonRpcProcessIdentity) => void;
+  /** Optional local tree proof; absence cannot grant nonforcing success. */
+  workerShutdownSupervisor?: WorkerShutdownSupervisor;
 };
 
 type ResolvedCodexAppServerProtocolOptions = {
+  shutdownOwnerId?: string;
   environment?: NodeJS.ProcessEnv;
   versionCheckTimeoutMs: number;
   requestTimeoutMs: number;
@@ -111,6 +120,10 @@ type ResolvedCodexAppServerProtocolOptions = {
   onLateResponse?: (response: CodexAppServerLateResponse) => void;
   onWorkerProcessStarted?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
   onWorkerProcessExited?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
+  /** Synchronous lifetime observation only; must never signal or release a tree. */
+  onWorkerProcessExitObserved?: (identity: JsonRpcProcessIdentity) => void;
+  /** Optional local tree proof; absence cannot grant nonforcing success. */
+  workerShutdownSupervisor?: WorkerShutdownSupervisor;
 };
 
 export type CodexAppServerDependencies = {
@@ -214,6 +227,11 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
   };
   private accountRateLimitsRequest?: Promise<CodexWeeklyUsage | null>;
   private closing = false;
+  private readonly shutdownOwnerId = randomUUID();
+  private nonforcingClose?: Promise<ShutdownResult>;
+  private nonforcingSettled = false;
+  private nonforcingHistoryUncertain = false;
+  private readonly nonforcingConnections = new Set<AppServerConnection>();
 
   constructor(
     private readonly codexCommand: string,
@@ -242,6 +260,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
   }
 
   async listTools(): Promise<unknown> {
+    if (this.closing) throw new Error("Codex App Server upstream is closed.");
     const resumableEvidence = [...this.threadResumeEvidence.values()];
     const liveWorkers = this.workers.filter(
       (worker): worker is AppWorker & { connection: AppServerConnection } =>
@@ -704,13 +723,14 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
     graceMs?: number,
     options?: { interruptOnly: true }
   ): Promise<JsonRpcTerminationResult> {
+    if (this.closing) throw new Error("Codex App Server upstream is closed.");
     assertWorkerTerminationCorrelation(correlation);
     const worker = this.workers.find((candidate) => `app-${candidate.index}` === assignment.workerId);
     if (!worker || !worker.connection || worker.generation !== assignment.workerGeneration) {
       throw new Error("The selected App Server worker generation is no longer active.");
     }
     const result = await worker.connection.interruptOrTerminate(assignment, correlation, graceMs, options);
-    if (result.workerExited) {
+    if (result.workerExited && !this.nonforcingClose) {
       worker.connection = undefined;
       this.forgetWorkerThreads(worker.index);
     }
@@ -734,6 +754,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
     interactionId: string,
     response: CodexInteractionResponse
   ): Promise<void> {
+    if (this.closing) throw new Error("Codex App Server upstream is closed.");
     for (const worker of this.workers) {
       if (worker.connection?.respondToInteraction(interactionId, response)) return;
     }
@@ -754,7 +775,50 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
     return this.capabilities().supportsSteering === true && Boolean(worker?.connection?.hasActiveTurn(threadId));
   }
 
+  closeNonforcing(policy: ShutdownPolicy & {allowSigkillEscalation:false}): Promise<ShutdownResult> {
+    const pinned=snapshotShutdownPolicy(policy);
+    if (pinned.allowSigkillEscalation!==false) throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
+    if (this.nonforcingClose) return this.nonforcingClose;
+    this.nonforcingHistoryUncertain=this.closing;
+    this.closing=true;
+    let resolve!: (result:ShutdownResult)=>void;
+    this.nonforcingClose=new Promise(done=>{resolve=done;});
+    this.accountRateLimitsCache=undefined;
+    this.accountRateLimitsRequest=undefined;
+    const compatibility=this.compatibilityCheck;
+    this.compatibilityAbort?.abort();
+    const receipts:Promise<ShutdownResult>[]=[];
+    for (const worker of this.workers) {
+      for (const connection of [worker.connection,worker.startingConnection]) {
+        if (!connection || this.nonforcingConnections.has(connection)) continue;
+        this.nonforcingConnections.add(connection);
+        // Each connection pins transport and tree synchronously before the first await.
+        receipts.push(connection.closeNonforcing({...pinned,allowSigkillEscalation:false}));
+      }
+    }
+    const deadline=pinned.graceMs*2+6000;
+    const compatibilityReceipt=compatibility ? boundedShutdown(async()=> {
+      try { await compatibility; } catch { /* cancelled admission */ }
+      return shutdownResult("exited");
+    },deadline) : Promise.resolve(shutdownResult("exited"));
+    void Promise.all([...receipts,compatibilityReceipt]).then(results=> {
+      this.nonforcingSettled=true;
+      resolve(combineShutdown([...results,...(this.nonforcingHistoryUncertain ? [shutdownResult("uncertain")] : [])]));
+    },()=>{this.nonforcingSettled=true;resolve(shutdownResult("uncertain"));});
+    return this.nonforcingClose;
+  }
+
+  async observeNonforcingExit(): Promise<ShutdownResult> {
+    if (!this.nonforcingClose || !this.nonforcingSettled || this.nonforcingHistoryUncertain || this.compatibilityCheck) return shutdownResult("uncertain");
+    const results=await Promise.all([...this.nonforcingConnections].map(connection=>observeShutdown(connection)));
+    return combineShutdown(results.length ? results : [shutdownResult("exited")]);
+  }
+
   async close(): Promise<void> {
+    if (this.nonforcingClose) {
+      if (!(await this.nonforcingClose).exited) throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+      return;
+    }
     this.closing = true;
     this.accountRateLimitsCache = undefined;
     this.accountRateLimitsRequest = undefined;
@@ -788,6 +852,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
   }
 
   private leastBusyWorker(): AppWorker {
+    if (this.closing) throw new Error("Codex App Server upstream is closed.");
     const available = this.workers.filter(worker => !worker.maintenance);
     if (!available.length) throw new Error("CODEX_WORKER_CAPACITY: All worker slots are reserved for unconfirmed cleanup.");
     return available.reduce((selected, candidate) =>
@@ -851,6 +916,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
           generation,
           {
             ...this.protocolOptions,
+            shutdownOwnerId: this.shutdownOwnerId,
             onLateResponse: (response) => this.onWorkerLateResponse(worker, response)
           },
           (observation) => this.onWorkerExit(worker, connection, observation),
@@ -941,6 +1007,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
     const cleanup = Promise.resolve(previousMaintenance)
       .then(() => connection.waitForSupervisionRelease())
       .then(() => {
+        if (this.nonforcingClose) return;
         if (worker.connection === connection) worker.connection = undefined;
         if (worker.startingConnection === connection) worker.startingConnection = undefined;
         if (worker.maintenance === cleanup) worker.maintenance = undefined;
@@ -949,7 +1016,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
     // A failed cleanup reserves this worker slot. Other workers remain usable;
     // only verified cleanup may release capacity for a replacement generation.
     void cleanup.catch(() => undefined);
-    this.forgetWorkerThreads(worker.index);
+    if (!this.nonforcingClose) this.forgetWorkerThreads(worker.index);
   }
 
   private forgetWorkerThreads(workerIndex: number): void {
@@ -963,6 +1030,7 @@ export class CodexAppServerUpstreamPool implements CodexUpstream {
   }
 
   private onThreadClosed(worker: AppWorker, connection: AppServerConnection, threadId: string): void {
+    if (this.nonforcingClose) return;
     if (worker.connection !== connection && worker.startingConnection !== connection) return;
     if (this.threadWorkers.get(threadId) === worker.index) this.threadWorkers.delete(threadId);
     this.threadResumeEvidence.delete(threadId);
@@ -990,6 +1058,12 @@ class AppServerConnection {
   private terminationRequested = false;
   private registeredWorkerIdentity?: JsonRpcProcessIdentity;
   private supervisionRelease: Promise<void> = Promise.resolve();
+  private nonforcingClose?: Promise<ShutdownResult>;
+  private nonforcingSettled=false;
+  private nonforcingBinding?: WorkerShutdownBinding;
+  private nonforcingTreePinned=false;
+  private ordinaryCleanupStarted=false;
+  private nonforcingHistoryUncertain=false;
 
   private constructor(
     command: string,
@@ -1571,6 +1645,7 @@ class AppServerConnection {
     graceMs = 1_500,
     options?: { interruptOnly: true }
   ): Promise<JsonRpcTerminationResult> {
+    if (this.nonforcingClose) throw new Error("Codex App Server upstream is closed.");
     assertWorkerTerminationCorrelation(correlation);
     const identity = this.rpc.identity;
     if (!identity) throw new Error("App Server worker process identity is unavailable.");
@@ -1645,19 +1720,67 @@ class AppServerConnection {
     if (options?.interruptOnly) {
       throw new Error("PRECISE_INTERRUPTION_UNCONFIRMED: The original turn could not be confirmed stopped; shared worker termination was not authorized.");
     }
+    if (this.nonforcingClose) throw new Error("Codex App Server upstream is closed.");
     this.terminationRequested = true;
     const result = await this.rpc.forceTerminate(graceMs);
     if (result.workerExited) await this.waitForSupervisionRelease();
     return result;
   }
 
-  async close(): Promise<void> {
-    this.closeRequested = true;
+  closeNonforcing(policy: ShutdownPolicy & {allowSigkillEscalation:false}): Promise<ShutdownResult> {
+    const pinned=snapshotShutdownPolicy(policy);
+    if (pinned.allowSigkillEscalation!==false) throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
+    if (this.nonforcingClose) return this.nonforcingClose;
+    this.nonforcingHistoryUncertain=this.nonforcingHistoryUncertain || this.closeRequested || this.terminationRequested || this.ordinaryCleanupStarted;
+    this.closeRequested=true;
+    let resolve!: (result:ShutdownResult)=>void;
+    this.nonforcingClose=new Promise(done=>{resolve=done;});
+    const identity=this.rpc.identity;
+    this.nonforcingBinding=snapshotWorkerShutdownBinding({ownerId:this.protocolOptions.shutdownOwnerId,
+      workerId:this.workerId,workerGeneration:this.generation,pid:identity?.pid,processGroupId:identity?.processGroupId});
+    const binding=this.nonforcingBinding, supervisor=this.protocolOptions.workerShutdownSupervisor;
+    if (binding && supervisor) {
+      try { this.nonforcingTreePinned=supervisor.pinNonforcingShutdown(binding)===true; } catch { /* no fence evidence */ }
+    }
+    const deadline=pinned.graceMs*2+6000;
+    const transport=this.rpc.close({...pinned,allowSigkillEscalation:false});
+    this.rejectClosingInteractions();
+    const tree=boundedShutdown(async()=> {
+      if (!binding || !supervisor || !this.nonforcingTreePinned) return shutdownResult("uncertain");
+      return workerShutdownResult(await supervisor.closeNonforcing(binding),binding);
+    },deadline);
+    void Promise.all([boundedShutdown(()=>transport,deadline),tree]).then(results=> {
+      this.nonforcingSettled=true;
+      resolve(combineShutdown([...results,...(this.nonforcingHistoryUncertain ? [shutdownResult("uncertain")] : [])]));
+    },()=>{this.nonforcingSettled=true;resolve(shutdownResult("uncertain"));});
+    return this.nonforcingClose;
+  }
+
+  async observeNonforcingExit(): Promise<ShutdownResult> {
+    if (!this.nonforcingSettled || !this.nonforcingTreePinned || this.nonforcingHistoryUncertain) return shutdownResult("uncertain");
+    const binding=this.nonforcingBinding,supervisor=this.protocolOptions.workerShutdownSupervisor;
+    const results=await Promise.all([observeShutdown(this.rpc), boundedShutdown(async()=> {
+      if (!binding || !supervisor) return shutdownResult("uncertain");
+      return workerShutdownResult(await supervisor.observeNonforcingExit(binding),binding);
+    })]);
+    return combineShutdown([...results,...(this.nonforcingHistoryUncertain ? [shutdownResult("uncertain")] : [])]);
+  }
+
+  private rejectClosingInteractions(): void {
     for (const pending of this.pendingInteractions.values()) {
       if (pending.autoResolutionTimer) clearTimeout(pending.autoResolutionTimer);
       pending.reject(new Error("Codex App Server closed before the interaction was answered."));
     }
     this.pendingInteractions.clear();
+  }
+
+  async close(): Promise<void> {
+    if (this.nonforcingClose) {
+      if (!(await this.nonforcingClose).exited) throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+      return;
+    }
+    this.closeRequested = true;
+    this.rejectClosingInteractions();
     await this.rpc.close();
     await this.waitForSupervisionRelease();
   }
@@ -2155,11 +2278,20 @@ class AppServerConnection {
 
   private onProcessExit(error: Error): void {
     const registeredIdentity = this.registeredWorkerIdentity;
-    if (registeredIdentity) {
+    const ownedIdentity=registeredIdentity ?? this.rpc.identity;
+    if (ownedIdentity) {
+      try { this.protocolOptions.onWorkerProcessExitObserved?.(ownedIdentity); }
+      catch { this.nonforcingHistoryUncertain=true; }
+    }
+    if (registeredIdentity && !this.nonforcingClose) {
       const release = Promise.resolve()
-        .then(() => this.protocolOptions.onWorkerProcessExited?.(registeredIdentity))
         .then(() => {
-          if (this.registeredWorkerIdentity === registeredIdentity) {
+          if (this.nonforcingClose) return;
+          this.ordinaryCleanupStarted=true;
+          return this.protocolOptions.onWorkerProcessExited?.(registeredIdentity);
+        })
+        .then(() => {
+          if (!this.nonforcingClose && this.registeredWorkerIdentity === registeredIdentity) {
             this.registeredWorkerIdentity = undefined;
           }
         });
@@ -2336,7 +2468,9 @@ function resolveProtocolOptions(
       : {}),
     ...(options.onWorkerProcessExited
       ? { onWorkerProcessExited: options.onWorkerProcessExited }
-      : {})
+      : {}),
+    ...(options.onWorkerProcessExitObserved ? {onWorkerProcessExitObserved:options.onWorkerProcessExitObserved} : {}),
+    workerShutdownSupervisor: snapshotWorkerShutdownSupervisor(options.workerShutdownSupervisor)
   };
 }
 

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "minor",
+  "summary": "Adapt App Server pool shutdown to sticky nonforcing policy and bounded local owner/generation-bound tree receipts while preserving ordinary recovery.",
+  "breaking": false,
+  "migration": null
+}
