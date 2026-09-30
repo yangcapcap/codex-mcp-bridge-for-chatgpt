@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Keep nonforcing App Server close and fresh observation uncertain when owned-tree registration had not completed at the synchronous shutdown fence.",
+  "breaking": false,
+  "migration": null
+}

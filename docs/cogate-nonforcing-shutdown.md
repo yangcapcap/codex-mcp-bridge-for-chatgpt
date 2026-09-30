@@ -95,11 +95,12 @@ fallback. Ordinary close after pinning cannot independently force recovery.
 Fresh observation requires a separately supplied observation capability and
 does not rewrite the old receipt. Prior ordinary shutdown history stays unknown.
 
-This router boundary does not implement App Server or execution-service
-nonforcing shutdown. Those backends currently lack the explicit capability, so
-the router returns uncertain for them. No operator or runtime option invokes
-this path. Its receipts are transport aggregation, not external authority or
-generation/owner-bound worker proof.
+The router aggregates backend evidence and does not itself implement worker or
+execution-service shutdown. The local App Server pool capability below requires
+its own tree supervisor; the actual execution-service backend still lacks the
+complete path. No operator or runtime option invokes this path. Router receipts
+are transport aggregation, not external authority or generation/owner-bound
+worker proof.
 
 Execution shutdown frames have a separate strict local correlation parser. A
 close frame binds the current executor generation/PID, authenticated controller
@@ -108,3 +109,36 @@ the original close ID. Receipts match every field and the operation, reject
 accessor/inherited/missing/extra fields and inconsistent results, and copy an
 immutable result. Parsing alone performs no action or source authentication;
 the owner/controller IPC and real lifetime proof are still to be wired.
+
+The App Server pool now supplies the optional router capability. It closes new
+worker admission and synchronously pins every retained/starting connection before
+yielding. Each connection pins its owned JSON-RPC transport and an optional local
+tree supervisor, suppresses new ordinary exit-cleanup callbacks, retains worker
+and thread bindings, and bounds tree receipts. Already-running ordinary cleanup
+keeps history uncertain. A separate signal-free lifetime callback can mark the
+owned root exited without releasing its tree. Default shutdown stays unchanged.
+
+A local tree receipt must match a fresh pool UUID, worker ID, generation, PID and
+original group, using exact data-only fields and a valid immutable result. A
+missing supervisor, failed synchronous fence, void result, other generation,
+malformed envelope or late/rejected response cannot approve exit. Transport exit
+and matching tree absence are both required. Fresh observation does not rewrite
+a retained timeout. These local bindings are correlation evidence, not external
+approval, authenticated IPC, or a replacement for the tree's birth observations.
+
+The actual execution service does not yet provide this local supervisor or
+propagate the policy across its controller/owner IPC. Its prior callbacks and
+recovery timers still require adaptation; the unsupported path returns uncertain.
+No operator/runtime option enables nonforcing shutdown through the full system.
+A caller-supplied supervisor is trusted local code and must pin every associated
+cleanup continuation; an acknowledgement alone is not an independently measured
+process-tree proof. The isolated actual test wires the reviewed registry and
+measures an escaped child remaining alive after its parent exits.
+
+If shutdown pins a connection before its owned-worker registration callback has
+completed, that connection retains sticky uncertainty in both close and later
+observations. An empty supervisor ledger cannot certify the absence of a worker
+whose registration is pending. Completing registration after parent exit cannot
+reconstruct an escaped descendant that was never captured, so it does not clear
+this UNKNOWN. Transport prohibition still pins immediately; no wait for the
+registration callback can defer or reopen ordinary force recovery.
