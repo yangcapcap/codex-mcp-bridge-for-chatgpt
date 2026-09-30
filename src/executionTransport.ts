@@ -1,3 +1,5 @@
+import { snapshotExecutionShutdownRequest, type ExecutionShutdownRequest } from "./executionShutdownProtocol.js";
+import { shutdownResult, type ShutdownResult } from "./shutdown.js";
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -10,6 +12,7 @@ export const EXECUTION_FRAME_BYTES = 9 * 1024 * 1024;
 const SOCKET_BUFFER_BYTES = 16 * 1024 * 1024;
 export type ExecutionEndpoint = { directory: string; token: string };
 type Owner = { pid: number; generation: string };
+export type ExecutionOwnerShutdownBinding = Readonly<{generation:string;ownerPid:number;controllerId:string}>;
 
 export function executionEndpoint(stateIdentity: string = randomUUID()): ExecutionEndpoint {
   const digest = createHash("sha256").update(stateIdentity).digest("hex").slice(0, 24);
@@ -108,6 +111,13 @@ export class ExecutionPeer extends EventEmitter {
   private launched = false;
   private owner?: Owner;
   private readonly controllerId = randomUUID();
+  private nonforcingPinned=false;
+  private nonforcingOwner?: Readonly<Owner>;
+  private nonforcingProcess?: ChildProcess;
+  private nonforcingOwnerChanged=false;
+  private ordinaryShutdownSent=false;
+  private nonforcingHistoryUncertain=false;
+  private nonforcingCloseRequest?: Extract<ExecutionShutdownRequest,{type:"close-nonforcing"}>;
   private readonly outbound: Array<{ message: unknown; bytes: number; callback(error?: Error | null): void }> = [];
   private outboundBytes = 0;
   private sending = false;
@@ -115,8 +125,56 @@ export class ExecutionPeer extends EventEmitter {
   constructor(readonly endpoint: ExecutionEndpoint,
     private readonly launch: { args: string[]; env: NodeJS.ProcessEnv; onStderr(text: string): void }) { super(); }
 
+  /** Freeze the owner correlation and prohibit future launch/signal continuations. */
+  pinNonforcingShutdown(): ExecutionOwnerShutdownBinding | undefined {
+    if (!this.nonforcingPinned) {
+      this.nonforcingPinned=true;
+      this.nonforcingHistoryUncertain=this.ordinaryShutdownSent;
+      if (this.owner && this.pid===this.owner.pid &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(this.owner.generation)) {
+        this.nonforcingOwner=Object.freeze({...this.owner});
+      }
+      this.nonforcingProcess=this.process;
+      const unsent=this.outbound.splice(0);this.outboundBytes=0;
+      for (const pending of unsent) {
+        try {pending.callback(new Error("NONFORCING_EXECUTION_CLOSED"));} catch { /* no process authority */ }
+      }
+    }
+    return this.nonforcingBinding;
+  }
+  get nonforcingBinding(): ExecutionOwnerShutdownBinding | undefined {
+    const owner=this.nonforcingOwner;
+    if (!this.nonforcingPinned || !owner || this.nonforcingOwnerChanged) return;
+    return Object.freeze({generation:owner.generation,ownerPid:owner.pid,controllerId:this.controllerId});
+  }
+  /** Only an actual retained owned child exit is proof here; a reattached lease is not. */
+  observeNonforcingExit(): ShutdownResult {
+    const binding=this.nonforcingBinding, child=this.nonforcingProcess;
+    if (this.nonforcingHistoryUncertain || !binding || !child || child!==this.process || child.pid!==binding.ownerPid) return shutdownResult("uncertain");
+    if (child.exitCode!==null || child.signalCode!==null) return shutdownResult("exited");
+    return shutdownResult("timeout",1);
+  }
+
   start(): void { this.connect(); }
   send(message: unknown, callback: (error?: Error | null) => void = () => {}): boolean {
+    let closeRequest:Extract<ExecutionShutdownRequest,{type:"close-nonforcing"}>|undefined;
+    if (this.nonforcingPinned) {
+      const request=snapshotExecutionShutdownRequest(message),binding=this.nonforcingBinding;
+      const previous=this.nonforcingCloseRequest;
+      if (!request || !binding || request.generation!==binding.generation || request.ownerPid!==binding.ownerPid ||
+          request.controllerId!==binding.controllerId || request.type==="observe-nonforcing" &&
+          (!previous || request.closeRequestId!==previous.requestId) || request.type==="close-nonforcing" &&
+          previous && (request.requestId!==previous.requestId || request.policy.graceMs!==previous.policy.graceMs)) {
+        callback(new Error("NONFORCING_EXECUTION_MESSAGE_REJECTED"));return false;
+      }
+      message=request;
+      if (request.type==="close-nonforcing") closeRequest=request;
+    } else {
+      try {
+        const type=message && typeof message==="object" ? Object.getOwnPropertyDescriptor(message,"type") : undefined;
+        if (type && Object.hasOwn(type,"value") && ["close","terminate-owner"].includes(type.value)) this.ordinaryShutdownSent=true;
+      } catch { /* Existing serialization below remains the ordinary boundary. */ }
+    }
     if (!this.connected || !this.socket) { callback(new Error("EXECUTION_DISCONNECTED")); return false; }
     const bytes = Buffer.byteLength(JSON.stringify(message));
     if (this.outbound.length >= 256 || this.outboundBytes + bytes > 40 * 1024 * 1024) {
@@ -126,6 +184,7 @@ export class ExecutionPeer extends EventEmitter {
       this.socket.socket.destroy();
       return false;
     }
+    if (closeRequest && !this.nonforcingCloseRequest) this.nonforcingCloseRequest=closeRequest;
     this.outbound.push({ message, bytes, callback });
     this.outboundBytes += bytes;
     this.pump();
@@ -155,19 +214,25 @@ export class ExecutionPeer extends EventEmitter {
     this.process?.unref();
   }
   kill(signal: NodeJS.Signals): boolean {
+    if (this.nonforcingPinned) return false;
+    this.ordinaryShutdownSent=true;
     if (this.process && this.process.exitCode === null && this.process.signalCode === null) return this.process.kill(signal);
     // A PID read from an old lease is not authority to signal a reused PID.
     // Reattached owners accept explicit termination on the authenticated link.
     return this.send({ type: "terminate-owner", signal });
   }
   private connect(): void {
-    if (this.stopped) return;
+    if (this.stopped || this.nonforcingPinned && (!this.nonforcingOwner || this.nonforcingOwnerChanged)) return;
     let authenticated = false;
     const socket = createConnection(executionSocketPath(this.endpoint));
     const framed = new ExecutionSocket(socket, value => {
       if (!authenticated) {
         if (value?.type !== "owner" || !Number.isSafeInteger(value.pid) || typeof value.generation !== "string") {
           socket.destroy(); return;
+        }
+        if (this.nonforcingPinned && (!this.nonforcingOwner || value.pid!==this.nonforcingOwner.pid ||
+            value.generation!==this.nonforcingOwner.generation)) {
+          this.nonforcingOwnerChanged=true;socket.destroy();return;
         }
         authenticated = true;
         this.owner = { pid: value.pid, generation: value.generation };
@@ -187,6 +252,14 @@ export class ExecutionPeer extends EventEmitter {
         this.emit("disconnect");
       }
       if (this.stopped) return;
+      if (this.nonforcingPinned) {
+        // Reconnect only to the already captured owner. Never launch a replacement
+        // or infer owned-child exit from a PID in an old lease.
+        if (this.nonforcingOwner && !this.nonforcingOwnerChanged) {
+          this.timer=setTimeout(()=>this.connect(),250);this.timer.unref();
+        }
+        return;
+      }
       let owner: Owner | undefined;
       try { owner = readExecutionRecord<Owner>(this.endpoint, "owner.json") || this.owner; }
       catch {
@@ -205,6 +278,7 @@ export class ExecutionPeer extends EventEmitter {
     });
   }
   private spawn(): void {
+    if (this.nonforcingPinned) return;
     this.launched = true;
     const child = this.process = spawn(process.execPath, this.launch.args, {
       cwd: process.cwd(), env: this.launch.env, detached: true,

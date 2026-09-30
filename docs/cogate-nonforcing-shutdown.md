@@ -108,3 +108,19 @@ the original close ID. Receipts match every field and the operation, reject
 accessor/inherited/missing/extra fields and inconsistent results, and copy an
 immutable result. Parsing alone performs no action or source authentication;
 the owner/controller IPC and real lifetime proof are still to be wired.
+
+The retained execution peer has a synchronous local nonforcing fence. It freezes
+an already authenticated owner generation/PID and controller ID, drops unsent
+ordinary requests with explicit delivery errors, prevents new owner launches and
+all signal controls, and refuses ordinary close/termination or execution frames
+on the pinned link. Only strict matching close/observation frames may cross it;
+the original close request and normalized grace remain sealed. Reconnect is
+restricted to the captured owner; another generation/PID keeps uncertainty.
+
+Peer observation proves only an actual exit of its exact retained owned child
+handle. A reattached lease, unknown owner, changed handle/PID or prior ordinary
+close/signal history cannot approve that proof. It does not certify descendants,
+whole execution-service shutdown, authenticated receipt provenance or operator
+activation. Owner-side IPC and controller close still need policy propagation,
+real supervised-tree receipts and retention. This fence is not invoked by the
+current runtime until that complete integration is implemented and reviewed.

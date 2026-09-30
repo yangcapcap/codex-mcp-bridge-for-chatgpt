@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Fence retained execution peer signals, owner replacement and outbound controls after explicit nonforcing shutdown while retaining exact owner correlation and unknown history.",
+  "breaking": false,
+  "migration": null
+}
