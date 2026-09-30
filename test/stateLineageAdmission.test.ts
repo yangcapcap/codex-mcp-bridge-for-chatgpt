@@ -48,6 +48,69 @@ function unchangedRejectedFixture(
 }
 
 describe("state lineage admission before writes", () => {
+  it("preserves status when a receipt conflict arrives between the initial and locked probes", () => {
+    const file = fixture();
+    upstream21(file);
+    const database = new Database(file);
+    const entries = readdirSync(path.dirname(file)).sort();
+    const statusBefore = readFileSync(`${file}.migration-status.json`);
+    let dbAfterEdit: Buffer | undefined, walAfterEdit: Buffer | undefined;
+    let edited = false;
+    try {
+      expect(() => prepareStateDatabaseOpen(file, { now() {
+        if (!edited) {
+          edited = true;
+          const key = "state_migration:bridge-state-19-to-20";
+          const raw = database.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as { value: string };
+          const record = JSON.parse(raw.value);
+          record.implementationSha256 = "0".repeat(64);
+          database.prepare("UPDATE bridge_meta SET value=? WHERE key=?").run(JSON.stringify(record), key);
+          dbAfterEdit = readFileSync(file);
+          walAfterEdit = readFileSync(`${file}-wal`);
+        }
+        return new Date();
+      } })).toThrow(/provenance conflicts with bridge-state-19-to-20/);
+      expect(edited).toBe(true);
+      expect(readFileSync(file)).toEqual(dbAfterEdit);
+      expect(readFileSync(`${file}-wal`)).toEqual(walAfterEdit);
+      expect(readFileSync(`${file}.migration-status.json`)).toEqual(statusBefore);
+      expect(readdirSync(path.dirname(file)).sort()).toEqual(entries);
+    } finally { database.close(); }
+  });
+
+  it.each(["completed-old-path", "unfinished-same-path"])("authenticates retained gap for %s", phase => {
+    const file = fixture();
+    upstream21(file);
+    const database = new Database(file);
+    const gap = JSON.stringify({ kind: "pre-contract-intermediate-checkpoint",
+      originalSourceSchema: 18, observedSchema: 20, recordedAt: new Date().toISOString() });
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES ('state_migration_provenance_gap',?)").run(gap);
+    database.prepare("DELETE FROM bridge_meta WHERE key IN (?,?)").run(
+      "state_migration:bridge-state-18-to-19", "state_migration:bridge-state-19-to-20");
+    if (phase === "unfinished-same-path") {
+      database.close();
+      const store = new BridgeStateStore({ file });
+      try {
+        expect(store.schemaVersion).toBe(30);
+        expect(store.getMeta("state_migration_provenance_gap")).toBe(gap);
+        expect(store.getMeta("state_last_migration_source_schema")).toBe("18");
+      } finally { store.close(); }
+      return;
+    }
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_source_schema", "18");
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_target_schema", "21");
+    database.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
+    const before = readFileSync(file), walBefore = readFileSync(`${file}-wal`);
+    const statusBefore = readFileSync(`${file}.migration-status.json`);
+    const entries = readdirSync(path.dirname(file)).sort();
+    try {
+      expect(() => new BridgeStateStore({ file })).toThrow(/Prospective state migration conflicts with the retained provenance gap/);
+      expect(readFileSync(file)).toEqual(before);
+      expect(readFileSync(`${file}-wal`)).toEqual(walBefore);
+      expect(readFileSync(`${file}.migration-status.json`)).toEqual(statusBefore);
+      expect(readdirSync(path.dirname(file)).sort()).toEqual(entries);
+    } finally { database.close(); }
+  });
   it.each(["startedAt", "productVersion", "buildId", "originalSourceSchema"])(
     "rejects a malformed pending %s before startup writes", field => {
       unchangedRejectedFixture(database => {

@@ -374,7 +374,9 @@ function assertStateLineageAdmission(
     throw new Error("Pending state migration has no complete preceding provenance path.");
   }
   const durableSourceRaw = getMeta("schema_v19_upgrade_source");
-  const prospectiveSource = pendingOriginalSource ?? (durableSourceRaw === undefined ? null : Number(durableSourceRaw));
+  const prospectiveSource = pendingOriginalSource ?? (durableSourceRaw === undefined
+    ? schemaVersion < CURRENT_STATE_DATABASE_SCHEMA ? schemaVersion : null
+    : Number(durableSourceRaw));
   const prospectiveCheckpoint = pending?.fromSchema ?? schemaVersion;
   if (prospectiveSource !== null && prospectiveSource > prospectiveCheckpoint) {
     throw new Error("State migration original source is ahead of its observed checkpoint.");
@@ -512,8 +514,8 @@ function acquireStateDatabaseOpenLease(
     writePrivateJson(statusFile, status);
   };
 
+  let admissionVerified = false;
   try {
-    if (requiresMigration) writeStatus({ phase: "preflight" });
     const lockedInspection = inspectStateDatabase(databaseFile, {
       verifyIntegrity: requiresMigration
     });
@@ -528,6 +530,8 @@ function acquireStateDatabaseOpenLease(
         `${String(lockedInspection.schemaVersion)} while acquiring migration ownership.`
       );
     }
+    admissionVerified = true;
+    if (requiresMigration) writeStatus({ phase: "preflight" });
     const live = lockedInspection.activeProcessIds.filter(isProcessAlive);
     if (live.length > 0) {
       throw new Error(
@@ -539,7 +543,7 @@ function acquireStateDatabaseOpenLease(
       assertUpgradeCapacity(databaseFile, options.availableBytes);
     }
   } catch (error) {
-    if (requiresMigration) writeStatus({ phase: "failed", error: errorMessage(error) });
+    if (requiresMigration && admissionVerified) writeStatus({ phase: "failed", error: errorMessage(error) });
     release();
     throw error;
   }
