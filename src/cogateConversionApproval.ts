@@ -1,4 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { decodeUtf8Strict, parseJsonUtf8Strict } from "./textIntegrity.js";
 
 const SOURCE_PROFILE = "cogate-v2-workspace-hmac/schema21/v1";
@@ -95,6 +96,17 @@ export function inspectCoGateConversionApproval(
   const key = createPublicKey({ key: keyBytes, format: "der", type: "spki" });
   if (key.asymmetricKeyType !== "ed25519" ||
       !keyBytes.equals(key.export({ format: "der", type: "spki" }))) fail("key type or encoding");
+  // DER validates the wrapper, not the Ed25519 point. Reject identity, torsion,
+  // mixed-order and noncanonical points before delegating signature verification
+  // to OpenSSL. Point validation only handles public input; no private scalar.
+  const rawPublicKey = keyBytes.subarray(12);
+  let point: ReturnType<typeof ed25519.Point.fromBytes>;
+  try { point = ed25519.Point.fromBytes(rawPublicKey, false); }
+  catch { fail("public key point encoding"); }
+  if (!Buffer.from(point.toBytes()).equals(rawPublicKey) ||
+      point.equals(ed25519.Point.ZERO) || point.isSmallOrder() || !point.isTorsionFree()) {
+    fail("public key point order");
+  }
   const keySha256 = digest(keyBytes);
   if (keySha256 !== suppliedAuthority.sha256 || body.reviewer.keyId !== keySha256) fail("key identity");
   if (!verify(null, coGateConversionApprovalSigningMessage(body as CoGateConversionApprovalBody), key, signature)) fail("signature mismatch");

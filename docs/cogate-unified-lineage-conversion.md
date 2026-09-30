@@ -127,6 +127,12 @@ conversion/database/profile/schema, candidate, preservation, projection-plan,
 implementation, backup, workflow, control, rollback and maintenance-owner digests.
 Each digest must match the supplied expected binding. Approval lifetime is at most
 24 hours; future reviews, expired approvals and noncanonical timestamps fail closed.
+Canonical SPKI does not prove a secure Ed25519 point. The supplied raw public key
+must also decode under strict RFC8032 point rules, round-trip canonically, be
+nonidentity, have no small-order component and belong to the prime-order subgroup.
+These checks use pinned `@noble/curves` 2.3.0 before platform signature verification;
+the inspected coordinates are public and no private scalar is processed. A weak
+identity authority is rejected even if the platform accepts its fixed signature.
 Its canonical envelope hash is a content binding, not a claim of receipt-file
 identity. The module has no file, database, process or operator action.
 
@@ -138,6 +144,10 @@ operator must read its independently pinned authority from authenticated private
 ceremony evidence and supply freshly measured bindings; these trust-source and
 live preflight checks remain unimplemented. The comparison alone must never enable
 conversion, promotion, maintenance, shutdown or target startup.
+
+Point decoding follows [RFC8032 section 5.1.3](https://www.rfc-editor.org/rfc/rfc8032.html#section-5.1.3).
+The explicit prime-subgroup and identity policy is stricter than a DER type check;
+see the library's [point API](https://github.com/paulmillr/noble-curves/tree/2.3.0#internals).
 
 Conversion is an explicit operator action, outside automatic startup. Before any
 apply, authenticate the sealed candidate, signed external approval, fixed source

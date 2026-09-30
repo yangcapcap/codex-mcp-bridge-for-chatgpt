@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject weak, mixed-order and noncanonical Ed25519 authority points before conversion signature comparison.",
+  "breaking": false,
+  "migration": null
+}

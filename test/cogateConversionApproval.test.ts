@@ -1,4 +1,5 @@
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, test } from "vitest";
 import { coGateConversionApprovalSigningMessage, inspectCoGateConversionApproval,
   type CoGateConversionApprovalBindings, type CoGateConversionApprovalBody } from "../src/cogateConversionApproval.js";
@@ -110,5 +111,40 @@ describe("conversion signature comparison without external-origin or apply autho
       Object.fromEntries(Object.entries(value).reverse().map(([key,item])=>[key,reverse(item)])):value;
     const bytes=Buffer.from(JSON.stringify(reverse(f.envelope),null,2));
     expect(inspectCoGateConversionApproval(bytes,f.authority,f.bindings,NOW)).toEqual(first);
+  });
+
+  test.each(["zero-point","identity-point"])("rejects a weak %s before platform signature verification",kind=>{
+    const f=fixture(),raw=Buffer.alloc(32); if(kind==="identity-point") raw[0]=1;
+    const der=Buffer.concat([Buffer.from("302a300506032b6570032100","hex"),raw]);
+    const signature=Buffer.alloc(64); signature[0]=1;
+    f.body.reviewer.keyId=digest(der); f.envelope.signature.value=signature.toString("base64");
+    const key=createPublicKey({key:der,format:"der",type:"spki"});
+    // Identity reproduces unconditional platform acceptance. The zero point
+    // has order four and platform acceptance depends on the message hash.
+    if(kind==="identity-point") expect(verify(null,coGateConversionApprovalSigningMessage(f.body),key,signature)).toBe(true);
+    expect(()=>inspectCoGateConversionApproval(f.bytes(),{publicKeySpkiDer:der,sha256:digest(der)},f.bindings,NOW))
+      .toThrow(/public key point order/);
+  });
+
+  test.each(["order-two","order-four-negative","mixed-order","noncanonical-y","noncanonical-zero-sign","off-curve"])(
+    "rejects an invalid authority point: %s",kind=>{
+      const f=fixture(); let raw:Buffer;
+      if(kind==="order-two") raw=Buffer.from("ec"+"ff".repeat(30)+"7f","hex");
+      else if(kind==="order-four-negative") { raw=Buffer.alloc(32);raw[31]=0x80; }
+      else if(kind==="mixed-order") raw=Buffer.from(ed25519.Point.BASE.add(ed25519.Point.fromBytes(Buffer.alloc(32),false)).toBytes());
+      else if(kind==="noncanonical-y") raw=Buffer.from("ed"+"ff".repeat(30)+"7f","hex");
+      else if(kind==="noncanonical-zero-sign") { raw=Buffer.alloc(32);raw[0]=1;raw[31]=0x80; }
+      else { raw=Buffer.alloc(32);raw[0]=2; }
+      const der=Buffer.concat([Buffer.from("302a300506032b6570032100","hex"),raw]);
+      f.body.reviewer.keyId=digest(der); f.resign();
+      expect(()=>inspectCoGateConversionApproval(f.bytes(),{publicKeySpkiDer:der,sha256:digest(der)},f.bindings,NOW))
+        .toThrow(/public key point (order|encoding)/);
+    }
+  );
+  test("accepts independently generated ordinary prime-order authority keys",()=>{
+    for(let count=0;count<16;count++) {
+      const f=fixture(); expect(inspectCoGateConversionApproval(f.bytes(),f.authority,f.bindings,NOW)
+        .signatureVerification).toBe("matched-supplied-key");
+    }
   });
 });

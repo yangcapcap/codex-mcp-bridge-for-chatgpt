@@ -115,6 +115,7 @@
   "dependencies": {
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "@noble/curves": "2.3.0",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.13.7",
     "ipaddr.js": "^2.5.0",
