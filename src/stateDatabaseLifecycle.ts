@@ -148,11 +148,11 @@ export function inspectStateDatabase(
     database.pragma("query_only = ON");
     database.exec("BEGIN");
     const hasMeta = database.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bridge_meta'"
+      "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='bridge_meta'"
     ).get();
     if (!hasMeta) {
       const otherTables = Number((database.prepare(
-        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT COUNT(*) AS count FROM main.sqlite_master WHERE type='table' AND substr(name,1,7) != 'sqlite_'"
       ).get() as { count: number }).count);
       if (otherTables > 0) {
         throw new Error("Existing bridge state database has tables but no bridge_meta schema marker.");
@@ -409,7 +409,7 @@ function assertStateLineageAdmission(
     const tables = COGATE_UNIFIED_SCHEMA_TABLES.map(() => "?").join(",");
     // SQLite object names are case-insensitive, and a non-table object can
     // block CREATE before the migration transaction ever reaches its commit.
-    const collision = database.prepare(`SELECT 1 FROM sqlite_master
+    const collision = database.prepare(`SELECT 1 FROM main.sqlite_master
       WHERE name COLLATE NOCASE IN (${names}) OR tbl_name COLLATE NOCASE IN (${tables})
       LIMIT 1`).get(...COGATE_UNIFIED_SCHEMA_OBJECT_NAMES, ...COGATE_UNIFIED_SCHEMA_TABLES);
     if (collision) throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
@@ -433,7 +433,7 @@ function assertStateLineageAdmission(
   if (schemaVersion >= 31) {
     const placeholders = COGATE_UNIFIED_SCHEMA_TABLES.map(() => "?").join(",");
     const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
-      FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+      FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
         AND tbl_name IN (${placeholders}) ORDER BY type,name`).all(...COGATE_UNIFIED_SCHEMA_TABLES);
     if (createHash("sha256").update(JSON.stringify(objects)).digest("hex") !==
         COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256) {
@@ -845,7 +845,7 @@ function assertUpgradeCapacity(file: string, availableBytesOverride?: number): v
 
 function tableExists(database: Database.Database, name: string): boolean {
   return Boolean(database.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?"
+    "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?"
   ).get(name));
 }
 

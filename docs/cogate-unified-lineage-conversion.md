@@ -98,6 +98,15 @@ receipts must remain empty. Extra job/activity rows and orphan archival rows fai
 closed. Writable file handles and existing caller transactions are rejected.
 The inspector returns hashes and counts, never raw cells or secrets.
 
+Source and target inspectors pin schema, rows, metadata, archive and sequence
+lookups to `main`. Legacy HMAC read queries also use that explicit namespace;
+their cryptographic validation and recovery rules remain unchanged. Caller TEMP
+objects are rejected within the snapshot, before authentication or hashing, to
+prevent temporary tables/views from masking retained main data. Internal objects
+are filtered using the literal `sqlite_` prefix: a SQL LIKE wildcard must not hide
+user objects named `sqliteX...`. Schema31 storage preflight applies the same
+literal rule to its protected object set, before any startup write.
+
 This verifier supplies content evidence with `authority: none`. The typed archive
 binding is not authentication of external approval, a maintenance owner, backup,
 candidate or implementation. New target-model state and active upstream provenance

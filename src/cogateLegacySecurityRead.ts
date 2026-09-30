@@ -131,7 +131,7 @@ function loadValidatedSecurityKeyrings(database: Database.Database): SecurityKey
   const result = {} as SecurityKeyringsByPurpose;
   for (const purpose of [SCOPE_HMAC_PURPOSE, EXECUTION_POLICY_HMAC_PURPOSE] as const) {
     const rows = database.prepare(
-      "SELECT * FROM security_hmac_keys WHERE purpose=? ORDER BY generation"
+      "SELECT * FROM main.security_hmac_keys WHERE purpose=? ORDER BY generation"
     ).all(purpose) as KeyRow[];
     if (!rows.length) throw rotationError("SECURITY_KEYRING_MISSING");
     const decoded = rows.map((row) => decodeKeyRow(row, purpose));
@@ -193,11 +193,11 @@ function assertKeyringRotationProvenance(
   rings: SecurityKeyringsByPurpose
 ): void {
   const plans = database.prepare(
-    "SELECT * FROM security_key_rotation_plans ORDER BY created_at,rotation_id"
+    "SELECT * FROM main.security_key_rotation_plans ORDER BY created_at,rotation_id"
   ).all() as RotationPlanRow[];
   const planById = new Map(plans.map((plan) => [plan.rotation_id, plan]));
   const eventRows = database.prepare(`SELECT rotation_id,phase,COUNT(*) AS count
-    FROM security_key_rotation_events
+    FROM main.security_key_rotation_events
     WHERE phase IN ('prepared','applying','applied')
     GROUP BY rotation_id,phase`).all() as Array<{
       rotation_id: string;
@@ -205,7 +205,7 @@ function assertKeyringRotationProvenance(
       count: number;
     }>;
   const lifecycleEvents = database.prepare(`SELECT rotation_id,phase,sequence,created_at
-    FROM security_key_rotation_events
+    FROM main.security_key_rotation_events
     WHERE phase IN ('prepared','applying','applied')
     ORDER BY sequence`).all() as Array<{
       rotation_id: string;
@@ -338,7 +338,7 @@ function assertKeyringRotationProvenance(
   }
   const lookupEvidence = database.prepare(`SELECT key_generation,lookup_scope_id,
       canonical_scope_id,rotation_id,created_at
-    FROM scope_rotation_lookup_evidence
+    FROM main.scope_rotation_lookup_evidence
     ORDER BY key_generation,lookup_scope_id`).all() as Array<{
       key_generation: number;
       lookup_scope_id: string;
@@ -362,7 +362,7 @@ function assertKeyringRotationProvenance(
 
   for (const plan of plans) {
     const evidenceCount = Number((database.prepare(`SELECT COUNT(*) AS count
-      FROM scope_rotation_lookup_evidence
+      FROM main.scope_rotation_lookup_evidence
       WHERE rotation_id=? AND key_generation=?`).get(
         plan.rotation_id,
         plan.source_scope_generation
@@ -376,7 +376,7 @@ function assertKeyringRotationProvenance(
 
   const aliases = database.prepare(`SELECT alias_scope_id,canonical_scope_id,
       key_generation,rotation_id,created_at
-    FROM scope_aliases ORDER BY alias_scope_id`).all() as Array<{
+    FROM main.scope_aliases ORDER BY alias_scope_id`).all() as Array<{
       alias_scope_id: string;
       canonical_scope_id: string;
       key_generation: number;
@@ -397,9 +397,9 @@ function assertKeyringRotationProvenance(
       eventCount(alias.rotation_id, "applied") !== 1 ||
       !key ||
       key.rotationId !== alias.rotation_id ||
-      !database.prepare("SELECT 1 FROM scopes WHERE scope_id=?").get(alias.canonical_scope_id) ||
-      database.prepare("SELECT 1 FROM scopes WHERE scope_id=?").get(alias.alias_scope_id) ||
-      database.prepare("SELECT 1 FROM scope_aliases WHERE alias_scope_id=?").get(
+      !database.prepare("SELECT 1 FROM main.scopes WHERE scope_id=?").get(alias.canonical_scope_id) ||
+      database.prepare("SELECT 1 FROM main.scopes WHERE scope_id=?").get(alias.alias_scope_id) ||
+      database.prepare("SELECT 1 FROM main.scope_aliases WHERE alias_scope_id=?").get(
         alias.canonical_scope_id
       )
     ) throw rotationError("SECURITY_SCOPE_ALIAS_PROVENANCE_INVALID");
@@ -526,7 +526,7 @@ function storedReceipt(
   rotationId: string,
   phase: "prepared" | "applied"
 ): SecurityRotationReceipt | undefined {
-  const row = database.prepare(`SELECT payload FROM security_key_rotation_events
+  const row = database.prepare(`SELECT payload FROM main.security_key_rotation_events
     WHERE rotation_id=? AND phase=?`).get(rotationId, phase) as { payload: string } | undefined;
   if (!row) return undefined;
   let parsed: unknown;
@@ -572,7 +572,7 @@ function storedReceipt(
 
 function requirePlan(database: Database.Database, rotationId: string): RotationPlanRow {
   const row = database.prepare(
-    "SELECT * FROM security_key_rotation_plans WHERE rotation_id=?"
+    "SELECT * FROM main.security_key_rotation_plans WHERE rotation_id=?"
   ).get(rotationId) as RotationPlanRow | undefined;
   if (!row) throw rotationError("SECURITY_KEY_ROTATION_PLAN_NOT_FOUND");
   return row;
@@ -723,7 +723,7 @@ function legacyMetaKey(purpose: SecurityHmacPurpose): string {
 
 
 function readMeta(database: Database.Database, key: string): string | undefined {
-  const row = database.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as
+  const row = database.prepare("SELECT value FROM main.bridge_meta WHERE key=?").get(key) as
     | { value: string }
     | undefined;
   return row?.value;

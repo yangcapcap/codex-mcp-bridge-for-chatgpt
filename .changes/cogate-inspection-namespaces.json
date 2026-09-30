@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject hidden-lookalike SQLite user objects and TEMP masking during legacy source and target preservation inspection.",
+  "breaking": false,
+  "migration": null
+}

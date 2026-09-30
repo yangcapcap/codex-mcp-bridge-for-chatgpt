@@ -82,14 +82,17 @@ function inspectSourceSnapshot<T>(
   try {
     database.pragma("query_only = ON");
     database.exec("BEGIN");
+    if (database.prepare("SELECT 1 FROM temp.sqlite_master LIMIT 1").get()) {
+      throw new Error("CoGate inspection rejects caller TEMP objects that could shadow retained state.");
+    }
     const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
-      FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+      FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
       ORDER BY type,name`).all();
     const schemaObjectsSha256 = digest(JSON.stringify(objects));
     if (schemaObjectsSha256 !== profile.schemaObjectsSha256) {
       throw new Error("CoGate source schema objects conflict with the fixed schema21 profile.");
     }
-    const rows = database.prepare(`SELECT key,value FROM bridge_meta
+    const rows = database.prepare(`SELECT key,value FROM main.bridge_meta
       WHERE key IN ('schema_version','state_database_id','state_schema_origin',
         'state_last_migration_id','state_last_migration_source_schema',
         'state_last_migration_target_schema','state_last_migration_completed_at',
@@ -115,19 +118,19 @@ function inspectSourceSnapshot<T>(
       { allowRotationRequired: true, allowPendingRotation: true });
     const execution = loadSecurityHmacKeyring(database, EXECUTION_POLICY_HMAC_PURPOSE,
       { allowRotationRequired: true, allowPendingRotation: true });
-    const rotationRequired = (database.prepare("SELECT value FROM bridge_meta WHERE key=?")
+    const rotationRequired = (database.prepare("SELECT value FROM main.bridge_meta WHERE key=?")
       .get(SECURITY_ROTATION_REQUIRED_META_KEY) as { value: string }).value === "1";
-    const control = database.prepare("SELECT mode,revision,maintenance FROM workspace_control WHERE singleton=1")
+    const control = database.prepare("SELECT mode,revision,maintenance FROM main.workspace_control WHERE singleton=1")
       .get() as { mode: string; revision: number; maintenance: number } | undefined;
     if (!control) throw new Error("CoGate source workspace control is missing.");
-    const lifecycleRows = database.prepare(`SELECT lifecycle,COUNT(*) AS count FROM workspaces
+    const lifecycleRows = database.prepare(`SELECT lifecycle,COUNT(*) AS count FROM main.workspaces
       GROUP BY lifecycle ORDER BY lifecycle`).all() as Array<{ lifecycle: string; count: number }>;
     return project(database, {
       sourceProfile: COGATE_LEGACY_SOURCE_PROFILE, sourceSchema: 21, logicalDatabaseId,
       schemaObjectsSha256, migrationEvidenceSha256: digest(JSON.stringify(rows)),
       appliedReceiptCount: receiptCount, historicalGapRetained,
-      activeInstanceCount: count(database, "SELECT COUNT(*) AS count FROM bridge_instances WHERE stopped_at IS NULL"),
-      nonterminalJobCount: count(database, `SELECT COUNT(*) AS count FROM jobs
+      activeInstanceCount: count(database, "SELECT COUNT(*) AS count FROM main.bridge_instances WHERE stopped_at IS NULL"),
+      nonterminalJobCount: count(database, `SELECT COUNT(*) AS count FROM main.jobs
         WHERE status NOT IN ('completed','failed','interrupted','cancelled')`),
       workspacesByLifecycle: Object.fromEntries(lifecycleRows.map(row => [row.lifecycle, row.count])),
       workspaceControl: { mode: control.mode, revision: control.revision, maintenance: control.maintenance === 1 },
@@ -154,7 +157,7 @@ function preservationInspection(
   const tables: CoGateLegacyPreservationInspection["tables"] = [];
   for (const object of profile.objects.filter(value => value.type === "table")) {
     const name = object.name;
-    const columns = (database.pragma(`table_info(${quoteIdentifier(name)})`) as
+    const columns = (database.pragma(`main.table_info(${quoteIdentifier(name)})`) as
       Array<{ name: string }>).map(column => column.name);
     const cells = columns.flatMap(column => {
       const id = quoteIdentifier(column);
@@ -171,7 +174,7 @@ function preservationInspection(
     const hash = createHash("sha256").update("cogate-legacy-table/v1\0")
       .update(JSON.stringify({ name, columns })).update("\0");
     let rowCount = 0;
-    const statement = database.prepare(`SELECT ${cells.join(",")} FROM ${quoteIdentifier(name)}
+    const statement = database.prepare(`SELECT ${cells.join(",")} FROM main.${quoteIdentifier(name)}
       ORDER BY ${order.join(",")}`).raw(true).safeIntegers(true);
     for (const row of statement.iterate() as Iterable<unknown[]>) {
       hash.update("row\0");
@@ -198,7 +201,7 @@ function preservationInspection(
   const sequenceTables = new Set(profile.objects.filter(object => object.type === "table" &&
     /\bAUTOINCREMENT\b/.test(object.sql)).map(object => object.name));
   const seenSequences = new Set<string>();
-  const sequences = (database.prepare("SELECT name,seq FROM sqlite_sequence ORDER BY name COLLATE BINARY")
+  const sequences = (database.prepare("SELECT name,seq FROM main.sqlite_sequence ORDER BY name COLLATE BINARY")
     .safeIntegers(true).all() as Array<{ name: string; seq: bigint }>).map(row => {
     if (typeof row.name !== "string" || !sequenceTables.has(row.name) || seenSequences.has(row.name) ||
         typeof row.seq !== "bigint" || row.seq < 0n) {

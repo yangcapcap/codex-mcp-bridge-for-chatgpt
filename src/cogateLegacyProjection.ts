@@ -61,28 +61,31 @@ export function inspectCoGateLegacyProjection(
   const queryOnly = database.pragma("query_only", { simple: true });
   try {
     database.pragma("query_only = ON"); database.exec("BEGIN");
+    if (database.prepare("SELECT 1 FROM temp.sqlite_master LIMIT 1").get()) {
+      throw new Error("CoGate inspection rejects caller TEMP objects that could shadow retained state.");
+    }
     const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
-      FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+      FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
       ORDER BY type,name`).all();
     if (hash(JSON.stringify(objects)) !== plan.targetSchemaObjectsSha256 ||
         database.pragma("encoding", { simple: true }) !== source.databaseEncoding) {
       throw new Error("CoGate target schema or encoding conflicts with the fixed projection.");
     }
-    const meta = (key: string) => (database.prepare("SELECT value FROM bridge_meta WHERE key=?")
+    const meta = (key: string) => (database.prepare("SELECT value FROM main.bridge_meta WHERE key=?")
       .get(key) as { value: string } | undefined)?.value;
     if (meta("schema_version") !== "31" || meta("state_database_id") !== source.source.logicalDatabaseId) {
       throw new Error("CoGate target logical database identity is invalid.");
     }
-    if (database.prepare("SELECT 1 FROM sessions WHERE auth_boundary IS NOT NULL LIMIT 1").get()) {
+    if (database.prepare("SELECT 1 FROM main.sessions WHERE auth_boundary IS NOT NULL LIMIT 1").get()) {
       throw new Error("CoGate target assigned an unproven owner to a legacy session.");
     }
     for (const table of ["job_completion_deliveries", "operational_command_receipts"]) {
-      if (database.prepare(`SELECT 1 FROM ${quote(table)} LIMIT 1`).get()) {
+      if (database.prepare(`SELECT 1 FROM main.${quote(table)} LIMIT 1`).get()) {
         throw new Error("CoGate target fabricated delivery or operational command evidence.");
       }
     }
     const receipt = database.prepare(`SELECT logical_database_id,source_profile,source_schema,
-      target_schema,source_preservation_sha256 FROM cogate_lineage_conversions WHERE conversion_id=?`)
+      target_schema,source_preservation_sha256 FROM main.cogate_lineage_conversions WHERE conversion_id=?`)
       .get(conversionId) as Record<string, unknown> | undefined;
     if (!receipt || receipt.logical_database_id !== source.source.logicalDatabaseId ||
         receipt.source_profile !== plan.sourceProfile || receipt.source_schema !== 21 ||
@@ -90,21 +93,21 @@ export function inspectCoGateLegacyProjection(
       throw new Error("CoGate target has no matching typed content binding.");
     }
     for (const table of ["cogate_lineage_conversions", "cogate_legacy_metadata", "cogate_legacy_execution_modes"]) {
-      if (database.prepare(`SELECT 1 FROM ${quote(table)} WHERE conversion_id!=? LIMIT 1`).get(conversionId)) {
+      if (database.prepare(`SELECT 1 FROM main.${quote(table)} WHERE conversion_id!=? LIMIT 1`).get(conversionId)) {
         throw new Error("CoGate target contains evidence for another conversion.");
       }
     }
     const keys = PROVENANCE_KEYS.map(() => "?").join(",");
-    if (database.prepare(`SELECT 1 FROM cogate_legacy_metadata WHERE conversion_id=?
+    if (database.prepare(`SELECT 1 FROM main.cogate_legacy_metadata WHERE conversion_id=?
       AND key NOT IN (${keys}) AND substr(key,1,16)!='state_migration:' LIMIT 1`)
       .get(conversionId, ...PROVENANCE_KEYS)) {
       throw new Error("CoGate target archive contains an unexpected metadata namespace.");
     }
     const matchedTables = plan.tables.map((table, index) => {
-      let query = `SELECT ${table.sourceColumns.map(quote).join(",")} FROM ${quote(table.name)}`;
+      let query = `SELECT ${table.sourceColumns.map(quote).join(",")} FROM main.${quote(table.name)}`;
       let parameters: unknown[] = [];
       if (table.name === "jobs" || table.name === "activities") {
-        const count = Number((database.prepare(`SELECT COUNT(*) AS n FROM ${quote(table.name)}`)
+        const count = Number((database.prepare(`SELECT COUNT(*) AS n FROM main.${quote(table.name)}`)
           .get() as { n: number }).n);
         if (count !== source.tables[index]?.rowCount) {
           throw new Error(`CoGate target has unbound rows in table ${table.name}.`);
@@ -113,15 +116,15 @@ export function inspectCoGateLegacyProjection(
         const id = kind === "job" ? "job_id" : "activity_id";
         query = `SELECT ${table.sourceColumns.map(column => column === "execution_mode" ?
           `m.execution_mode AS ${quote(column)}` : `t.${quote(column)}`).join(",")}
-          FROM ${quote(table.name)} t JOIN cogate_legacy_execution_modes m
+          FROM main.${quote(table.name)} t JOIN main.cogate_legacy_execution_modes m
           ON m.entity_id=t.${quote(id)} AND m.entity_kind=? AND m.conversion_id=?`;
         parameters = [kind, conversionId];
       } else if (table.name === "bridge_meta") {
         const excluded = [...PROVENANCE_KEYS, ...TARGET_ONLY_KEYS];
-        query = `SELECT key,value FROM bridge_meta
+        query = `SELECT key,value FROM main.bridge_meta
           WHERE key NOT IN (${excluded.map(() => "?").join(",")})
             AND substr(key,1,16)!='state_migration:'
-          UNION ALL SELECT key,value FROM cogate_legacy_metadata WHERE conversion_id=?`;
+          UNION ALL SELECT key,value FROM main.cogate_legacy_metadata WHERE conversion_id=?`;
         parameters = [...excluded, conversionId];
       }
       const result = hashProjection(database, table.name, table.sourceColumns, query, parameters);
@@ -130,12 +133,12 @@ export function inspectCoGateLegacyProjection(
       }
       return result;
     });
-    const modes = Number((database.prepare(`SELECT COUNT(*) AS n FROM cogate_legacy_execution_modes
+    const modes = Number((database.prepare(`SELECT COUNT(*) AS n FROM main.cogate_legacy_execution_modes
       WHERE conversion_id=?`).get(conversionId) as { n: number }).n);
     const expectedModes = source.tables.filter(table => ["jobs", "activities"].includes(table.name))
       .reduce((total, table) => total + table.rowCount, 0);
     if (modes !== expectedModes) throw new Error("CoGate target has orphan execution-mode evidence.");
-    const sequences = (database.prepare("SELECT name,seq FROM sqlite_sequence ORDER BY name COLLATE BINARY")
+    const sequences = (database.prepare("SELECT name,seq FROM main.sqlite_sequence ORDER BY name COLLATE BINARY")
       .safeIntegers(true).all() as Array<{ name: string; seq: bigint }>).map(row => ({
         name: row.name, highWaterMark: row.seq.toString()
       }));

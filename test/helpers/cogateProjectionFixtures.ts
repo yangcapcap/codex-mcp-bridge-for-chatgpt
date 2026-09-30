@@ -50,7 +50,7 @@ export function projectionFixture(options: { encoding?: string; mode?: "missing"
   const ledger = inspectCoGateLegacyPreservation(source);
   const store = new BridgeStateStore({ file: ":memory:" });
   const current = (store as unknown as { database: Database.Database }).database;
-  const objects = current.prepare("SELECT type,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")
+  const objects = current.prepare("SELECT type,sql FROM sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_' ORDER BY type,name")
     .all() as Array<{ type: string; sql: string }>;
   const target = new Database(":memory:");
   target.pragma(`encoding = '${options.encoding ?? "UTF-8"}'`);
