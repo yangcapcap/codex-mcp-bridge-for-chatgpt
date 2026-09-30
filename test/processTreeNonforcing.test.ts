@@ -106,4 +106,40 @@ describe.skipIf(process.platform === "win32")("nonforcing supervised tree fence 
     registry.remember({pid:999_930,processGroupId:999_930},true);finish([]);
     expect((await observation).outcome).toBe("uncertain");expect(registry.size).toBe(2);
   });
+  test.each(["observe","refresh"])("%s ledger overflow stays UNKNOWN after root exit and reparenting", async operation => {
+    const f=fixture();f.setRows([root]);await f.registry.register(identity);f.registry.pinNonforcingShutdown();
+    const descendants=Array.from({length:4096},(_,index)=>({...child,pid:800_000+index,
+      processGroupId:800_000+index,startedAt:`child ${index}`}));
+    f.setRows([root,...descendants]);
+    if(operation==="refresh") await expect(f.registry.refresh()).rejects.toThrow(/ledger-limit/);
+    else expect((await f.registry.observeNonforcingExit()).outcome).toBe("uncertain");
+    f.registry.markExited(identity);f.setRows([{...descendants.at(-1)!,parentPid:1}]);
+    expect((await f.registry.observeNonforcingExit()).outcome).toBe("uncertain");
+    f.setRows([]);expect((await f.registry.observeNonforcingExit()).outcome).toBe("uncertain");
+    expect(f.registry.size).toBe(1);
+  });
+  test("oversize supplied ledger merge cannot silently certify missing descendants", async () => {
+    const f=fixture();await f.registry.register(identity);f.registry.pinNonforcingShutdown();
+    f.registry.merge({root:identity,processes:Array.from({length:4097},(_,index)=>({...child,pid:800_000+index}))});
+    f.registry.markExited(identity);f.setRows([]);
+    expect((await f.registry.observeNonforcingExit()).outcome).toBe("uncertain");
+  });
+  test("an incomplete snapshot retains UNKNOWN across serialization and a new registry", async () => {
+    const f=fixture();await f.registry.register(identity);f.registry.pinNonforcingShutdown();
+    f.registry.merge({root:identity,processes:[],incomplete:true});f.registry.markExited(identity);
+    const snapshots=JSON.parse(JSON.stringify(f.registry.snapshots()));
+    expect(snapshots[0].incomplete).toBe(true);
+    const recovered=new SupervisedProcessTreeRegistry(async()=>[]);
+    recovered.remember(identity);recovered.merge(snapshots[0]);recovered.pinNonforcingShutdown();
+    expect((await recovered.observeNonforcingExit()).outcome).toBe("uncertain");
+    recovered.forget(identity);expect(recovered.size).toBe(1);
+  });
+  test("a pre-pin overflow remains unknown even after ordinary cleanup sees an empty table", async () => {
+    const f=fixture();f.setRows([root]);await f.registry.register(identity);
+    f.setRows([root,...Array.from({length:4096},(_,index)=>({...child,pid:800_000+index}))]);
+    await expect(f.registry.refresh()).rejects.toThrow(/ledger-limit/);
+    f.registry.markExited(identity);f.setRows([]);
+    expect(await f.registry.cleanupAll(0)).toBe(false);f.registry.forget(identity);expect(f.registry.size).toBe(1);
+    f.registry.pinNonforcingShutdown();expect((await f.registry.observeNonforcingExit()).outcome).toBe("uncertain");
+  });
 });

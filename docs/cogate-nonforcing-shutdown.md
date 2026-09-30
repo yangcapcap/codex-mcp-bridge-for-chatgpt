@@ -68,3 +68,13 @@ its own timeout cleanup; that auxiliary probe is not a supervised worker.
 
 These registry primitives are not yet connected to App Server pool policy,
 worker-exit callbacks, execution-service IPC or runtime/operator shutdown.
+
+An observation or supplied merge that exceeds the bounded retained ledger sets
+a sticky `incomplete: true` flag. Partial observed identities are retained even
+when traversal throws. Fresh empty process tables cannot certify absence of
+unrecorded escaped descendants. The flag survives snapshot serialization and
+merge into a new registry; normal release/cleanup and forget cannot erase this
+UNKNOWN. Pinned historical entries are bounded as well as current live entries.
+Other trees in a complete snapshot are still inspected when one tree overflows.
+The execution-service snapshot parser accepts only an absent or literal true
+incomplete flag. This field carries uncertainty, never shutdown authority.
