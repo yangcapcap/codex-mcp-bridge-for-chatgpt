@@ -223,13 +223,51 @@ describe("state lineage admission before writes", () => {
       const before = readFileSync(file), walBefore = readFileSync(`${file}-wal`);
       const entries = readdirSync(path.dirname(file)).sort();
       try {
-        expect(() => new BridgeStateStore({ file })).toThrow(/Pending state migration provenance is missing bridge-state-17-to-18/);
+        expect(() => new BridgeStateStore({ file })).toThrow(/Prospective state migration provenance is missing bridge-state-17-to-18/);
         expect(readFileSync(file)).toEqual(before);
         expect(readFileSync(`${file}-wal`)).toEqual(walBefore);
         expect(readdirSync(path.dirname(file)).sort()).toEqual(entries);
       } finally { database.close(); }
     }
   );
+
+  it.each([17, 21, 22])("authenticates durable source %s before pending is created", source => {
+    const file = fixture();
+    upstream21(file);
+    let database = new Database(file);
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_source_schema", "18");
+    database.prepare("INSERT INTO bridge_meta(key,value) VALUES (?,?)").run("state_last_migration_target_schema", "21");
+    database.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
+    database.close();
+    expect(() => new BridgeStateStore({ file, onMigrationSchemaCommitted(progress) {
+      if (progress.targetSchema === 22) throw new Error("fixture-no-pending");
+    } })).toThrow("fixture-no-pending");
+    database = new Database(file);
+    database.prepare("DELETE FROM bridge_meta WHERE key='state_migration_pending'").run();
+    database.prepare("UPDATE bridge_meta SET value='21' WHERE key='schema_version'").run();
+    database.exec("ALTER TABLE job_completion_deliveries DROP COLUMN result_read_source");
+    database.prepare("UPDATE bridge_meta SET value=? WHERE key='schema_v19_upgrade_source'").run(String(source));
+    if (source === 21) {
+      database.close();
+      const store = new BridgeStateStore({ file });
+      try {
+        expect(store.schemaVersion).toBe(30);
+        expect(store.getMeta("state_last_migration_source_schema")).toBe("21");
+        expect(JSON.parse(store.getMeta("state_migration:bridge-state-19-to-20")!).originalSourceSchema).toBe(18);
+      } finally { store.close(); }
+      return;
+    }
+    const before = readFileSync(file), walBefore = readFileSync(`${file}-wal`);
+    const entries = readdirSync(path.dirname(file)).sort();
+    try {
+      expect(() => new BridgeStateStore({ file })).toThrow(source === 17
+        ? /Prospective state migration provenance is missing bridge-state-17-to-18/
+        : /original source is ahead of its observed checkpoint/);
+      expect(readFileSync(file)).toEqual(before);
+      expect(readFileSync(`${file}-wal`)).toEqual(walBefore);
+      expect(readdirSync(path.dirname(file)).sort()).toEqual(entries);
+    } finally { database.close(); }
+  });
 
   it("rejects mixed CoGate structures even if the upstream completion shape is also present", () => {
     const file = fixture();

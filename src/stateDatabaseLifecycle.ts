@@ -373,20 +373,26 @@ function assertStateLineageAdmission(
   } else if (pending && pendingOriginalSource !== checkpoint && gapCheckpoint !== checkpoint) {
     throw new Error("Pending state migration has no complete preceding provenance path.");
   }
-  if (pending && pendingOriginalSource !== null) {
+  const durableSourceRaw = getMeta("schema_v19_upgrade_source");
+  const prospectiveSource = pendingOriginalSource ?? (durableSourceRaw === undefined ? null : Number(durableSourceRaw));
+  const prospectiveCheckpoint = pending?.fromSchema ?? schemaVersion;
+  if (prospectiveSource !== null && prospectiveSource > prospectiveCheckpoint) {
+    throw new Error("State migration original source is ahead of its observed checkpoint.");
+  }
+  if (prospectiveSource !== null && (pending || lastMigrationId !== undefined || gapRaw !== undefined)) {
     // The preceding last marker may belong to an earlier published release.
-    // Authenticate the prefix that the pending receipt itself claims, rather
-    // than letting the earlier completed path authorize a different source.
-    if (gapRaw !== undefined && originalSource !== pendingOriginalSource) {
-      throw new Error("Pending state migration conflicts with the retained provenance gap.");
+    // Authenticate the prefix claimed by pending or the durable upgrade source,
+    // including the interval before the first pending receipt is recorded.
+    if (gapRaw !== undefined && originalSource !== prospectiveSource) {
+      throw new Error("Prospective state migration conflicts with the retained provenance gap.");
     }
-    const prefix = stateMigrationPath(pendingOriginalSource).slice(gapRaw === undefined ? 0 : pathStart)
-      .filter(entry => entry.toSchema <= pending.fromSchema);
+    const prefix = stateMigrationPath(prospectiveSource).slice(gapRaw === undefined ? 0 : pathStart)
+      .filter(entry => entry.toSchema <= prospectiveCheckpoint);
     for (const entry of prefix) {
       const record = applied.get(entry.id);
-      if (!record) throw new Error(`Pending state migration provenance is missing ${entry.id}.`);
-      if (record.originalSourceSchema !== pendingOriginalSource) {
-        throw new Error(`Pending state migration provenance conflicts with ${entry.id}.`);
+      if (!record) throw new Error(`Prospective state migration provenance is missing ${entry.id}.`);
+      if (record.originalSourceSchema !== prospectiveSource) {
+        throw new Error(`Prospective state migration provenance conflicts with ${entry.id}.`);
       }
     }
   }
