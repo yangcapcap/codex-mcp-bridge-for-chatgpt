@@ -273,7 +273,8 @@ export class SupervisedProcessTreeRegistry {
         const d=Object.getOwnPropertyDescriptors(identity);
         if(Reflect.ownKeys(d).length===2 && ["pid","processGroupId"].every(k=>
           Object.hasOwn(d,k) && Object.hasOwn(d[k],"value"))) {
-          const root={pid:d.pid.value,processGroupId:d.processGroupId.value};
+          const root:JsonRpcProcessIdentity={pid:d.pid.value as number,
+            processGroupId:d.processGroupId.value as number|null};
           validateRootIdentity(root);
           retained=this.nonforcingEvidence?.get(supervisedProcessKey(root));
         }
