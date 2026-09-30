@@ -274,3 +274,9 @@ bounded to 64 KiB, strictly parsed for JSON/Unicode and checked iteratively for
 duplicate decoded member names at every object depth. Literal or escaped
 duplicate fields cannot hide a conversion claim behind a later ordinary value.
 These checks reject ambiguity; they do not normalize retained origin bytes.
+
+The origin boundary reads the SQLite storage class and bounded raw BLOB bytes,
+then performs fatal decoding in the database's actual UTF-8/UTF-16le/UTF-16be
+encoding before JSON/Unicode/member checks. Driver replacement decoding cannot
+turn malformed retained TEXT into an admissible origin. Nontext values and
+oversize stored or decoded content remain closed without changing their bytes.

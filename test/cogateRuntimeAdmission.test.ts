@@ -153,4 +153,45 @@ describe("runtime activation remains closed until unified CoGate actors and auth
       expect(db.inTransaction).toBe(false);
     } finally {db.close();}
   });
+  test.each(["80","eda080","c0af","ff"])("raw invalid UTF8 origin rejects both runtime paths without byte repair: %s", invalid => {
+    const root=mkdtempSync(path.join(tmpdir(),"cogate-origin-bytes-")),file=path.join(root,"candidate.sqlite");
+    try {
+      new BridgeStateStore({file}).close();const db=new Database(file);
+      const bytes=Buffer.concat([Buffer.from('{"kind":"fresh","extra":"'),Buffer.from(invalid,"hex"),Buffer.from('"}')]);
+      db.prepare("UPDATE bridge_meta SET value=CAST(? AS TEXT) WHERE key='state_schema_origin'").run(bytes);
+      db.pragma("journal_mode = DELETE");db.close();
+      const before=readFileSync(file),names=readdirSync(root);
+      for(const readOnly of [true,false]) {
+        let store:BridgeStateStore|undefined;
+        try {expect(()=>{store=new BridgeStateStore({file,readOnly});}).toThrow(/ACTIVATION_UNAVAILABLE/);}
+        finally {store?.close();}
+      }
+      expect(()=>prepareStateDatabaseOpen(file)).toThrow(/ACTIVATION_UNAVAILABLE/);
+      expect(readFileSync(file)).toEqual(before);expect(readdirSync(root)).toEqual(names);
+    } finally {rmSync(root,{recursive:true});}
+  });
+  test.each(["UTF-8","UTF-16le","UTF-16be"])("valid ordinary origin accepts its actual SQLite encoding %s", encoding => {
+    const db=new Database(":memory:");
+    try {
+      db.pragma(`encoding='${encoding}'`);db.exec(V31_COGATE_UNIFIED_MIGRATION_SCHEMA);
+      db.exec("CREATE TABLE bridge_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+      const origin='{"kind":"fresh","extra":"日🌱"}';
+      db.prepare("INSERT INTO bridge_meta VALUES('state_schema_origin',?)").run(origin);
+      expect(()=>assertCoGateUnifiedRuntimeAdmission(db)).not.toThrow();
+      expect(db.prepare("SELECT value FROM bridge_meta").get()).toEqual({value:origin});
+    } finally {db.close();}
+  });
+  test.each([["UTF-16le","00d8"],["UTF-16be","d800"]])("invalid stored %s surrogate stays closed", (encoding,invalid) => {
+    const db=new Database(":memory:");
+    try {
+      db.pragma(`encoding='${encoding}'`);db.exec(V31_COGATE_UNIFIED_MIGRATION_SCHEMA);
+      db.exec("CREATE TABLE bridge_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+      const prefix=Buffer.from('{"kind":"fresh","extra":"',"utf16le"),suffix=Buffer.from('"}',"utf16le");
+      if(encoding==="UTF-16be") {prefix.swap16();suffix.swap16();}
+      const bytes=Buffer.concat([prefix,Buffer.from(invalid,"hex"),suffix]);
+      db.prepare("INSERT INTO bridge_meta VALUES('state_schema_origin',CAST(? AS TEXT))").run(bytes);
+      expect(()=>assertCoGateUnifiedRuntimeAdmission(db)).toThrow(/ACTIVATION_UNAVAILABLE/);
+      expect((db.prepare("SELECT CAST(value AS BLOB) AS bytes FROM bridge_meta").get() as {bytes:Buffer}).bytes).toEqual(bytes);
+    } finally {db.close();}
+  });
 });

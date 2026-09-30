@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { COGATE_UNIFIED_SCHEMA_OBJECTS_SHA256, COGATE_UNIFIED_SCHEMA_TABLES } from "./cogateUnifiedSchema.js";
-import { parseJsonTextStrict } from "./textIntegrity.js";
+import { parseJsonTextStrict, assertWellFormedUnicode, decodeUtf8Strict } from "./textIntegrity.js";
 
 /** Current runtime has storage/inspectors, but no reviewed CoGate actors or
  * authenticated activation path. Never admit converted/active CoGate state
@@ -41,14 +41,29 @@ function assertAdmissionInSnapshot(database: Database.Database): void {
 /** Called inside the startup preflight snapshot for every numeric schema,
  * before any automatic migration or runtime ownership write. */
 export function assertCoGateConversionOriginUnavailable(database: Database.Database): void {
-  const rows = database.prepare(`SELECT key,value FROM main.bridge_meta
-    WHERE key IN ('cogate_lineage_conversion_v1','state_schema_origin')`).all() as Array<{key:string;value:string}>;
+  // Reading value as driver text would replace invalid SQLite TEXT bytes
+  // before our Unicode check. Bound and decode the original stored bytes.
+  const rows = database.prepare(`SELECT key,typeof(value) AS storageClass,
+    length(CAST(value AS BLOB)) AS byteLength,
+    CASE WHEN length(CAST(value AS BLOB)) <= 65536 THEN CAST(value AS BLOB) ELSE NULL END AS bytes
+    FROM main.bridge_meta WHERE key IN ('cogate_lineage_conversion_v1','state_schema_origin')`).all() as
+    Array<{key:string;storageClass:string;byteLength:number;bytes:Buffer|null}>;
   if (rows.some(row => row.key === "cogate_lineage_conversion_v1")) blocked();
-  const origin = rows.find(row => row.key === "state_schema_origin")?.value;
-  if (origin !== undefined) {
+  const originRow = rows.find(row => row.key === "state_schema_origin");
+  if (originRow !== undefined) {
     let parsed: unknown;
+    let origin: string;
     try {
-      if (typeof origin !== "string" || Buffer.byteLength(origin,"utf8") > 64 * 1024) blocked();
+      if(originRow.storageClass!=="text" || !Number.isSafeInteger(originRow.byteLength) ||
+        originRow.byteLength<0 || originRow.byteLength>65536 || !Buffer.isBuffer(originRow.bytes) ||
+        originRow.bytes.length!==originRow.byteLength) blocked();
+      const encoding=database.pragma("main.encoding",{simple:true});
+      if(encoding==="UTF-8") origin=decodeUtf8Strict(originRow.bytes,"Current state schema origin bytes");
+      else if(encoding==="UTF-16le" || encoding==="UTF-16be") {
+        origin=new TextDecoder(encoding.toLowerCase(),{fatal:true,ignoreBOM:true}).decode(originRow.bytes);
+        assertWellFormedUnicode(origin,"Current state schema origin bytes");
+      } else blocked();
+      if (Buffer.byteLength(origin,"utf8") > 64 * 1024) blocked();
       parsed = parseJsonTextStrict(origin,"Current state schema origin");
       assertUniqueOriginMembers(origin);
     } catch { blocked(); }
