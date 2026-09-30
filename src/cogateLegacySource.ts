@@ -238,7 +238,39 @@ function parseRecord(raw: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("CoGate source provenance is not an object.");
   }
+  assertUniqueRootMembers(raw);
   return value as Record<string, unknown>;
+}
+/** JSON.parse already authenticated grammar/text. Inspect the raw root keys
+ * before last-member-wins decoding can conceal contradictory history. Nested
+ * values are skipped here and subsequently rejected by the fixed scalar shapes.
+ * This does not change the shared parser or the carried legacy HMAC semantics. */
+function assertUniqueRootMembers(raw: string): void {
+  const members = new Set<string>();
+  let depth = 0;
+  let expectsKey = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const token = raw[index];
+    if (token === '"') {
+      let end = index + 1;
+      while (end < raw.length && raw[end] !== '"') {
+        end += raw[end] === "\\" ? 2 : 1;
+      }
+      if (depth === 1 && expectsKey) {
+        const key = JSON.parse(raw.slice(index, end + 1)) as string;
+        if (members.has(key)) throw new Error("CoGate source provenance has duplicate root members.");
+        members.add(key); expectsKey = false;
+      }
+      index = end;
+    } else if (token === "{" || token === "[") {
+      depth += 1;
+      if (depth === 1) expectsKey = true;
+    } else if (token === "}" || token === "]") {
+      depth -= 1;
+    } else if (token === "," && depth === 1) {
+      expectsKey = true;
+    }
+  }
 }
 function isText(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
 function isDate(value: unknown): boolean { return isText(value) && Number.isFinite(Date.parse(value)); }

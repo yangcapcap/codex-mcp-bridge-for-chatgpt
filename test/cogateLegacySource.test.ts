@@ -149,6 +149,38 @@ describe("fixed CoGate legacy source inspection", () => {
     expect(() => inspectCoGateLegacySource(db)).toThrow(/provenance-gap/);
     expect(db.prepare("SELECT value FROM bridge_meta WHERE key='state_migration_provenance_gap'").get()).toEqual({ value: gap });
   }));
+  test.each(["\"schema\":30,\"schema\":21", "\"schema\":21,\"schema\":21",
+    "\"schema\":30,\"\\u0073chema\":21"])("rejects duplicate decoded origin members: %s", fields => withFixture(db => {
+    expect(inspectCoGateLegacySource(db).authority).toBe("none");
+    const key = "state_schema_origin";
+    const raw = (db.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as { value: string }).value
+      .replace('"schema":21', fields);
+    meta(db, key, raw); const before = db.serialize();
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/duplicate root members/);
+    expect(db.serialize()).toEqual(before);
+  }));
+  test("rejects a conflicting duplicate retained receipt after its valid baseline passes", () => withFixture(db => {
+    receipt(db, 20); completed(db, 20); expect(inspectCoGateLegacySource(db).appliedReceiptCount).toBe(1);
+    const key = "state_migration:bridge-state-20-to-21";
+    const raw = (db.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as { value: string }).value
+      .replace('"originalSourceSchema":20', '"originalSourceSchema":999,"originalSourceSchema":20');
+    meta(db, key, raw); expect(() => inspectCoGateLegacySource(db)).toThrow(/duplicate root members/);
+    expect(db.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key)).toEqual({ value: raw });
+  }));
+  test("rejects duplicate gap evidence while preserving the valid original path", () => withFixture(db => {
+    receipt(db, 20, 19); completed(db, 19);
+    const raw = JSON.stringify({ kind: "pre-contract-intermediate-checkpoint", originalSourceSchema: 19,
+      observedSchema: 20, recordedAt: "2026-09-30T00:00:00Z" });
+    meta(db, "state_migration_provenance_gap", raw); expect(inspectCoGateLegacySource(db).historicalGapRetained).toBe(true);
+    const changed = raw.replace('"observedSchema":20', '"observedSchema":30,"observedSchema":20');
+    meta(db, "state_migration_provenance_gap", changed);
+    expect(() => inspectCoGateLegacySource(db)).toThrow(/duplicate root members/);
+  }));
+  test("accepts escaped quotes and structural punctuation inside valid scalar strings", () => withFixture(db => {
+    meta(db, "state_schema_origin", JSON.stringify({ kind: "fresh", schema: 21, productVersion: "0.4.1",
+      buildId: 'source "schema":30}, ["schema"], backslash\\', recordedAt: "2026-09-30T00:00:00Z" }));
+    expect(inspectCoGateLegacySource(db).authority).toBe("none");
+  }));
   test("rejects an unfinished source migration without recovery writes", () => withFixture(db => {
     meta(db, "state_migration_pending", "{}"); const before = db.serialize();
     expect(() => inspectCoGateLegacySource(db)).toThrow(/unfinished migration/);

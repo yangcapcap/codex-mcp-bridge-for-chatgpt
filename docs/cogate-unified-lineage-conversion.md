@@ -27,6 +27,9 @@ types and completed-generation relationships. A fresh source cannot carry orphan
 completion identity. A fully authenticated completed historical path may lack an
 origin that the old pre-contract runtime never recorded; the missing record stays
 missing and supplies no proof. It must never be fabricated as a fresh origin.
+Duplicate decoded root field names are rejected, including identical duplicates
+and Unicode-escaped aliases. The source inspector cannot authenticate an earlier
+conflicting raw value by accepting a later member with the same name.
 
 The old 19->20 Workspace digest and 20->21 HMAC digest remain immutable. They
 cannot be recorded as upstream 19->20 asynchronous-execution or 20->21 completion
