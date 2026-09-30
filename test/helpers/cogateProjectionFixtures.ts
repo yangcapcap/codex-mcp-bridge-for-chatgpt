@@ -31,7 +31,7 @@ export function legacyMeta(db: Database.Database, key: string, value: string): v
 // Pure synthetic fixture builder. Its arbitrary hashes are not approval evidence;
 // this helper is never exported by the runtime or used against installed state.
 export function projectionFixture(options: { encoding?: string; mode?: "missing" | "changed" | "orphan";
-  metadata?: "missing" | "unexpected" } = {}) {
+  metadata?: "missing" | "unexpected"; initialized?: boolean; settings?: string } = {}) {
   const source = legacyFixture(":memory:", options.encoding);
   legacyMeta(source, "retained_writer_unknown", '{ "outcome": "UNKNOWN" }\0opaque');
   source.prepare("INSERT INTO bridge_meta VALUES('opaque_bytes',CAST(? AS TEXT))").run(Buffer.from([0x80,0,0x81]));
@@ -47,6 +47,8 @@ export function projectionFixture(options: { encoding?: string; mode?: "missing"
     INSERT INTO sessions(thread_id,scope_id,backend_kind,cwd,sandbox,persistence,created_at,updated_at,last_used_at)
     VALUES('fixture-thread','fixture-scope','app-server','/tmp/synthetic-cogate','read-only','unknown',0,0,0);`);
   source.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES('activity_events',?)").run(9007199254740993n);
+  if (options.settings !== undefined) source.prepare("INSERT INTO user_settings(singleton,payload) VALUES(1,?)")
+    .run(options.settings);
   const ledger = inspectCoGateLegacyPreservation(source);
   const store = new BridgeStateStore({ file: ":memory:" });
   const current = (store as unknown as { database: Database.Database }).database;
@@ -61,8 +63,10 @@ export function projectionFixture(options: { encoding?: string; mode?: "missing"
   const conversionId = "synthetic-fixture-conversion";
   target.prepare(`INSERT INTO cogate_lineage_conversions VALUES
     (?,'cogate-lineage-conversion/v1',?,'cogate-v2-workspace-hmac/schema21/v1',21,31,
-      ?,?,?,?,?,?,?,'2026-10-01T00:00:00Z','{"outcome":"UNKNOWN","synthetic":true}')`)
-    .run(conversionId, ledger.source.logicalDatabaseId, ledger.preservationSha256, ...Array(6).fill("a".repeat(64)));
+      ?,?,?,?,?,?,?,?,'{"outcome":"UNKNOWN","synthetic":true}')`)
+    .run(conversionId, ledger.source.logicalDatabaseId, ledger.preservationSha256,
+      options.initialized ? "d9fce658244857598812635344b0fccf5f96da585648be64d873a371184c1329" : "a".repeat(64),
+      ...Array(5).fill("a".repeat(64)), options.initialized ? "2026-10-01T00:00:00.000Z" : "2026-10-01T00:00:00Z");
   const archivedKeys = new Set(["schema_version", "state_migration_catalog_version", "state_schema_origin"]);
   for (const table of plan.tables) {
     const columns = table.sourceColumns.filter(column => column !== "execution_mode");
@@ -102,6 +106,19 @@ export function projectionFixture(options: { encoding?: string; mode?: "missing"
   legacyMeta(target,"schema_version","31");
   legacyMeta(target,"state_migration_catalog_version","1");
   legacyMeta(target,"state_schema_origin",'{"kind":"synthetic-converted-fixture"}');
+  if (options.initialized) {
+    const recordedAt = "2026-10-01T00:00:00.000Z";
+    legacyMeta(target,"state_schema_origin",JSON.stringify({ kind:"lineage-conversion",format:"cogate-unified-origin/v1",
+      sourceProfile:plan.sourceProfile,sourceSchema:21,targetSchema:31,
+      logicalDatabaseId:ledger.source.logicalDatabaseId,conversionId,
+      sourcePreservationSha256:ledger.preservationSha256,recordedAt }));
+    legacyMeta(target,"cogate_lineage_conversion_v1",conversionId);
+    legacyMeta(target,"schema_v31_cogate_storage","workspace-hmac-and-lineage-evidence-v1");
+    legacyMeta(target,"schema_v31_migrated_at",recordedAt);
+    target.exec(`INSERT INTO model_description_versions(model_id,version,description,created_at)
+      SELECT j.key,1,j.value,NULL FROM user_settings u,json_each(u.payload,'$.modelDescriptionOverrides') j
+      WHERE j.type='text' AND j.value<>''`);
+  }
   if (options.mode === "orphan") target.prepare("INSERT INTO cogate_legacy_execution_modes VALUES(?,?,?,?)")
     .run(conversionId,"job","orphan-job","foreground");
   if (options.metadata === "unexpected") target.prepare("INSERT INTO cogate_legacy_metadata VALUES(?,?,?)")

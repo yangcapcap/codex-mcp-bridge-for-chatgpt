@@ -1,8 +1,8 @@
 # CoGate source21 to the single upstream runtime
 
 Status: implementation contract; source inspection and read-only preservation
-ledger, schema31 storage, a read-only target projection verifier and a supplied-key
-conversion signature comparison are implemented;
+ledger, schema31 storage, read-only target projection/initialization content verifiers
+and a supplied-key conversion signature comparison are implemented;
 conversion and actor/runtime integration are not. The operator command must remain unavailable
 until all of this contract has independent exact-head review and validation.
 
@@ -214,3 +214,38 @@ release checks. Only then prepare a formal release candidate and request genuine
 external signing authority for its concrete bound proposal. Installation,
 cutover, externally verified cross-boot recovery and real read-only CoGate Job
 plus disposable onboarding/restart/recovery remain subsequent measured gates.
+
+## Target initialization content contract
+
+`inspectCoGateTargetInitialization()` uses the same read-only transaction as the
+42-table projection check. It additionally compares the complete
+`model_description_versions` table with the published schema-26 backfill of
+retained `user_settings.modelDescriptionOverrides`: nonempty text values become
+version 1, with an unknown (`NULL`) save time. Catalog descriptions and invented
+save/version history are rejected. Absent, null or empty overrides derive no
+rows. Invalid JSON/Unicode, duplicate top-level settings keys, duplicate decoded
+model keys and nonobject override containers cannot initialize a usable target;
+the inspector never repairs or normalizes retained bytes.
+
+The pre-service active provenance is a canonical `state_schema_origin` JSON
+object, in this exact field order: `kind: "lineage-conversion"`,
+`format: "cogate-unified-origin/v1"`, `sourceProfile`, `sourceSchema: 21`,
+`targetSchema: 31`, `logicalDatabaseId`, `conversionId`,
+`sourcePreservationSha256`, `recordedAt`. It must bind the same typed conversion
+receipt and its canonical millisecond UTC timestamp. That receipt must also
+carry the fixed projection-plan SHA. The only active provenance/target-only
+keys are this origin, schema version 31, catalog version 1,
+`cogate_lineage_conversion_v1` (the conversion ID),
+`schema_v31_cogate_storage: "workspace-hmac-and-lineage-evidence-v1"` and
+`schema_v31_migrated_at` (the receipt timestamp). Old provenance is retained in
+the immutable archive and authenticated by the original ledger. A fresh-origin
+claim, fabricated upstream migration receipt, pending/gap marker, runtime build
+claim or service-start evidence conflicts with this pre-service contract.
+
+The result says `targetInitializationVerification: "matched-content"` and
+`authority: "none"`; approval and owner verification remain not performed.
+This is an inspection of supplied content, not an authenticated converter,
+initialization writer, live lease, trusted approval source, backup proof,
+promotion operation or permission to launch. The existing projection-only
+function retains its original `targetInitializationVerification: "not-performed"`
+result. Neither function is connected to an operator or runtime activation path.

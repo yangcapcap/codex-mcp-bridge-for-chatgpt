@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import plan from "./cogateLegacyProjectionPlan.json" with { type: "json" };
 import type { CoGateLegacyPreservationInspection } from "./cogateLegacySource.js";
+import { parseJsonTextStrict } from "./textIntegrity.js";
 
 const PLAN_SHA256 = "d9fce658244857598812635344b0fccf5f96da585648be64d873a371184c1329";
 const PROVENANCE_KEYS = [
@@ -42,6 +43,27 @@ export function inspectCoGateLegacyProjection(
   source: CoGateLegacyPreservationInspection,
   conversionId: string
 ): CoGateLegacyProjectionInspection {
+  return inspectProjectionSnapshot(database, source, conversionId, false) as CoGateLegacyProjectionInspection;
+}
+
+export type CoGateTargetInitializationInspection = Omit<CoGateLegacyProjectionInspection,
+  "format" | "targetInitializationVerification"> & {
+  format: "cogate-target-initialization-inspection/v1";
+  targetInitializationVerification: "matched-content";
+  modelDescriptionVersions: CoGateLegacyPreservationInspection["tables"][number];
+  originSha256: string;
+};
+
+/** Compare all retained and derived target content in one pre-service snapshot.
+ * This neither initializes a file nor authenticates its conversion authority. */
+export function inspectCoGateTargetInitialization(database: Database.Database,
+  source: CoGateLegacyPreservationInspection, conversionId: string): CoGateTargetInitializationInspection {
+  return inspectProjectionSnapshot(database, source, conversionId, true) as CoGateTargetInitializationInspection;
+}
+
+function inspectProjectionSnapshot(database: Database.Database,
+  source: CoGateLegacyPreservationInspection, conversionId: string, initialize: boolean
+): CoGateLegacyProjectionInspection | CoGateTargetInitializationInspection {
   if ((!database.readonly && !database.memory) || database.inTransaction) {
     throw new Error("CoGate target projection requires an idle read-only connection.");
   }
@@ -147,14 +169,90 @@ export function inspectCoGateLegacyProjection(
         (database.pragma("foreign_key_check") as unknown[]).length !== 0) {
       throw new Error("CoGate target sequence, integrity or foreign-key evidence conflicts.");
     }
-    return { format: "cogate-legacy-projection-inspection/v1", sourcePreservationSha256: preservationSha256,
+    const retained = { sourcePreservationSha256: preservationSha256,
       conversionId, logicalDatabaseId: source.source.logicalDatabaseId, sourceTableCount: 42,
       matchedTables, authority: "none", approvalVerification: "not-performed",
-      ownerVerification: "not-performed", targetInitializationVerification: "not-performed" };
+      ownerVerification: "not-performed" } as const;
+    if (initialize) {
+      const initialized = inspectInitializationInSnapshot(database, source, conversionId);
+      return { ...retained, ...initialized, format: "cogate-target-initialization-inspection/v1",
+        targetInitializationVerification: "matched-content" };
+    }
+    return { ...retained, format: "cogate-legacy-projection-inspection/v1",
+      targetInitializationVerification: "not-performed" };
   } finally {
     try { if (database.inTransaction) database.exec("ROLLBACK"); }
     finally { database.pragma(`query_only = ${queryOnly ? "ON" : "OFF"}`); }
   }
+}
+
+function inspectInitializationInSnapshot(database: Database.Database,
+  source: CoGateLegacyPreservationInspection, conversionId: string
+): Pick<CoGateTargetInitializationInspection, "modelDescriptionVersions" | "originSha256"> {
+  const receipt = database.prepare(`SELECT recorded_at,target_projection_sha256
+    FROM main.cogate_lineage_conversions WHERE conversion_id=?`).get(conversionId) as {
+      recorded_at: string; target_projection_sha256: string };
+  if (!Number.isFinite(Date.parse(receipt.recorded_at)) ||
+      new Date(receipt.recorded_at).toISOString() !== receipt.recorded_at ||
+      receipt.target_projection_sha256 !== PLAN_SHA256) {
+    throw new Error("CoGate target initialization receipt conflicts with its fixed plan or timestamp.");
+  }
+  const origin = JSON.stringify({ kind: "lineage-conversion", format: "cogate-unified-origin/v1",
+    sourceProfile: plan.sourceProfile, sourceSchema: 21, targetSchema: 31,
+    logicalDatabaseId: source.source.logicalDatabaseId, conversionId,
+    sourcePreservationSha256: source.preservationSha256, recordedAt: receipt.recorded_at });
+  const required = new Map<string, string>([
+    ["schema_version", "31"], ["state_migration_catalog_version", "1"],
+    ["state_schema_origin", origin], ["cogate_lineage_conversion_v1", conversionId],
+    ["schema_v31_cogate_storage", "workspace-hmac-and-lineage-evidence-v1"],
+    ["schema_v31_migrated_at", receipt.recorded_at]
+  ]);
+  const active = database.prepare(`SELECT key,value,hex(CAST(value AS BLOB)) AS bytes
+    FROM main.bridge_meta WHERE key IN (${[...PROVENANCE_KEYS, ...TARGET_ONLY_KEYS].map(() => "?").join(",")})
+      OR substr(key,1,16)='state_migration:'`).all(...PROVENANCE_KEYS, ...TARGET_ONLY_KEYS) as
+        Array<{ key: string; value: string; bytes: string }>;
+  if (active.length !== required.size || active.some(row => {
+    const value = required.get(row.key);
+    if (value === undefined || row.value !== value) return true;
+    const bytes = Buffer.from(value, source.databaseEncoding === "UTF-8" ? "utf8" : "utf16le");
+    if (source.databaseEncoding === "UTF-16be") bytes.swap16();
+    return bytes.toString("hex").toUpperCase() !== row.bytes;
+  })) throw new Error("CoGate target initialization has conflicting active provenance or fabricated service evidence.");
+
+  // Validate the exact retained settings before deriving V26 history. Invalid
+  // JSON/Unicode and duplicate relevant fields remain retained, but cannot be
+  // treated as a usable initialization source. No value is normalized.
+  const settings = database.prepare(`SELECT hex(CAST(payload AS BLOB)) AS bytes
+    FROM main.user_settings`).all() as Array<{ bytes: string }>;
+  for (const row of settings) {
+    const bytes = Buffer.from(row.bytes, "hex");
+    const text = new TextDecoder(source.databaseEncoding.toLowerCase(), { fatal: true, ignoreBOM: true }).decode(bytes);
+    const parsed = parseJsonTextStrict<unknown>(text, "Retained model description settings");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("CoGate target initialization settings must be an unambiguous object.");
+    }
+  }
+  if (database.prepare(`SELECT 1 FROM main.user_settings u,json_each(u.payload) j
+    GROUP BY u.rowid,j.key HAVING COUNT(*)>1 LIMIT 1`).get() ||
+      database.prepare(`SELECT 1 FROM main.user_settings
+        WHERE json_type(payload,'$.modelDescriptionOverrides') IS NOT NULL
+          AND json_type(payload,'$.modelDescriptionOverrides') NOT IN ('object','null') LIMIT 1`).get() ||
+      database.prepare(`SELECT 1 FROM main.user_settings u,
+        json_each(u.payload,'$.modelDescriptionOverrides') j
+        GROUP BY u.rowid,j.key HAVING COUNT(*)>1 LIMIT 1`).get()) {
+    throw new Error("CoGate target initialization model description fields are ambiguous.");
+  }
+  const columns = ["model_id", "version", "description", "created_at"];
+  const expected = hashProjection(database, "model_description_versions", columns,
+    `SELECT j.key AS model_id,1 AS version,j.value AS description,NULL AS created_at
+     FROM main.user_settings u,json_each(u.payload,'$.modelDescriptionOverrides') j
+     WHERE j.type='text' AND j.value<>''`, []);
+  const actual = hashProjection(database, "model_description_versions", columns,
+    "SELECT model_id,version,description,created_at FROM main.model_description_versions", []);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error("CoGate target initialization fabricated or lost model description history.");
+  }
+  return { modelDescriptionVersions: actual, originSha256: hash(origin) };
 }
 
 function hashProjection(database: Database.Database, name: string, columns: string[], query: string,

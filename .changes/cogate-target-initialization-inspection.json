@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Compare retained CoGate state, derived model history and explicit conversion provenance in one read-only target snapshot.",
+  "breaking": false,
+  "migration": null
+}
