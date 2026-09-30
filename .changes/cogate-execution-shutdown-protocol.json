@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Define exact data-only executor/controller nonforcing close and observation correlation frames without granting process or operator authority.",
+  "breaking": false,
+  "migration": null
+}

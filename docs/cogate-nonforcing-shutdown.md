@@ -100,3 +100,11 @@ nonforcing shutdown. Those backends currently lack the explicit capability, so
 the router returns uncertain for them. No operator or runtime option invokes
 this path. Its receipts are transport aggregation, not external authority or
 generation/owner-bound worker proof.
+
+Execution shutdown frames have a separate strict local correlation parser. A
+close frame binds the current executor generation/PID, authenticated controller
+ID and a fresh request ID. A later observation has its own request ID and retains
+the original close ID. Receipts match every field and the operation, reject
+accessor/inherited/missing/extra fields and inconsistent results, and copy an
+immutable result. Parsing alone performs no action or source authentication;
+the owner/controller IPC and real lifetime proof are still to be wired.
