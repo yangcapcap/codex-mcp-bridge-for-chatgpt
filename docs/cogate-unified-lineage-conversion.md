@@ -280,3 +280,8 @@ then performs fatal decoding in the database's actual UTF-8/UTF-16le/UTF-16be
 encoding before JSON/Unicode/member checks. Driver replacement decoding cannot
 turn malformed retained TEXT into an admissible origin. Nontext values and
 oversize stored or decoded content remain closed without changing their bytes.
+
+Selected origin records must be unique and use the exact canonical metadata
+key. A malformed metadata table with duplicate origin rows or a case-insensitive
+key alias cannot hide a conversion claim behind the first ordinary row. This
+ambiguity is rejected before maintenance ownership or WAL configuration.

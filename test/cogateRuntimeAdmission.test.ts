@@ -194,4 +194,25 @@ describe("runtime activation remains closed until unified CoGate actors and auth
       expect((db.prepare("SELECT CAST(value AS BLOB) AS bytes FROM bridge_meta").get() as {bytes:Buffer}).bytes).toEqual(bytes);
     } finally {db.close();}
   });
+  test.each(["duplicate","noncanonical-collation"])("ambiguous metadata %s blocks actual startup before lease or WAL changes", shape => {
+    const root=mkdtempSync(path.join(tmpdir(),"cogate-origin-records-")),file=path.join(root,"candidate.sqlite");
+    try {
+      new BridgeStateStore({file}).close();const db=new Database(file);
+      db.exec(`ALTER TABLE bridge_meta RENAME TO saved_meta;
+        CREATE TABLE bridge_meta(key TEXT ${shape==="duplicate" ? "" : "COLLATE NOCASE PRIMARY KEY"},value TEXT NOT NULL) STRICT;
+        INSERT INTO bridge_meta SELECT * FROM saved_meta;DROP TABLE saved_meta;`);
+      if(shape==="duplicate") db.prepare("INSERT INTO bridge_meta VALUES('state_schema_origin',?)").run('{"kind":"lineage-conversion"}');
+      else db.prepare("UPDATE bridge_meta SET key='STATE_SCHEMA_ORIGIN',value=? WHERE key='state_schema_origin'")
+        .run('{"kind":"lineage-conversion"}');
+      db.pragma("journal_mode = DELETE");db.close();
+      const before=readFileSync(file),names=readdirSync(root);
+      for(const readOnly of [true,false]) {
+        let store:BridgeStateStore|undefined;
+        try {expect(()=>{store=new BridgeStateStore({file,readOnly});}).toThrow(/ACTIVATION_UNAVAILABLE/);}
+        finally {store?.close();}
+      }
+      expect(()=>prepareStateDatabaseOpen(file)).toThrow(/ACTIVATION_UNAVAILABLE/);
+      expect(readFileSync(file)).toEqual(before);expect(readdirSync(root)).toEqual(names);
+    } finally {rmSync(root,{recursive:true});}
+  });
 });

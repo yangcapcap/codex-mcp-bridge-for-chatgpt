@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject multiple origin rows and noncanonical matching metadata keys before runtime admission can discard conversion evidence.",
+  "breaking": false,
+  "migration": null
+}

@@ -48,6 +48,8 @@ export function assertCoGateConversionOriginUnavailable(database: Database.Datab
     CASE WHEN length(CAST(value AS BLOB)) <= 65536 THEN CAST(value AS BLOB) ELSE NULL END AS bytes
     FROM main.bridge_meta WHERE key IN ('cogate_lineage_conversion_v1','state_schema_origin')`).all() as
     Array<{key:string;storageClass:string;byteLength:number;bytes:Buffer|null}>;
+  if(rows.some(row=>row.key!=="state_schema_origin" && row.key!=="cogate_lineage_conversion_v1") ||
+    rows.filter(row=>row.key==="state_schema_origin").length>1) blocked();
   if (rows.some(row => row.key === "cogate_lineage_conversion_v1")) blocked();
   const originRow = rows.find(row => row.key === "state_schema_origin");
   if (originRow !== undefined) {
