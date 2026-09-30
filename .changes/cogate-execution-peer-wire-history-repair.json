@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retain exact serialized execution peer frames and classify ordinary shutdown history from wire bytes before enqueueing, preserving nonforcing uncertainty across caller mutation and reentrant serialization.",
+  "breaking": false,
+  "migration": null
+}

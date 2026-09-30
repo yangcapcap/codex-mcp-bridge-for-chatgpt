@@ -17,6 +17,38 @@ function peer(){return new ExecutionPeer({directory:"/private/task-only-no-files
 function authenticate(socket:any,pid=51000,gen=generation){const body=Buffer.from(JSON.stringify({type:"owner",pid,generation:gen}));const header=Buffer.alloc(4);header.writeUInt32BE(body.length);socket.emit("data",Buffer.concat([header,body]));}
 beforeEach(()=>{vi.useFakeTimers();h.sockets=[];h.children=[];h.signals=[];});afterEach(()=>vi.useRealTimers());
 describe("retained execution peer nonforcing signal and launch fence",()=>{
+ test.each(["toJSON","accessor","inherited"])("retains prior serialized %s ordinary close history",async variant=>{
+  const p=peer();p.start();h.sockets[0].destroy();await vi.advanceTimersByTimeAsync(250);authenticate(h.sockets[1]);
+  const message=variant==="accessor" ? Object.defineProperty({},"type",{enumerable:true,get:()=>"close"}) :
+   variant==="inherited" ? Object.assign(Object.create({type:"request"}),{toJSON:()=>({type:"close"})}) : {toJSON:()=>({type:"close"})};
+  expect(p.send(message)).toBe(true);
+  const frame=h.sockets[1].write.mock.calls.at(-1)[0] as Buffer;
+  expect(JSON.parse(frame.subarray(4).toString())).toEqual({type:"close"});p.pinNonforcingShutdown();
+  h.children[0].exitCode=0;h.children[0].emit("exit",0,null);
+  expect(p.observeNonforcingExit().outcome).toBe("uncertain");p.detach();
+ });
+ test("queued wire bytes cannot become force control after caller mutation",async()=>{
+  const p=peer();p.start();h.sockets[0].destroy();await vi.advanceTimersByTimeAsync(250);authenticate(h.sockets[1]);
+  let firstDone:(()=>void)|undefined;
+  h.sockets[1].write.mockImplementationOnce((_data:Buffer,done:()=>void)=>{firstDone=done;return true;});
+  expect(p.send({type:"request",id:1})).toBe(true);
+  const queued:any={type:"request",id:2};expect(p.send(queued)).toBe(true);
+  queued.type="terminate-owner";queued.signal="SIGKILL";firstDone!();
+  const frame=h.sockets[1].write.mock.calls.at(-1)[0] as Buffer;
+  expect(JSON.parse(frame.subarray(4).toString())).toEqual({type:"request",id:2});p.pinNonforcingShutdown();
+  h.children[0].exitCode=0;h.children[0].emit("exit",0,null);expect(p.observeNonforcingExit().exited).toBe(true);p.detach();
+ });
+ test("ordinary serialization occurs once for the exact transmitted representation",async()=>{
+  const p=peer();p.start();h.sockets[0].destroy();await vi.advanceTimersByTimeAsync(250);authenticate(h.sockets[1]);
+  let calls=0;expect(p.send({toJSON:()=>++calls===1?{type:"request"}:{type:"terminate-owner",signal:"SIGKILL"}})).toBe(true);
+  expect(calls).toBe(1);const frame=h.sockets[1].write.mock.calls.at(-1)[0] as Buffer;
+  expect(JSON.parse(frame.subarray(4).toString())).toEqual({type:"request"});p.detach();
+ });
+ test("serialization that reentrantly pins cannot enqueue ordinary close afterward",async()=>{
+  const p=peer();p.start();h.sockets[0].destroy();await vi.advanceTimersByTimeAsync(250);authenticate(h.sockets[1]);
+  const done=vi.fn();expect(p.send({toJSON(){p.pinNonforcingShutdown();return {type:"close"};}},done)).toBe(false);
+  expect(done).toHaveBeenCalledWith(expect.any(Error));expect(h.sockets[1].write).not.toHaveBeenCalled();p.detach();
+ });
  test("ordinary owned child signals are preserved before pin",()=>{
   const p=peer();p.start();h.sockets[0].destroy();expect(h.children).toHaveLength(1);
   expect(p.kill("SIGKILL")).toBe(true);expect(h.signals).toEqual(["SIGKILL"]);p.detach();

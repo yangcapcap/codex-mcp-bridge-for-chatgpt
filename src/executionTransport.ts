@@ -86,7 +86,11 @@ export class ExecutionSocket {
     let body: Buffer;
     try { body = Buffer.from(JSON.stringify(value)); }
     catch { done(new Error("EXECUTION_SERIALIZATION_FAILED")); return false; }
-    if (body.length > EXECUTION_FRAME_BYTES) { done(new Error("EXECUTION_MESSAGE_TOO_LARGE")); return false; }
+    return this.sendSerialized(body,done);
+  }
+  /** Transmit private, already serialized bytes without invoking caller code again. */
+  sendSerialized(body: Buffer, done: (error?: Error | null) => void = () => {}): boolean {
+    if (body.length===0 || body.length > EXECUTION_FRAME_BYTES) { done(new Error("EXECUTION_MESSAGE_TOO_LARGE")); return false; }
     if (this.socket.destroyed || this.socket.writableLength + body.length > SOCKET_BUFFER_BYTES) {
       done(new Error("EXECUTION_LINK_BACKPRESSURE"));
       return false;
@@ -118,7 +122,7 @@ export class ExecutionPeer extends EventEmitter {
   private ordinaryShutdownSent=false;
   private nonforcingHistoryUncertain=false;
   private nonforcingCloseRequest?: Extract<ExecutionShutdownRequest,{type:"close-nonforcing"}>;
-  private readonly outbound: Array<{ message: unknown; bytes: number; callback(error?: Error | null): void }> = [];
+  private readonly outbound: Array<{ body: Buffer; callback(error?: Error | null): void }> = [];
   private outboundBytes = 0;
   private sending = false;
 
@@ -157,6 +161,7 @@ export class ExecutionPeer extends EventEmitter {
 
   start(): void { this.connect(); }
   send(message: unknown, callback: (error?: Error | null) => void = () => {}): boolean {
+    const pinnedAtStart=this.nonforcingPinned;
     let closeRequest:Extract<ExecutionShutdownRequest,{type:"close-nonforcing"}>|undefined;
     if (this.nonforcingPinned) {
       const request=snapshotExecutionShutdownRequest(message),binding=this.nonforcingBinding;
@@ -169,24 +174,32 @@ export class ExecutionPeer extends EventEmitter {
       }
       message=request;
       if (request.type==="close-nonforcing") closeRequest=request;
-    } else {
-      try {
-        const type=message && typeof message==="object" ? Object.getOwnPropertyDescriptor(message,"type") : undefined;
-        if (type && Object.hasOwn(type,"value") && ["close","terminate-owner"].includes(type.value)) this.ordinaryShutdownSent=true;
-      } catch { /* Existing serialization below remains the ordinary boundary. */ }
     }
     if (!this.connected || !this.socket) { callback(new Error("EXECUTION_DISCONNECTED")); return false; }
-    const bytes = Buffer.byteLength(JSON.stringify(message));
-    if (this.outbound.length >= 256 || this.outboundBytes + bytes > 40 * 1024 * 1024) {
+    let body:Buffer,wire:unknown;
+    try {body=Buffer.from(JSON.stringify(message));wire=JSON.parse(body.toString("utf8"));}
+    catch {callback(new Error("EXECUTION_SERIALIZATION_FAILED"));return false;}
+    // Ordinary serialization may invoke getters/toJSON. A reentrant pin cannot
+    // admit the ordinary message after the fence has already been installed.
+    if (pinnedAtStart!==this.nonforcingPinned) {
+      callback(new Error("NONFORCING_EXECUTION_MESSAGE_REJECTED"));return false;
+    }
+    if (!this.connected || !this.socket) {callback(new Error("EXECUTION_DISCONNECTED"));return false;}
+    if (body.length===0 || body.length>EXECUTION_FRAME_BYTES) {
+      callback(new Error("EXECUTION_MESSAGE_TOO_LARGE"));return false;
+    }
+    if (this.outbound.length >= 256 || this.outboundBytes + body.length > 40 * 1024 * 1024) {
       callback(new Error("EXECUTION_LINK_BACKPRESSURE"));
       // The proxy retains authoritative pending requests and replays their
       // original IDs after reconnect. Do not strand an unsent request forever.
       this.socket.socket.destroy();
       return false;
     }
+    if (!pinnedAtStart && wire && typeof wire==="object" &&
+        ["close","terminate-owner"].includes((wire as {type?:unknown}).type as string)) this.ordinaryShutdownSent=true;
     if (closeRequest && !this.nonforcingCloseRequest) this.nonforcingCloseRequest=closeRequest;
-    this.outbound.push({ message, bytes, callback });
-    this.outboundBytes += bytes;
+    this.outbound.push({ body, callback });
+    this.outboundBytes += body.length;
     this.pump();
     return true;
   }
@@ -194,10 +207,10 @@ export class ExecutionPeer extends EventEmitter {
     if (this.sending || !this.connected || !this.socket) return;
     const next = this.outbound.shift();
     if (!next) return;
-    this.outboundBytes -= next.bytes;
+    this.outboundBytes -= next.body.length;
     this.sending = true;
     const socket = this.socket;
-    socket.send(next.message, error => {
+    socket.sendSerialized(next.body, error => {
       if (this.socket !== socket) return;
       this.sending = false;
       next.callback(error);

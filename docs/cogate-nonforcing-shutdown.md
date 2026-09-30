@@ -124,3 +124,10 @@ whole execution-service shutdown, authenticated receipt provenance or operator
 activation. Owner-side IPC and controller close still need policy propagation,
 real supervised-tree receipts and retention. This fence is not invoked by the
 current runtime until that complete integration is implemented and reviewed.
+
+The peer serializes each accepted outbound message once, classifies ordinary
+close/termination history from those exact bytes, and retains private bytes in
+the queue. Caller mutation, accessors and `toJSON` cannot change the transmitted
+representation after acceptance. An ordinary serialization that reentrantly
+installs the nonforcing fence is rejected before enqueueing. Prior serialized
+ordinary shutdown history remains unknown even after actual owned-child exit.
