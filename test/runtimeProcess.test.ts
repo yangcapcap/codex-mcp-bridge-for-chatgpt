@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { request as httpRequest } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createConnection, type Socket } from "node:net";
@@ -18,6 +18,7 @@ import {
 import type { BridgeHttpServer } from "../src/server.js";
 import { BridgeStateStore } from "../src/stateStore.js";
 import { UserSettingsStore } from "../src/userSettings.js";
+import { syntheticIdToken } from "./fixtures/syntheticAuth.js";
 
 type RunningRuntime = {
   root: string;
@@ -44,6 +45,14 @@ async function start(
 ): Promise<RunningRuntime> {
   const root = await mkdtemp(path.join(tmpdir(), "bridge-runtime-process-"));
   const environment = { ...runtimeEnvironment(root), ...environmentOverrides };
+  if (environmentOverrides.CODEX_TEST_RUNTIME_AUTH_FIXTURE === "1") {
+    environment.CODEX_HOME = path.join(root, "fixture-auth");
+    await mkdir(environment.CODEX_HOME, { mode: 0o700 });
+    await writeFile(path.join(environment.CODEX_HOME, "auth.json"), JSON.stringify({
+      auth_mode: "chatgpt", tokens: { account_id: "synthetic-runtime-account",
+        id_token: syntheticIdToken("fixture-runtime-user", "synthetic-runtime-account") }
+    }), { mode: 0o600 });
+  }
   const server = await createIsolatedHttpServer(loadConfig(environment), {
     childEnvironment: environment,
     onRuntimeProcessSpawn,
@@ -1148,6 +1157,7 @@ describe("isolated production runtime", () => {
     const runtime = await start(undefined, undefined, {
       CODEX_MCP_BRIDGE_CODEX: path.join(process.cwd(), "test/fixtures/fake-codex-app-server.mjs"),
       CODEX_MCP_BRIDGE_UPSTREAM_POOL_SIZE: "2",
+      CODEX_TEST_RUNTIME_AUTH_FIXTURE: "1",
       CODEX_TEST_PROCESS_SCOPED_THREAD_IDS: "1"
     });
     const sockets: Socket[] = [];

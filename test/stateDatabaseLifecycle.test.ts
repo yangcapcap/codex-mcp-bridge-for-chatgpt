@@ -156,12 +156,13 @@ describe("state database lifecycle", () => {
       })).toThrow(`checkpoint-${targetSchema}`);
       const checkpoint = new Database(file);
       expect(readSchema(checkpoint)).toBe(targetSchema);
-      checkpoint.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
+      // A real interrupted upgrade retains its durable original-source marker.
+      // Deleting that marker would fabricate a different upgrade lineage.
       checkpoint.close();
 
       const resumed = new BridgeStateStore({ file });
       expect(resumed.schemaVersion).toBe(30);
-      expect(resumed.getMeta("schema_v19_source_version")).toBe(String(targetSchema));
+      expect(resumed.getMeta("schema_v19_source_version")).toBe("3");
       resumed.close();
     }
   }, 30_000);

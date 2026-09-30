@@ -24,8 +24,62 @@ function probe(file: string): void {
   const lease = prepareStateDatabaseOpen(file);
   lease?.complete();
 }
+function unchangedRejectedFixture(edit: (database: Database.Database) => void, error: RegExp): void {
+  const file = fixture();
+  upstream21(file);
+  const database = new Database(file);
+  edit(database);
+  const before = readFileSync(file), walBefore = readFileSync(`${file}-wal`);
+  const entries = readdirSync(path.dirname(file)).sort();
+  try {
+    expect(() => new BridgeStateStore({ file })).toThrow(error);
+    expect(readFileSync(file)).toEqual(before);
+    expect(readFileSync(`${file}-wal`)).toEqual(walBefore);
+    expect(readdirSync(path.dirname(file)).sort()).toEqual(entries);
+  } finally { database.close(); }
+}
 
 describe("state lineage admission before writes", () => {
+  it("rejects a missing durable original-source marker before startup writes", () => {
+    unchangedRejectedFixture(database => {
+      database.prepare("DELETE FROM bridge_meta WHERE key='schema_v19_upgrade_source'").run();
+    }, /provenance has no supported original source schema/);
+  });
+  it("rejects a missing applied receipt before startup writes", () => {
+    unchangedRejectedFixture(database => {
+      database.prepare("DELETE FROM bridge_meta WHERE key=?").run("state_migration:bridge-state-19-to-20");
+    }, /provenance is missing bridge-state-19-to-20/);
+  });
+
+  it("rejects an applied receipt with a different original source before startup writes", () => {
+    unchangedRejectedFixture(database => {
+      const key = "state_migration:bridge-state-19-to-20";
+      const raw = database.prepare("SELECT value FROM bridge_meta WHERE key=?").get(key) as { value: string };
+      const record = JSON.parse(raw.value);
+      record.originalSourceSchema = 17;
+      database.prepare("UPDATE bridge_meta SET value=? WHERE key=?").run(JSON.stringify(record), key);
+    }, /provenance conflicts with bridge-state-19-to-20/);
+  });
+
+  it("rejects a completion table missing a required retry column before startup writes", () => {
+    unchangedRejectedFixture(database => {
+      const indexes = database.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL")
+        .all("job_completion_deliveries") as Array<{ name: string }>;
+      for (const index of indexes) database.exec(`DROP INDEX "${index.name.replaceAll('"', '""')}"`);
+      database.exec("ALTER TABLE job_completion_deliveries DROP COLUMN next_attempt_at");
+    }, /lineage shape conflicts with schema 21/);
+  });
+
+  it.each([19, 21, 22])("retains committed pending migration recovery at schema %s", targetSchema => {
+    const file = fixture();
+    createSchema18Fixture(file);
+    expect(() => new BridgeStateStore({ file, onMigrationSchemaCommitted(progress) {
+      if (progress.targetSchema === targetSchema) throw new Error(`fixture-pending-${targetSchema}`);
+    } })).toThrow(`fixture-pending-${targetSchema}`);
+    const store = new BridgeStateStore({ file });
+    try { expect(store.schemaVersion).toBe(30); }
+    finally { store.close(); }
+  });
   it("rejects a conflicting applied migration before creating upgrade sidecars or modifying the database", () => {
     const file = fixture();
     upstream21(file);

@@ -27,6 +27,7 @@ import {
   CURRENT_STATE_DATABASE_SCHEMA,
   STATE_MIGRATIONS,
   SUPPORTED_STATE_SCHEMA_VERSIONS,
+  stateMigrationPath,
   type StateMigrationCatalogEntry
 } from "./stateCompatibility.js";
 
@@ -175,7 +176,6 @@ export function inspectStateDatabase(
       throw new Error("Bridge state database has no valid integer schema_version marker.");
     }
     const schemaVersion = Number(rawSchema);
-    assertStateLineageAdmission(database, schemaVersion);
     const pendingRaw = meta.get("state_migration_pending");
     let pendingMigrationId: string | null = null;
     let pendingOriginalSource: number | null = null;
@@ -222,6 +222,7 @@ export function inspectStateDatabase(
     ) {
       throw new Error("Pending state migration conflicts with its original-source marker.");
     }
+    assertStateLineageAdmission(database, schemaVersion, pendingMigrationId);
     let activeProcessIds: number[] = [];
     if (tableExists(database, "bridge_instances")) {
       const rows = database.prepare(
@@ -275,10 +276,13 @@ export function inspectStateDatabase(
  * every retained implementation before any startup or upgrade write. Fresh and
  * pre-contract checkpoints also need the positive structures introduced by the
  * published async/completion migrations; they may have no applied receipts. */
-function assertStateLineageAdmission(database: Database.Database, schemaVersion: number): void {
+function assertStateLineageAdmission(
+  database: Database.Database, schemaVersion: number, pendingMigrationId: string | null
+): void {
   const records = database.prepare(
     "SELECT key,value FROM bridge_meta WHERE substr(key,1,16)='state_migration:'"
   ).all() as Array<{ key: string; value: string }>;
+  const applied = new Map<string, Record<string, unknown>>();
   for (const record of records) {
     const id = record.key.slice("state_migration:".length);
     const entry = STATE_MIGRATIONS.find(candidate => candidate.id === id);
@@ -295,6 +299,53 @@ function assertStateLineageAdmission(database: Database.Database, schemaVersion:
       typeof parsed.productVersion !== "string" || typeof parsed.buildId !== "string" ||
       typeof parsed.appliedAt !== "string" || !Number.isFinite(Date.parse(parsed.appliedAt))
     ) throw new Error(`State migration provenance conflicts with ${id}.`);
+    applied.set(id, parsed);
+  }
+  const getMeta = (key: string) => (database.prepare(
+    "SELECT value FROM bridge_meta WHERE key=?"
+  ).get(key) as { value: string } | undefined)?.value;
+  const lastMigrationId = getMeta("state_last_migration_id");
+  if (lastMigrationId !== undefined) {
+    const sourceRaw = getMeta("state_last_migration_source_schema") || getMeta("schema_v19_upgrade_source");
+    if (!sourceRaw || !/^\d+$/.test(sourceRaw) || String(Number(sourceRaw)) !== sourceRaw ||
+        !SUPPORTED_STATE_SCHEMA_VERSIONS.has(Number(sourceRaw))) {
+      throw new Error("State migration provenance has no supported original source schema.");
+    }
+    const originalSource = Number(sourceRaw);
+    const completePath = stateMigrationPath(originalSource);
+    let pathStart = 0;
+    const gapRaw = getMeta("state_migration_provenance_gap");
+    if (gapRaw !== undefined) {
+      const gap = parseJsonTextStrict<Record<string, unknown>>(gapRaw, "State migration provenance gap");
+      const gapIndex = completePath.findIndex(entry => entry.toSchema === gap.observedSchema);
+      if (gap.kind !== "pre-contract-intermediate-checkpoint" ||
+          gap.originalSourceSchema !== originalSource || gapIndex < 0 ||
+          typeof gap.recordedAt !== "string" || !Number.isFinite(Date.parse(gap.recordedAt))) {
+        throw new Error("State migration provenance gap marker is invalid.");
+      }
+      pathStart = gapIndex + 1;
+    }
+    // A committed pending migration has not finalized its receipt yet. Validate
+    // the preceding durable path; normal recovery will authenticate and finalize
+    // the already validated pending record under the startup lease.
+    const pending = STATE_MIGRATIONS.find(entry => entry.id === pendingMigrationId);
+    const checkpoint = pending?.toSchema === schemaVersion ? pending.fromSchema : schemaVersion;
+    const expected = completePath.slice(pathStart).filter(entry => entry.toSchema <= checkpoint);
+    if (expected.at(-1)?.toSchema !== checkpoint) {
+      throw new Error(`State migration provenance cannot reach schema ${checkpoint}.`);
+    }
+    for (const entry of expected) {
+      const record = applied.get(entry.id);
+      if (!record) throw new Error(`State migration provenance is missing ${entry.id}.`);
+      if (record.originalSourceSchema !== originalSource) {
+        throw new Error(`State migration provenance conflicts with ${entry.id}.`);
+      }
+    }
+    if (lastMigrationId !== expected.at(-1)?.id) {
+      throw new Error("State last-migration identity does not match its applied path.");
+    }
+  } else if (applied.size > 0) {
+    throw new Error("Applied state migration provenance has no last-migration identity.");
   }
   if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion) || schemaVersion < 20) return;
   const columns = (table: string) => new Set(
@@ -308,7 +359,9 @@ function assertStateLineageAdmission(database: Database.Database, schemaVersion:
     ["workspace_control", "workspaces", "security_hmac_keys"].some(table => tableExists(database, table)) ||
     (schemaVersion >= 21 && ![
       "job_id", "scope_id", "terminal_version", "receipt", "state", "attempt_count",
-      "lease_owner", "lease_expires_at", "created_at", "updated_at"
+      "next_attempt_at", "lease_owner", "lease_expires_at", "last_host_rejected_at",
+      "last_host_error", "host_accepted_at", "acceptance_unknown_at", "result_read_at",
+      "created_at", "updated_at"
     ].every(column => completions.has(column)))
   ) throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
 }
