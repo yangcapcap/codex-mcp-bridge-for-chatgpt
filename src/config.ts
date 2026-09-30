@@ -25,6 +25,8 @@ export type BridgeConfig = {
   port: number;
   token?: string;
   noAuth: boolean;
+  /** Opt-in MCP Events. No Auth/Tunnel correlation metadata is insufficient. */
+  eventsEnabled?: boolean;
   allowedHosts?: string[];
   /** Browser Origin hostnames permitted to reach the MCP endpoint. */
   allowedOrigins?: string[];
@@ -227,6 +229,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     port,
     token,
     noAuth,
+    eventsEnabled: parseBool(read("EVENTS_ENABLED")),
     allowedHosts,
     allowedOrigins,
     codexCommand: read("CODEX") || "codex",

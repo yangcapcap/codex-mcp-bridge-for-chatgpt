@@ -33,7 +33,7 @@ writer column.
 
 | Table | Authoritative owner | Allowed writers | Principal readers | Maintenance owner |
 | --- | --- | --- | --- | --- |
-| `bridge_meta` | State UoW / schema and operations metadata | State UoW | startup, migration, policy diagnostics | owning command or maintenance slice |
+| `bridge_meta` | State UoW / schema, operations and bounded protocol journals | State UoW | startup, migration, policy diagnostics, exact-Job Events and approved followups | owning command or maintenance slice |
 | `scopes` | State UoW / scope repository | State UoW | status, Activity and Job repositories | none |
 | `bridge_instances` | State UoW / runtime ownership | State UoW | startup and diagnostics | State UoW at clean start/stop |
 | `project_registry` | State UoW / project repository | State UoW | settings, Session/Job project projections | none |
@@ -74,6 +74,15 @@ its `execution`, `usage`, and `uncertainResponseReview` projection. The event
 domain therefore uses the narrow summary repository rather than issuing raw
 cross-domain `UPDATE jobs` statements.
 
+The opt-in MCP Events journal (`mcp_events_v1/`) and approved-followup receipts
+(`task_followup_v1/`) use narrow State UoW metadata methods on that same writer.
+Exact terminal result plus event intent, and followup Job plus admission receipt,
+commit atomically with the existing Job transaction. These journals are separate
+from diagnostic `job_events`, native `completion_outbox`, and card/completion
+receipt facts. Projection workers do not activate the outbound event worker.
+The journal is capped at 256 subscriptions and eight per Job; its finite result
+recovery protection survives webhook ACK and unsubscribe. See [MCP Events](mcp-events.md).
+
 ## Query and command boundaries
 
 - `CodexJobRegistry.get`, `list`, counts and lookup helpers never prune or
@@ -112,7 +121,7 @@ failure record; the connection controller neither invokes nor owns maintenance.
 | History | 500 candidates and a 25 ms cooperative loop deadline |
 | Questions | 500 expirations, journals, and stale notification leases |
 | Recovery | 500 recovery rows and 500 incident rows |
-| Command receipts | 500 expired maintenance receipts; business receipts are preserved |
+| Command receipts | 500 expired maintenance receipts plus 500 cursor-paged unused followup grants; admitted followup tombstones are preserved; event expiry is independently capped at 256 subscriptions |
 | Jobs | Registry defaults to 64 inspected candidates and 32 removals (hard caps 256/64) with a 10 ms cooperative planning deadline; the state owner revalidates the transmitted candidates under the same bounded execution deadline before atomically archiving eligible rows |
 
 The one-time startup load may normalize the complete persisted Job set before

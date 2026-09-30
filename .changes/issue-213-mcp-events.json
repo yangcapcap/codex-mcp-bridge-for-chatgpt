@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "minor",
+  "summary": "Add opt-in authenticated exact-Job MCP Events with verified signed callbacks, durable delivery recovery, and pre-approved followup admission that converges across duplicate GPT runs.",
+  "breaking": false,
+  "migration": null
+}

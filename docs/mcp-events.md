@@ -1,0 +1,175 @@
+# Exact-Job MCP Events
+
+The opt-in `codex.job.terminal` event implements the webhook portion of
+[OpenAI's MCP Events contract](https://developers.openai.com/plugins/build/mcp-events)
+on the existing MCP `2026-07-28` endpoint. It signals a committed `completed`,
+`failed`, `interrupted`, or `cancelled` Job and carries an exact
+`codex_status` query. It does not include the prompt, answer, callback, signing
+key, or instructions to execute work.
+
+The default completion policy remains `live-card`; retained Jobs preserve
+their existing `live-card` or `direct-wait` snapshot. Events are an additional
+opt-in observation channel. No default switch, card retirement, new execution
+engine, automatic approval, or unrestricted flow is introduced. Callback ACK,
+result offer, caller's review assertion, followup admission and Activity
+verification remain separate facts.
+
+## Authentication and enablement
+
+Enable an isolated HTTP installation with
+`CODEX_MCP_BRIDGE_EVENTS_ENABLED=1`, a configured
+`CODEX_MCP_BRIDGE_TOKEN`, and `CODEX_MCP_BRIDGE_NO_AUTH=0`. The endpoint's
+existing bearer check establishes one installation operator principal; it is
+not multi-user OAuth. Only a new Job admitted through that authenticated
+connection can be subscribed to by that same principal and original derived
+conversation scope. The original Activity, Agent and active project must also
+remain accessible. Scope IDs and `openai/session`, subject and organization
+metadata are correlation values, not authentication credentials.
+
+The current No Auth / Secure MCP Tunnel stdio path supplies no independently
+verified subscriber principal. Events requests on that path are denied. Setting
+`openai/subject`, knowing a Job ID, or echoing a callback challenge cannot enable
+it. A future host-supported trusted identity adapter requires separate actual
+acceptance; this feature neither adds OAuth nor loosens existing scope checks.
+Existing execution and status tools continue normally.
+
+Discovery advertises `events` when the opt-in configuration is enabled. Use
+`events/list`, `events/subscribe` and `events/unsubscribe` on the same
+authenticated endpoint as tools. Rescan the plugin after changing event support.
+Read-only projection workers never activate delivery or become a second writer.
+
+## Subscription and delivery
+
+Subscribe using `name: "codex.job.terminal"`, `arguments: {"jobId":"..."}` and
+`delivery: {"mode":"webhook","url":"https://...","secret":"whsec_..."}`.
+The signing key must decode from base64 to 24–64 bytes. The service grants one
+hour by default and at most 24 hours; a smaller positive `ttlMs` is honored.
+`ttlMs: null` still receives a finite grant. `refreshBefore` is the granted
+expiration. Refresh uses the same principal, scope, exact Job and callback
+identity. Unsubscribe uses that event, arguments and callback URL, without a key.
+
+Each new callback must echo a fresh signed challenge within ten seconds before
+the subscription activates. Successful verification is cached for five minutes
+for that identity and key. Replacement keys are verified, encrypted and used
+together with the previous key during a five-minute rotation window. A late
+verification cannot undo a concurrent unsubscribe.
+
+All verification and delivery requests require HTTPS on the standard port,
+public DNS answers, a connection pinned to a validated address, and normal TLS
+hostname verification. Private, local, reserved, mapped and transition addresses
+are blocked. Redirects are never followed. Each attempt resolves DNS again to
+prevent rebinding. Standard Webhooks signs the exact serialized bytes with the
+event ID and current signing timestamp. Application bodies remain below 256 KiB;
+responses and connection lifetimes are bounded.
+
+Callback URLs and signing keys are AES-GCM encrypted in the existing database
+using a key derived from the installation bearer credential, which remains
+outside SQLite. The subscription ID is authenticated encryption context.
+Database-only dumps cannot disclose destinations or signing keys. Backups need
+the separately secured original bearer credential to recover those encrypted
+records. Rotating that credential changes the operator principal and revokes
+old subscriptions; it does not change Codex authentication or cancel Jobs.
+
+The bounded subscription journal uses `bridge_meta` keys under
+`mcp_events_v1/`, with at most 256 records and eight per Job. It has its own
+delivery state and ACK meaning. It is separate from diagnostic `job_events`,
+native `completion_outbox`, and `job_completion_deliveries`. The existing State
+UoW writes its delivery intent inside the exact terminal Job transaction. Late
+subscription uses the retained original terminal receipt to backfill the same
+event. This closes the result/intent crash boundary without polling or rerunning
+Codex. Cursors are `null`: this is an exact retained terminal snapshot, not a
+general event-history replay API.
+
+An event keeps its ID across callbacks, response loss and retries. Attempts are
+persisted before sending and capped at eight. Network errors, 408, 425, 429 and
+5xx use bounded exponential retry; 410, 413 and other permanent failures stop
+retry. HTTP 2xx records receipt only. It does not mark a card accepted, claim that
+GPT reviewed the answer, acknowledge run history, or release the original
+result. A 24-hour result recovery window survives ACK, failure, unsubscribe and
+revocation. Normal retention applies after that finite window. Expiration and
+cleanup never cancel work or manufacture a new Job.
+
+An unavailable authorization state read defers delivery with bounded backoff;
+only a confirmed access failure revokes it. An expired subscription schedules
+its finite recovery cleanup rather than continuing a retry timer.
+
+## Pre-approved A → B
+
+Before admitting A, include only exact prompts that the user has already
+approved:
+
+```json
+{
+  "approvedFollowups": [
+    { "stepId": "review-B", "prompt": "The exact already-approved B instruction" }
+  ]
+}
+```
+
+This optional input is part of task contract 6. It grants at most eight named
+steps, scoped to A's original Activity and Agent. Prompts are stored as hashes.
+The approval expires after seven days if unused; it cannot be added to A by
+reading its output or replaying an event. This is the model's declaration of
+existing user authorization, not proof of authorization independent of the
+conversation. The host/model must stop when new user input or approval is needed.
+
+After an event, the resumed GPT calls the supplied exact query:
+
+```json
+{ "query": { "kind": "job", "id": "A-job-id" } }
+```
+
+It reviews that answer before calling `codex_task` with the exact B prompt,
+the current contract/envelope, any UUID requestId, and:
+
+```json
+{
+  "followup": {
+    "jobId": "A-job-id",
+    "stepId": "review-B",
+    "reviewedVersion": 2
+  }
+}
+```
+
+Use the actual version from the exact Job read. Omit project and selection;
+the original Activity/Agent context is used. The backend requires a completed
+predecessor, an original exact result offer, an unexpired approval, the exact
+prompt hash, and a caller assertion of the reviewed version. It rechecks the
+retained result, thread, access mode and model in the atomic Job admission.
+It cannot inspect private GPT reasoning and does not equate result offer with
+actual human/model review.
+
+`original scope + predecessor Job + stepId` resolves to a durable canonical
+requestId. Admission binds that receipt and B's Job in the same existing
+transaction. Different UUIDs, GPT runs, event batches, duplicate card delivery,
+and response-loss retries converge to B. An expired B result still reserves
+the stage and cannot admit a replacement. Distinct approved steps and explicitly
+authorized ordinary reruns remain distinct; no exactly-once claim is made about
+external side effects performed inside Codex. Consumed receipts remain durable
+admission tombstones; the existing receipt maintenance slice removes unused
+expired approvals in bounded pages.
+
+Without a declared approved step, the backend rejects followup admission. The
+GPT may report the result and ask for a new instruction. Event text can never
+create a grant. Do not call an ordinary new task to evade a stage's receipt.
+
+## Acceptance boundary
+
+Protocol and synthetic regression tests cover the implementation. Actual
+ChatGPT / Tunnel discovery, callback support, resumed-call metadata and
+original scope equality still need an isolated authenticated host trial.
+Record webhook receipt separately from exact result retrieval, actual review,
+and B admission. The test must include a B-not-approved control and two distinct
+GPT runs delivering the same logical step.
+
+Card closure, conversation switching, backgrounding, connectivity loss and
+bridge restart each require actual host evidence. The upper Chat model, Pro
+mode and usage contract are unconfirmed until publicly documented or observed;
+webhook success cannot establish their preservation. No automatic host-resume
+claim or default delivery switch is made before those checks.
+
+This first event only covers terminal results. A Job blocked on an intermediate
+question has no terminal event. Continue to use `codex_status kind=input` and
+`codex_answer`; response-required events are a subsequent scope after actual
+terminal-event acceptance. No new question engine or automatic approval is added.

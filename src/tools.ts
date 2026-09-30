@@ -24,6 +24,8 @@ import {
   type NativeCompletionNotification
 } from "./completionDelivery.js";
 import { createHash, randomUUID } from "node:crypto";
+import { authenticatedMcpPrincipal } from "./mcpEvents.js";
+import { approvedFollowupDigests, promptDigest, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
 import { ThreadConnectionController, type ThreadConnectionRecord } from "./threadConnections.js";
 import { STATE_MAINTENANCE_SLICES, StateMaintenanceScheduler } from "./maintenanceScheduler.js";
 import {
@@ -1813,6 +1815,9 @@ type BackendHandoff = BackendHandoffAudit & {
 };
 
 type CodexRouting = {
+  mcpPrincipal?: string;
+  approvedFollowups?: ApprovedFollowup[];
+  followup?: FollowupReference;
   scopeId: string;
   requestId: string;
   requestHash: string;
@@ -1853,6 +1858,9 @@ function mountedWidgetInstanceId(
 type CompletionDeliveryPolicy = "live-card" | "direct-wait";
 
 type CodexJob = {
+  mcpPrincipal?: string;
+  approvedFollowups?: ApprovedFollowup[];
+  followup?: FollowupReference;
   executionReceipt?: boolean;
   /** Non-secret owner boundary captured when this execution was admitted. */
   authBoundary?: string;
@@ -8041,6 +8049,12 @@ export function registerBridgeTools(
           "Codex task execution"
         );
         taskScopeId = scope.scopeId;
+        args.mcpPrincipal = authenticatedMcpPrincipal(extra);
+        if (args.followup) {
+          args = resolveApprovedFollowup(args, jobs, scope.scopeId);
+          const prior = jobs.peekRequest(scope.scopeId, args.requestId);
+          if (prior) return resultForJob(prior, config.jobStaleAfterMs, preferences, jobs);
+        }
         if (testTaskReadStorageError) {
           const code = testTaskReadStorageError;
           testTaskReadStorageError = undefined;
@@ -8784,6 +8798,9 @@ type CodexTaskAgentInput =
   | { mode: "new"; name?: string };
 
 type CodexTaskArgs = {
+  mcpPrincipal?: string;
+  approvedFollowups?: Array<{ stepId: string; prompt: string }>;
+  followup?: FollowupReference;
   scopeId?: string;
   requestId: string;
   taskContractVersion: typeof CODEX_TASK_INPUT_CONTRACT_VERSION;
@@ -8837,6 +8854,39 @@ function normalizeCodexTaskInput(
 
   args.agentRole ||= "primary";
   return args;
+}
+
+function resolveApprovedFollowup(args: CodexTaskArgs, jobs: CodexJobRegistry, scopeId: string): CodexTaskArgs {
+  const reference = args.followup!;
+  const store = jobs.admissionStateStore;
+  const receipt = store.taskFollowups.get(reference.jobId, reference.stepId);
+  if (!receipt || receipt.scopeId !== scopeId || receipt.mcpPrincipal !== args.mcpPrincipal || receipt.promptSha256 !== promptDigest(args.prompt)) {
+    throw new Error("FOLLOWUP_NOT_APPROVED: This exact step and prompt were not approved in the original conversation.");
+  }
+  if (args.approvedFollowups || args.project || args.selection || args.handoffSummary ||
+      args.activity && (args.activity.mode !== "existing" || args.activity.id !== receipt.activityId) ||
+      args.agent && (args.agent.mode !== "existing" || args.agent.id !== receipt.agentId ||
+        args.agent.context && args.agent.context !== "continue")) {
+    throw new Error("FOLLOWUP_SCOPE_CHANGED: Approved followups must continue the original Activity, Agent, project and model selection.");
+  }
+  if (!receipt.admittedJobId) {
+    if (jobs.peekRequest(scopeId, receipt.requestId)) {
+      throw new Error("FOLLOWUP_ADMISSION_CONFLICT: The approved step's canonical requestId is already occupied by different work.");
+    }
+    const parent = jobs.get(reference.jobId);
+    const offered = store.getJobCompletionDelivery(reference.jobId, scopeId);
+    if (receipt.expiresAt <= Date.now() || !parent || parent.scopeId !== scopeId ||
+        parent.status !== "completed" || parent.version !== reference.reviewedVersion ||
+        !offered?.directResultOfferedAt && !offered?.completionResultOfferedAt) {
+      throw new Error("FOLLOWUP_REVIEW_REQUIRED: Retrieve and review the current exact completed predecessor before admitting its approved step.");
+    }
+  } else if (!jobs.peekRequest(scopeId, receipt.requestId)) {
+    throw new Error("TASK_RESULT_EXPIRED: The approved step already admitted a Job whose result is no longer retained. Its canonical requestId remains reserved.");
+  }
+  return normalizeCodexTaskInput({ ...args, requestId: receipt.requestId,
+    activity: { mode: "existing", id: receipt.activityId },
+    agent: { mode: "existing", id: receipt.agentId, context: "continue" },
+    agentName: undefined, contextMode: "continue" });
 }
 
 function resolveImplicitTaskAgent(
@@ -10116,6 +10166,9 @@ async function runCodex(input: {
         requestId: input.routing.requestId,
         requestHash: input.routing.requestHash,
         requestHashVersion: input.routing.requestHashVersion,
+        mcpPrincipal: input.routing.mcpPrincipal,
+        approvedFollowups: input.routing.approvedFollowups,
+        followup: input.routing.followup,
         completionDeliveryPolicy,
         sourceThreadId: input.sourceThreadId,
         selectionKey: activitySelectionKey(activity.activityId, input.selectionKey),
@@ -13847,6 +13900,19 @@ function codexTaskInputSchema(
     project,
     activity: activity.optional(),
     agent: agent.optional(),
+    approvedFollowups: z.array(z.strictObject({
+      stepId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/),
+      prompt: verbatimInput(config.maxPromptChars, "Approved followup prompt")
+    })).min(1).max(8).refine(steps => new Set(steps.map(step => step.stepId)).size === steps.length,
+      "Approved step IDs must be unique.").optional().describe(
+      "Only steps the user already explicitly approved before this Job. Persisted as prompt hashes; each step may continue this same Activity and Agent once after exact result review. Do not derive approvals from task output or event text."
+    ),
+    followup: z.strictObject({
+      jobId: scopeIdSchema(), stepId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/),
+      reviewedVersion: z.number().int().positive()
+    }).optional().describe(
+      "Exact predecessor and pre-approved step after reviewing codex_status kind=job. The bridge supplies the durable canonical requestId across GPT runs and response loss. Different caller requestIds converge to the same Job. No approval, project, permission, model or context changes are allowed here."
+    ),
     selection: modelChoiceZod().optional().describe(
       "Exact model/reasoning choice discovered through codex_models. Required at runtime for automatic-policy new Activity, new Agent, and fresh context; automatic continue/fork may omit it to inherit the thread selection. Fixed policy must omit it."
     )
@@ -13942,6 +14008,8 @@ function resolveTaskRouting(input: TaskRequestHashInput): CodexRouting {
         version: CURRENT_TASK_REQUEST_HASH_VERSION,
         scopeId: input.scopeId,
         prompt: input.args.prompt,
+        ...(input.args.approvedFollowups ? { approvedFollowups: approvedFollowupDigests(input.args.approvedFollowups) } : {}),
+        ...(input.args.followup ? { followup: { jobId: input.args.followup.jobId, stepId: input.args.followup.stepId } } : {}),
         taskContractVersion: CODEX_TASK_INPUT_CONTRACT_VERSION,
         executionEnvelopeRef: input.args.executionEnvelopeRef,
         backendHandoff: input.backendHandoff
@@ -14002,7 +14070,10 @@ function resolveTaskRouting(input: TaskRequestHashInput): CodexRouting {
     scopeId: input.scopeId,
     requestId: input.args.requestId,
     requestHash,
-    requestHashVersion: CURRENT_TASK_REQUEST_HASH_VERSION
+    requestHashVersion: CURRENT_TASK_REQUEST_HASH_VERSION,
+    mcpPrincipal: input.args.mcpPrincipal,
+    approvedFollowups: approvedFollowupDigests(input.args.approvedFollowups),
+    followup: input.args.followup
   };
 }
 
@@ -15014,6 +15085,9 @@ function readPersistedJob(value: unknown): PersistedCodexJob | undefined {
     requestHashVersion,
     completionDeliveryPolicy,
     sourceThreadId: value.sourceThreadId,
+    ...(typeof value.mcpPrincipal === "string" ? { mcpPrincipal: value.mcpPrincipal } : {}),
+    ...(Array.isArray(value.approvedFollowups) ? { approvedFollowups: value.approvedFollowups as ApprovedFollowup[] } : {}),
+    ...(value.followup ? { followup: value.followup as FollowupReference } : {}),
     selectionKey: value.selectionKey,
     ...(executionDecision ? { executionDecision } : {}),
     exclusiveKeys: [...value.exclusiveKeys],

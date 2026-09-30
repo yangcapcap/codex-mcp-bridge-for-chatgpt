@@ -34,7 +34,7 @@ admission response is lost, recover the receipt with
 `codex_status({"query":{"kind":"request","requestId":"..."}})` in the same
 scope. Reusing the ID with different task input is a conflict.
 
-For an already approved follow-up turn, retain its own `requestId` when the
+For an ordinary already approved follow-up turn, retain its own `requestId` when the
 parent Job result is read again or its admission response is lost. First query
 that ID to recover an uncertain admission; do not create a replacement ID for
 the same logical turn. A new branch, revision, or expressly requested rerun is
@@ -42,6 +42,19 @@ a new logical turn with its own ID. The bridge does not infer follow-up identity
 from matching prompts or the Agent's thread. If the follow-up ID itself is lost,
 the existing request contract cannot prove that two new IDs mean the same step.
 Do not treat `HANDLE_UNAVAILABLE` as proof that an old request was never admitted.
+
+For an exact step approved before its predecessor starts, the optional
+`approvedFollowups: [{"stepId":"B","prompt":"the exact approved B prompt"}]`
+declares that authorization on the predecessor admission. After reading and
+reviewing its completed exact result, use the same prompt with
+`followup: {"jobId":"the predecessor UUID","stepId":"B","reviewedVersion":2}`
+and omit project and selection. Use the actual version from the exact read.
+The bridge derives a durable canonical requestId from the original scope,
+predecessor and approved step, so different caller UUIDs and resumed GPT runs
+converge to one admission. A different prompt, changed context/model, unavailable
+result, unapproved step or occupied canonical ID is rejected. The exact result
+offer and the caller's review assertion do not prove private GPT review.
+See [MCP Events and approved followups](mcp-events.md) for expiry and recovery.
 
 All new work uses one asynchronous admission path. The bridge persists the Job,
 request receipt, versions, and requery handles before returning. It does not wait
@@ -56,6 +69,13 @@ suppresses that Job's live-card claim path. Settings changes apply only to later
 Jobs and never rewrite a retained Job policy. After every non-terminal wait
 return, inspect the supplied exact-Job input action before waiting again so an
 approval or user-input boundary stops automatic continuation.
+
+Opt-in authenticated `codex.job.terminal` Events add an independent delivery
+channel without changing that snapshot. Subscription authorization requires a
+server-verified principal as well as the original conversation scope. Callback
+ACK never settles a live-card claim or counts as result review. No Auth / Tunnel
+correlation metadata alone cannot authorize a subscription; actual ChatGPT
+resume support remains subject to isolated host acceptance.
 
 An exact Job/request `codex_status` wait is a bounded read. `waitFor="change"`
 wakes on a Job version change; `waitFor="terminal"` uses a lifecycle-only signal

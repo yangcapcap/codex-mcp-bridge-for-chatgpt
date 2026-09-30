@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
+import { McpEventStore } from "./mcpEventStore.js";
+import { TaskFollowupStore, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
 import { canonicalHumanText, parseJsonTextStrict } from "./textIntegrity.js";
 import {
   CURRENT_STATE_SCHEMA,
@@ -185,6 +187,9 @@ type SessionRowInput = {
 };
 
 type JobRowInput = {
+  mcpPrincipal?: string;
+  approvedFollowups?: ApprovedFollowup[];
+  followup?: FollowupReference;
   jobId: string;
   scopeId: string;
   requestId: string;
@@ -1553,6 +1558,7 @@ export class BridgeStateStore {
     } | undefined;
     if (!row) return [];
     const reasons: string[] = [];
+    if (this.mcpEvents.protectsResult(jobId, now)) reasons.push("mcp-event-result-recovery");
     if (isActiveActivityJobStatus(row.status)) reasons.push("active-work");
     if (this.database.prepare("SELECT 1 FROM job_interactions WHERE job_id=? AND is_blocking=1 LIMIT 1").get(jobId)) reasons.push("pending-interaction");
     if (this.database.prepare("SELECT 1 FROM completion_outbox WHERE activity_id=? AND delivered_at IS NULL AND acknowledged_at IS NULL LIMIT 1").get(row.activity_id)) reasons.push("undelivered-result");
@@ -4155,6 +4161,35 @@ export class BridgeStateStore {
       .run(key, value);
   }
 
+  /** Narrow UoW storage for bounded protocol metadata journals. */
+  listMeta(prefix: string, limit: number, afterKey?: string): Array<{ key: string; value: string }> {
+    return this.database.prepare("SELECT key,value FROM bridge_meta WHERE key>=? AND key<? AND key>? ORDER BY key LIMIT ?")
+      .all(prefix, prefix + "\uffff", afterKey || "", limit) as Array<{ key: string; value: string }>;
+  }
+
+  deleteMeta(key: string): void { this.database.prepare("DELETE FROM bridge_meta WHERE key=?").run(key); }
+
+  get mcpEvents(): McpEventStore { return new McpEventStore(this); }
+  get taskFollowups(): TaskFollowupStore { return new TaskFollowupStore(this); }
+  get readOnly(): boolean { return this.options.readOnly === true; }
+
+  isEventProjectAvailable(projectId: string): boolean {
+    return Boolean(this.database.prepare("SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NULL").get(projectId));
+  }
+
+  /** Revalidate the predecessor at the same atomic followup admission boundary. */
+  followupParent(jobId: string, scopeId: string, version: number): {
+    threadId: string | null; sandbox: string; selection: Record<string, unknown> | null
+  } | undefined {
+    const row = this.database.prepare(`SELECT j.thread_id AS threadId,j.sandbox,
+      json_extract(j.payload,'$.executionDecision.effectiveSelection') AS selection
+      FROM jobs j JOIN job_completion_deliveries d ON d.job_id=j.job_id
+      WHERE j.job_id=? AND j.scope_id=? AND j.job_version=? AND j.status='completed'
+        AND j.archived_at IS NULL AND (d.direct_result_offered_at IS NOT NULL OR d.completion_result_offered_at IS NOT NULL)`)
+      .get(jobId, scopeId, version) as { threadId: string | null; sandbox: string; selection: string | null } | undefined;
+    return row ? { ...row, selection: row.selection ? JSON.parse(row.selection) : null } : undefined;
+  }
+
   close(): void {
     if (this.closed) return;
     if (this.options.readOnly) {
@@ -6184,6 +6219,8 @@ export class BridgeStateStore {
         createdAt: job.updatedAt
       });
     }
+    if (nowTerminal) this.mcpEvents.enqueue(job);
+    this.taskFollowups.admit({ ...job, activityId, agentId, scopeId });
     this.replaceJobInteractions(job.jobId, job.pendingInteractions || []);
 
     const agentStateChanged = agentId
