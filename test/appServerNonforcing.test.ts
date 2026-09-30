@@ -87,6 +87,20 @@ describe("App Server pool synchronous policy and generation-bound tree evidence"
     expect((await pool.closeNonforcing(policy)).exited).toBe(true);release();await rejected;
     expect(state.normalCloses).toBe(0);expect(callback).not.toHaveBeenCalled();expect(state.instances).toHaveLength(1);
   });
+  test("pending owned-tree registration cannot approve an empty tree at close or later observation",async()=>{
+    let finish!:()=>void;const registration=new Promise<void>(resolve=>{finish=resolve;});
+    const s=supervisor(),started=vi.fn(()=>registration);
+    const pool=new CodexAppServerUpstreamPool("private-mock",1,{workerShutdownSupervisor:s.capability,onWorkerProcessStarted:started},dependencies);
+    const startup=pool.listModels().then(()=>undefined,error=>error);
+    try {
+      await vi.waitFor(()=>expect(started).toHaveBeenCalledOnce());
+      const retained=await pool.closeNonforcing(policy);expect(retained.outcome).toBe("uncertain");
+      expect((await pool.observeNonforcingExit()).outcome).toBe("uncertain");
+      finish();expect(await startup).toBeInstanceOf(Error);
+      expect((await pool.observeNonforcingExit()).outcome).toBe("uncertain");
+      expect(state.normalCloses).toBe(0);expect(retained.outcome).toBe("uncertain");
+    } finally {finish();await startup;}
+  });
   test("close while executable admission is pending creates no worker",async()=>{
     let release!:(value:string)=>void;const version=new Promise<string>(resolve=>{release=resolve;});
     const pool=new CodexAppServerUpstreamPool("private-mock",1,{}, {...dependencies,versionProbe:()=>version});

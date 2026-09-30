@@ -125,3 +125,11 @@ A caller-supplied supervisor is trusted local code and must pin every associated
 cleanup continuation; an acknowledgement alone is not an independently measured
 process-tree proof. The isolated actual test wires the reviewed registry and
 measures an escaped child remaining alive after its parent exits.
+
+If shutdown pins a connection before its owned-worker registration callback has
+completed, that connection retains sticky uncertainty in both close and later
+observations. An empty supervisor ledger cannot certify the absence of a worker
+whose registration is pending. Completing registration after parent exit cannot
+reconstruct an escaped descendant that was never captured, so it does not clear
+this UNKNOWN. Transport prohibition still pins immediately; no wait for the
+registration callback can defer or reopen ordinary force recovery.

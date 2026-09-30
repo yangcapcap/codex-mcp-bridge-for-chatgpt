@@ -1057,6 +1057,7 @@ class AppServerConnection {
   private closeRequested = false;
   private terminationRequested = false;
   private registeredWorkerIdentity?: JsonRpcProcessIdentity;
+  private workerRegistrationComplete=false;
   private supervisionRelease: Promise<void> = Promise.resolve();
   private nonforcingClose?: Promise<ShutdownResult>;
   private nonforcingSettled=false;
@@ -1121,6 +1122,7 @@ class AppServerConnection {
       const identity = await this.rpc.start();
       this.registeredWorkerIdentity = identity;
       await this.protocolOptions.onWorkerProcessStarted?.(identity);
+      this.workerRegistrationComplete=true;
       await this.initialize();
       return this;
     } catch (error) {
@@ -1731,7 +1733,8 @@ class AppServerConnection {
     const pinned=snapshotShutdownPolicy(policy);
     if (pinned.allowSigkillEscalation!==false) throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
     if (this.nonforcingClose) return this.nonforcingClose;
-    this.nonforcingHistoryUncertain=this.nonforcingHistoryUncertain || this.closeRequested || this.terminationRequested || this.ordinaryCleanupStarted;
+    this.nonforcingHistoryUncertain=this.nonforcingHistoryUncertain || !this.workerRegistrationComplete ||
+      this.closeRequested || this.terminationRequested || this.ordinaryCleanupStarted;
     this.closeRequested=true;
     let resolve!: (result:ShutdownResult)=>void;
     this.nonforcingClose=new Promise(done=>{resolve=done;});
