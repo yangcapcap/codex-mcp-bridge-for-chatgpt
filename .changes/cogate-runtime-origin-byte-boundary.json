@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Validate retained runtime origins from bounded raw SQLite bytes before any driver replacement decoding can grant admission.",
+  "breaking": false,
+  "migration": null
+}

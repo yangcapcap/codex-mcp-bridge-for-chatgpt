@@ -4,6 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { V31_COGATE_UNIFIED_MIGRATION_SCHEMA } from "./cogateUnifiedSchema.js";
+import { assertCoGateUnifiedRuntimeAdmission } from "./cogateRuntimeAdmission.js";
 import { McpEventStore } from "./mcpEventStore.js";
 import { TaskFollowupStore, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
 import { canonicalHumanText, parseJsonTextStrict } from "./textIntegrity.js";
@@ -705,6 +706,7 @@ export class BridgeStateStore {
             `found ${existingVersion ?? "unknown"}.`
           );
         }
+        assertCoGateUnifiedRuntimeAdmission(this.database);
         this.questions = new QuestionStore(this.database, { readOnly: true });
         this.eventRetention = new EventRetention(this.database, {
           readSummary: (jobId) => this.readJobSummary(jobId),

@@ -249,3 +249,39 @@ initialization writer, live lease, trusted approval source, backup proof,
 promotion operation or permission to launch. The existing projection-only
 function retains its original `targetInitializationVerification: "not-performed"`
 result. Neither function is connected to an operator or runtime activation path.
+
+## Temporary ordinary runtime admission gate
+
+Until the authenticated conversion/activation path and Workspace/HMAC actors are
+implemented and independently reviewed, ordinary schema31 runtime startup only
+admits the fixed empty CoGate extension with its original disabled control row.
+Both read-only state-store startup and writable migration preflight reject any
+retained Workspace/security/conversion rows, changed or absent control baseline,
+conversion marker, conversion origin, or malformed origin. Content inspection
+success does not grant runtime admission. There is no bypass flag or supplied
+approval argument. Ordinary fresh upstream schema31 remains usable.
+
+The guard reads the exact main-schema objects and all evidence within one SQLite
+snapshot, retaining any caller-owned transaction and rolling back only a snapshot
+it owns. Rejection precedes runtime owner/maintenance leases, status/backup writes
+and business mutations. A read-only SQLite WAL connection can create an empty WAL
+and coordination SHM sidecar; this is not a guarantee of zero filesystem I/O.
+Retained database bytes and historical evidence are not repaired or erased.
+
+Conversion-marker and origin checks apply before automatic migration for every
+numeric schema, including ordinary old upstream checkpoints. Origins are
+bounded to 64 KiB, strictly parsed for JSON/Unicode and checked iteratively for
+duplicate decoded member names at every object depth. Literal or escaped
+duplicate fields cannot hide a conversion claim behind a later ordinary value.
+These checks reject ambiguity; they do not normalize retained origin bytes.
+
+The origin boundary reads the SQLite storage class and bounded raw BLOB bytes,
+then performs fatal decoding in the database's actual UTF-8/UTF-16le/UTF-16be
+encoding before JSON/Unicode/member checks. Driver replacement decoding cannot
+turn malformed retained TEXT into an admissible origin. Nontext values and
+oversize stored or decoded content remain closed without changing their bytes.
+
+Selected origin records must be unique and use the exact canonical metadata
+key. A malformed metadata table with duplicate origin rows or a case-insensitive
+key alias cannot hide a conversion claim behind the first ordinary row. This
+ambiguity is rejected before maintenance ownership or WAL configuration.
