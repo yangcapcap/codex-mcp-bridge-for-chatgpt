@@ -140,6 +140,7 @@ export function inspectStateDatabase(
   const database = new Database(canonicalFile, { readonly: true, fileMustExist: true });
   try {
     database.pragma("query_only = ON");
+    database.exec("BEGIN");
     const hasMeta = database.prepare(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bridge_meta'"
     ).get();
@@ -174,6 +175,7 @@ export function inspectStateDatabase(
       throw new Error("Bridge state database has no valid integer schema_version marker.");
     }
     const schemaVersion = Number(rawSchema);
+    assertStateLineageAdmission(database, schemaVersion);
     const pendingRaw = meta.get("state_migration_pending");
     let pendingMigrationId: string | null = null;
     let pendingOriginalSource: number | null = null;
@@ -264,8 +266,51 @@ export function inspectStateDatabase(
       migrationSourceSchema
     };
   } finally {
+    if (database.inTransaction) database.exec("ROLLBACK");
     database.close();
   }
+}
+
+/** An integer version alone does not identify a migration lineage. Authenticate
+ * every retained implementation before any startup or upgrade write. Fresh and
+ * pre-contract checkpoints also need the positive structures introduced by the
+ * published async/completion migrations; they may have no applied receipts. */
+function assertStateLineageAdmission(database: Database.Database, schemaVersion: number): void {
+  const records = database.prepare(
+    "SELECT key,value FROM bridge_meta WHERE substr(key,1,16)='state_migration:'"
+  ).all() as Array<{ key: string; value: string }>;
+  for (const record of records) {
+    const id = record.key.slice("state_migration:".length);
+    const entry = STATE_MIGRATIONS.find(candidate => candidate.id === id);
+    let parsed: Record<string, unknown> | undefined;
+    try { parsed = parseJsonTextStrict<Record<string, unknown>>(record.value, "Applied state migration provenance"); }
+    catch { /* A malformed historical receipt never grants admission. */ }
+    if (
+      !entry || !parsed || parsed.id !== entry.id ||
+      parsed.fromSchema !== entry.fromSchema || parsed.toSchema !== entry.toSchema ||
+      parsed.implementationSha256 !== entry.sha256 ||
+      !Number.isSafeInteger(parsed.originalSourceSchema) ||
+      !SUPPORTED_STATE_SCHEMA_VERSIONS.has(Number(parsed.originalSourceSchema)) ||
+      Number(parsed.originalSourceSchema) > entry.fromSchema || entry.toSchema > schemaVersion ||
+      typeof parsed.productVersion !== "string" || typeof parsed.buildId !== "string" ||
+      typeof parsed.appliedAt !== "string" || !Number.isFinite(Date.parse(parsed.appliedAt))
+    ) throw new Error(`State migration provenance conflicts with ${id}.`);
+  }
+  if (!SUPPORTED_STATE_SCHEMA_VERSIONS.has(schemaVersion) || schemaVersion < 20) return;
+  const columns = (table: string) => new Set(
+    (database.pragma(`table_info(${table})`) as Array<{ name: string }>).map(column => column.name)
+  );
+  const jobs = columns("jobs"), activities = columns("activities");
+  const completions = schemaVersion >= 21 ? columns("job_completion_deliveries") : new Set<string>();
+  if (
+    !jobs.has("job_id") || !activities.has("activity_id") ||
+    jobs.has("execution_mode") || activities.has("execution_mode") ||
+    ["workspace_control", "workspaces", "security_hmac_keys"].some(table => tableExists(database, table)) ||
+    (schemaVersion >= 21 && ![
+      "job_id", "scope_id", "terminal_version", "receipt", "state", "attempt_count",
+      "lease_owner", "lease_expires_at", "created_at", "updated_at"
+    ].every(column => completions.has(column)))
+  ) throw new Error(`State migration lineage shape conflicts with schema ${schemaVersion}.`);
 }
 
 /**

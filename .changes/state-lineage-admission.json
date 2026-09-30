@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject conflicting applied migration identities and foreign async/completion schema shapes before database startup or upgrade writes.",
+  "breaking": false,
+  "migration": null
+}
