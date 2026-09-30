@@ -5,7 +5,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, test } from "vitest";
 import profile from "../src/cogateLegacySourceProfile.json" with { type: "json" };
-import { inspectCoGateLegacySource } from "../src/cogateLegacySource.js";
+import { inspectCoGateLegacySource, inspectCoGateLegacyPreservation } from "../src/cogateLegacySource.js";
 import { securityKeyFingerprint } from "../src/cogateLegacySecurityRead.js";
 
 function fixture(file = ":memory:"): Database.Database {
@@ -47,6 +47,89 @@ function completed(db: Database.Database, source: number): void {
 function withFixture(action: (db: Database.Database) => void): void {
   const db = fixture(); try { action(db); } finally { db.close(); }
 }
+
+describe("CoGate source preservation ledger", () => {
+  test("binds all 42 retained tables without granting authority or returning secret values", () => withFixture(db => {
+    meta(db, "retained_writer_unknown", '{ "outcome": "UNKNOWN", "evidence": "TOP_SECRET_MARKER" }');
+    const before = db.serialize(); const ledger = inspectCoGateLegacyPreservation(db);
+    expect(ledger).toMatchObject({ format: "cogate-legacy-preservation/v1", authority: "none",
+      source: { authority: "none", sourceSchema: 21 }, databaseEncoding: "UTF-8" });
+    expect(ledger.tables).toHaveLength(42);
+    expect(ledger.tables.map(table => table.name)).toEqual(profile.objects
+      .filter(object => object.type === "table").map(object => object.name));
+    expect(JSON.stringify(ledger)).not.toContain("TOP_SECRET_MARKER");
+    expect(JSON.stringify(ledger)).not.toContain(Buffer.alloc(32, 1).toString("base64url"));
+    expect(ledger.preservationSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(inspectCoGateLegacyPreservation(db)).toEqual(ledger);
+    expect(db.serialize()).toEqual(before); expect(db.inTransaction).toBe(false);
+    expect(db.pragma("query_only", { simple: true })).toBe(0);
+  }));
+  test("binds original opaque JSON bytes and embedded NUL rather than decoded JSON", () => withFixture(db => {
+    meta(db, "retained_writer_unknown", '{ "outcome": "UNKNOWN" }\0first');
+    const first = inspectCoGateLegacyPreservation(db);
+    meta(db, "retained_writer_unknown", '{ "outcome": "UNKNOWN" }\0second');
+    const second = inspectCoGateLegacyPreservation(db);
+    meta(db, "retained_writer_unknown", '{"outcome":"UNKNOWN"}\0second');
+    const third = inspectCoGateLegacyPreservation(db);
+    expect(first.preservationSha256).not.toBe(second.preservationSha256);
+    expect(second.preservationSha256).not.toBe(third.preservationSha256);
+    expect(first.tables.find(table => table.name === "scopes"))
+      .toEqual(third.tables.find(table => table.name === "scopes"));
+  }));
+  test("distinguishes invalid UTF-8 text bytes that JavaScript would decode identically", () => withFixture(db => {
+    const write = db.prepare("INSERT OR REPLACE INTO bridge_meta VALUES('opaque_text',CAST(? AS TEXT))");
+    write.run(Buffer.from([0x80])); const first = inspectCoGateLegacyPreservation(db);
+    write.run(Buffer.from([0x81])); const second = inspectCoGateLegacyPreservation(db);
+    expect(first.preservationSha256).not.toBe(second.preservationSha256);
+    expect(first.tables.find(table => table.name === "bridge_meta")?.contentSha256)
+      .not.toBe(second.tables.find(table => table.name === "bridge_meta")?.contentSha256);
+  }));
+  test("preserves distinct 64-bit integers beyond JavaScript's exact-number range", () => withFixture(db => {
+    db.prepare("INSERT INTO scopes VALUES('retained-scope',?,0,0)").run(9007199254740992n);
+    const first = inspectCoGateLegacyPreservation(db);
+    db.prepare("UPDATE scopes SET version=?").run(9007199254740993n);
+    const second = inspectCoGateLegacyPreservation(db);
+    expect(first.tables.find(table => table.name === "scopes")?.contentSha256)
+      .not.toBe(second.tables.find(table => table.name === "scopes")?.contentSha256);
+  }));
+  test("retains deleted-row sequence high-water marks exactly", () => withFixture(db => {
+    db.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES('activity_events',?)")
+      .run(9007199254740993n);
+    const before = db.serialize(); const ledger = inspectCoGateLegacyPreservation(db);
+    expect(ledger.sequences).toContainEqual({ name: "activity_events", highWaterMark: "9007199254740993" });
+    db.prepare("UPDATE sqlite_sequence SET seq=? WHERE name='activity_events'").run(9007199254740994n);
+    expect(inspectCoGateLegacyPreservation(db).preservationSha256).not.toBe(ledger.preservationSha256);
+    expect(before.equals(db.serialize())).toBe(false);
+  }));
+  test("hashes table contents independently of physical insertion order", () => {
+    const first = fixture(); const second = fixture();
+    try {
+      for (const id of ["a", "b"]) first.prepare("INSERT INTO scopes VALUES(?,0,0,0)").run(id);
+      for (const id of ["b", "a"]) second.prepare("INSERT INTO scopes VALUES(?,0,0,0)").run(id);
+      expect(inspectCoGateLegacyPreservation(first).tables.find(table => table.name === "scopes"))
+        .toEqual(inspectCoGateLegacyPreservation(second).tables.find(table => table.name === "scopes"));
+    } finally { first.close(); second.close(); }
+  });
+  test.each(["non-integer", "negative", "unknown-table", "duplicate"])(
+    "rejects ambiguous sequence evidence without rewriting it: %s", kind => withFixture(db => {
+      const name = kind === "unknown-table" ? "TOP_SECRET_UNKNOWN_TABLE" : "activity_events";
+      const value = kind === "non-integer" ? "corrupt" : kind === "negative" ? -1 : 1;
+      db.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)").run(name, value);
+      if (kind === "duplicate") db.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES(?,1)").run(name);
+      const before = db.serialize();
+      expect(() => inspectCoGateLegacyPreservation(db)).toThrow(/malformed sequence/);
+      expect(db.serialize()).toEqual(before); expect(db.inTransaction).toBe(false);
+      expect(db.pragma("query_only", { simple: true })).toBe(0);
+    })
+  );
+  test("restores an existing query-only setting and rejects unauthenticated source before hashing", () => withFixture(db => {
+    db.pragma("query_only = ON"); inspectCoGateLegacyPreservation(db);
+    expect(db.pragma("query_only", { simple: true })).toBe(1); expect(db.inTransaction).toBe(false);
+    db.pragma("query_only = OFF"); db.exec("DROP TRIGGER security_hmac_keys_no_delete");
+    const before = db.serialize(); expect(() => inspectCoGateLegacyPreservation(db)).toThrow(/schema objects/);
+    expect(db.serialize()).toEqual(before); expect(db.inTransaction).toBe(false);
+  }));
+});
 
 describe("fixed CoGate legacy source inspection", () => {
   test("authenticates a fresh source without issuing authority or returning HMAC material", () => withFixture(db => {

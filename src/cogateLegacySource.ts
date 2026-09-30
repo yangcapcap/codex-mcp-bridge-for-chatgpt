@@ -34,6 +34,17 @@ export type CoGateLegacySourceInspection = {
   authority: "none";
 };
 
+/** Private preservation evidence, never a conversion grant or an apply receipt. */
+export type CoGateLegacyPreservationInspection = {
+  format: "cogate-legacy-preservation/v1";
+  source: CoGateLegacySourceInspection;
+  databaseEncoding: string;
+  tables: Array<{ name: string; columns: string[]; rowCount: number; contentSha256: string }>;
+  sequences: Array<{ name: string; highWaterMark: string }>;
+  preservationSha256: string;
+  authority: "none";
+};
+
 type Receipt = {
   id: string; fromSchema: number; toSchema: number; implementationSha256: string;
   originalSourceSchema: number; productVersion: string; buildId: string; appliedAt: string;
@@ -47,6 +58,20 @@ type Entry = (typeof profile.migrations)[number];
  * are rejected before any pragma or statement.
  */
 export function inspectCoGateLegacySource(database: Database.Database): CoGateLegacySourceInspection {
+  return inspectSourceSnapshot(database, (_database, source) => source);
+}
+
+/** Authenticate and hash every retained cell in the same read-only snapshot. */
+export function inspectCoGateLegacyPreservation(
+  database: Database.Database
+): CoGateLegacyPreservationInspection {
+  return inspectSourceSnapshot(database, preservationInspection);
+}
+
+function inspectSourceSnapshot<T>(
+  database: Database.Database,
+  project: (database: Database.Database, source: CoGateLegacySourceInspection) => T
+): T {
   if ((!database.readonly && !database.memory) || database.inTransaction) {
     throw new Error("CoGate source inspection requires an idle read-only connection.");
   }
@@ -97,7 +122,7 @@ export function inspectCoGateLegacySource(database: Database.Database): CoGateLe
     if (!control) throw new Error("CoGate source workspace control is missing.");
     const lifecycleRows = database.prepare(`SELECT lifecycle,COUNT(*) AS count FROM workspaces
       GROUP BY lifecycle ORDER BY lifecycle`).all() as Array<{ lifecycle: string; count: number }>;
-    return {
+    return project(database, {
       sourceProfile: COGATE_LEGACY_SOURCE_PROFILE, sourceSchema: 21, logicalDatabaseId,
       schemaObjectsSha256, migrationEvidenceSha256: digest(JSON.stringify(rows)),
       appliedReceiptCount: receiptCount, historicalGapRetained,
@@ -109,12 +134,79 @@ export function inspectCoGateLegacySource(database: Database.Database): CoGateLe
       security: { scopeGeneration: scope.active.generation, executionGeneration: execution.active.generation,
         rotationRequired, pendingRotation: Boolean(scope.pending || execution.pending) },
       authority: "none"
-    };
+    });
   } finally {
     database.exec("ROLLBACK");
     database.pragma(`query_only = ${queryOnly ? "ON" : "OFF"}`);
   }
 }
+
+function preservationInspection(
+  database: Database.Database, source: CoGateLegacySourceInspection
+): CoGateLegacyPreservationInspection {
+  const tables: CoGateLegacyPreservationInspection["tables"] = [];
+  for (const object of profile.objects.filter(value => value.type === "table")) {
+    const name = object.name;
+    const columns = (database.pragma(`table_info(${quoteIdentifier(name)})`) as
+      Array<{ name: string }>).map(column => column.name);
+    const cells = columns.flatMap(column => {
+      const id = quoteIdentifier(column);
+      // SQL yields the original TEXT/BLOB bytes, including embedded NUL and
+      // invalid UTF-8. JavaScript decoding must not collapse distinct values.
+      return [`typeof(${id})`, `CASE WHEN typeof(${id}) IN ('text','blob')
+        THEN hex(CAST(${id} AS BLOB)) ELSE ${id} END`];
+    });
+    const order = columns.flatMap(column => {
+      const id = quoteIdentifier(column);
+      return [`typeof(${id}) COLLATE BINARY`, `CASE WHEN typeof(${id}) IN ('text','blob')
+        THEN CAST(${id} AS BLOB) ELSE ${id} END COLLATE BINARY`];
+    });
+    const hash = createHash("sha256").update("cogate-legacy-table/v1\0")
+      .update(JSON.stringify({ name, columns })).update("\0");
+    let rowCount = 0;
+    const statement = database.prepare(`SELECT ${cells.join(",")} FROM ${quoteIdentifier(name)}
+      ORDER BY ${order.join(",")}`).raw(true).safeIntegers(true);
+    for (const row of statement.iterate() as Iterable<unknown[]>) {
+      hash.update("row\0");
+      for (let index = 0; index < row.length; index += 2) {
+        const storage = row[index]; const value = row[index + 1];
+        let bytes: Buffer;
+        if (storage === "null" && value === null) bytes = Buffer.alloc(0);
+        else if ((storage === "text" || storage === "blob") && typeof value === "string") {
+          bytes = Buffer.from(value, "hex");
+        } else if (storage === "integer" && typeof value === "bigint") {
+          bytes = Buffer.from(value.toString(), "utf8");
+        } else if (storage === "real" && typeof value === "number") {
+          bytes = Buffer.alloc(8); bytes.writeDoubleBE(value);
+        } else throw new Error("CoGate preservation encountered an unsupported SQLite cell.");
+        const length = Buffer.alloc(8); length.writeBigUInt64BE(BigInt(bytes.length));
+        hash.update(`${storage}\0`).update(length).update(bytes);
+      }
+      rowCount += 1;
+      if (!Number.isSafeInteger(rowCount)) throw new Error("CoGate preservation row count is unsafe.");
+    }
+    hash.update(`count\0${rowCount}`);
+    tables.push({ name, columns, rowCount, contentSha256: hash.digest("hex") });
+  }
+  const sequenceTables = new Set(profile.objects.filter(object => object.type === "table" &&
+    /\bAUTOINCREMENT\b/.test(object.sql)).map(object => object.name));
+  const seenSequences = new Set<string>();
+  const sequences = (database.prepare("SELECT name,seq FROM sqlite_sequence ORDER BY name COLLATE BINARY")
+    .safeIntegers(true).all() as Array<{ name: string; seq: bigint }>).map(row => {
+    if (typeof row.name !== "string" || !sequenceTables.has(row.name) || seenSequences.has(row.name) ||
+        typeof row.seq !== "bigint" || row.seq < 0n) {
+      throw new Error("CoGate preservation has malformed sequence evidence.");
+    }
+    seenSequences.add(row.name);
+    return { name: row.name, highWaterMark: row.seq.toString() };
+  });
+  const evidence = { format: "cogate-legacy-preservation/v1" as const, source,
+    databaseEncoding: String(database.pragma("encoding", { simple: true })), tables, sequences,
+    authority: "none" as const };
+  return { ...evidence, preservationSha256: digest(JSON.stringify(evidence)) };
+}
+
+function quoteIdentifier(value: string): string { return `"${value.replaceAll('"', '""')}"`; }
 
 function inspectReceipts(meta: Map<string, string>): { receiptCount: number; historicalGapRetained: boolean } {
   const originRaw = meta.get("state_schema_origin");

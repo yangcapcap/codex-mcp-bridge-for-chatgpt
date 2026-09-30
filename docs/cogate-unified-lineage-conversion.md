@@ -1,7 +1,7 @@
 # CoGate source21 to the single upstream runtime
 
-Status: implementation contract; source inspection is implemented, conversion
-and runtime integration are not. The operator command must remain unavailable
+Status: implementation contract; source inspection and read-only preservation
+ledger are implemented, conversion and runtime integration are not. The operator command must remain unavailable
 until all of this contract has independent exact-head review and validation.
 
 The integration base is upstream dev 8b8d40a55a16f9d60ee0fb0397ac16a4e31ea239.
@@ -65,6 +65,15 @@ and content digests using a private conversion ledger that never prints secrets.
 Copy SQLite sequence high-water marks so future events cannot reuse historical
 identities. Preserve opaque JSON payload bytes. Validate the two changed execution
 tables, the added auth boundary and every new target table explicitly.
+
+`inspectCoGateLegacyPreservation` authenticates the fixed source and binds all 42
+tables and their columns in the same read-only SQLite snapshot. Its domain-separated
+content digests include SQLite storage types, exact TEXT/BLOB bytes, exact 64-bit
+integer values, row counts and sequence high-water marks; database encoding is also
+bound. Physical insertion order does not change a table's digest. The ledger emits
+no cell values or HMAC material and retains `authority: none`. It is private source
+evidence for a future copy-to-target verifier, not a conversion receipt, backup seal,
+claim of idle ownership, signing authority or readiness to apply.
 
 ## Apply transaction and recovery
 

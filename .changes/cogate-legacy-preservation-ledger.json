@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Bind all legacy CoGate retained tables and sequence high-water marks in one authenticated read-only preservation snapshot before reviewed conversion.",
+  "breaking": false,
+  "migration": null
+}
