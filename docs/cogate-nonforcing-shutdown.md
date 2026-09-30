@@ -85,3 +85,18 @@ Final retention also runs when a later probe throws. A birth-bound descendant
 observed after pinning therefore survives snapshot serialization and recovery
 even if the cleanup never returns successfully. Failed overflow still retains
 the incomplete flag; known identities are kept alongside that UNKNOWN.
+
+The upstream router has an explicit optional-backend capability boundary.
+`closeNonforcing()` snapshots the false policy, seals its own sticky close state
+before synchronously invoking each backend capability, rejects subsequent new
+requests and retains thread/worker bindings. An absent, invalid, rejected or
+unresolved receipt is uncertain; it never calls ordinary backend close as a
+fallback. Ordinary close after pinning cannot independently force recovery.
+Fresh observation requires a separately supplied observation capability and
+does not rewrite the old receipt. Prior ordinary shutdown history stays unknown.
+
+This router boundary does not implement App Server or execution-service
+nonforcing shutdown. Those backends currently lack the explicit capability, so
+the router returns uncertain for them. No operator or runtime option invokes
+this path. Its receipts are transport aggregation, not external authority or
+generation/owner-bound worker proof.

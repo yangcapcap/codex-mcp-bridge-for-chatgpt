@@ -4,6 +4,7 @@ import type { BackendCapabilities, ModelSelection } from "./modelPolicy.js";
 import type { WorkerTerminationCorrelation } from "./cancellation.js";
 import type { JsonRpcTerminationResult } from "./jsonRpcProcess.js";
 import type { ExecutionAccessRequest } from "./executionAccess.js";
+import type { ShutdownPolicy, ShutdownResult } from "./shutdown.js";
 
 export const MAX_CODEX_INTERACTION_QUESTIONS = 3;
 
@@ -283,4 +284,7 @@ export type CodexUpstream = {
   canSteerThread?(threadId: string): boolean;
   steerThread?(threadId: string, prompt: string): Promise<{ turnId: string }>;
   close(): Promise<void>;
+  /** Optional explicit capability; missing/void evidence never grants shutdown success. */
+  closeNonforcing?(policy: ShutdownPolicy & {allowSigkillEscalation:false}): Promise<ShutdownResult>;
+  observeNonforcingExit?(): ShutdownResult | Promise<ShutdownResult>;
 };

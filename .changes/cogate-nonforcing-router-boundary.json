@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add an explicit upstream-router nonforcing capability boundary that preserves bindings and rejects missing backend evidence without force fallback.",
+  "breaking": false,
+  "migration": null
+}
