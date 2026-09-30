@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Compare domain-separated conversion approval signatures with supplied keys and expected bindings without granting operator authority.",
+  "breaking": false,
+  "migration": null
+}

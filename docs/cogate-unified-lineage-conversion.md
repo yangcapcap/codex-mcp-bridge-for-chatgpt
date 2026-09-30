@@ -1,7 +1,8 @@
 # CoGate source21 to the single upstream runtime
 
 Status: implementation contract; source inspection and read-only preservation
-ledger, schema31 storage and a read-only target projection verifier are implemented;
+ledger, schema31 storage, a read-only target projection verifier and a supplied-key
+conversion signature comparison are implemented;
 conversion and actor/runtime integration are not. The operator command must remain unavailable
 until all of this contract has independent exact-head review and validation.
 
@@ -117,6 +118,26 @@ cannot supply any real approval. No runtime apply command or production converte
 is introduced by this inspection module.
 
 ## Apply transaction and recovery
+
+`inspectCoGateConversionApproval` performs only a read-only cryptographic
+comparison. It requires a domain-separated Ed25519 signature, canonical DER key
+fingerprint, strict UTF-8/Unicode and unique decoded fields at every object level,
+an exact approval envelope/body shape, reviewed/expiry timestamps, and all expected
+conversion/database/profile/schema, candidate, preservation, projection-plan,
+implementation, backup, workflow, control, rollback and maintenance-owner digests.
+Each digest must match the supplied expected binding. Approval lifetime is at most
+24 hours; future reviews, expired approvals and noncanonical timestamps fail closed.
+Its canonical envelope hash is a content binding, not a claim of receipt-file
+identity. The module has no file, database, process or operator action.
+
+The result explicitly says `matched-supplied-key` and
+`matched-supplied-expectations`, with `authority: none`. It does not authenticate
+the external origin of that key or measure any live owner, backup, candidate,
+workflow or control. Synthetic test signatures prove none of those facts. A future
+operator must read its independently pinned authority from authenticated private
+ceremony evidence and supply freshly measured bindings; these trust-source and
+live preflight checks remain unimplemented. The comparison alone must never enable
+conversion, promotion, maintenance, shutdown or target startup.
 
 Conversion is an explicit operator action, outside automatic startup. Before any
 apply, authenticate the sealed candidate, signed external approval, fixed source
