@@ -78,7 +78,7 @@ async function start(
   return item;
 }
 
-function conformanceToolCall(baseUrl: string): Promise<Response> {
+function conformanceToolCall(baseUrl: string, signal?: AbortSignal): Promise<Response> {
   return fetch(`${baseUrl}/mcp`, {
     method: "POST",
     headers: {
@@ -104,7 +104,8 @@ function conformanceToolCall(baseUrl: string): Promise<Response> {
           "io.modelcontextprotocol/clientCapabilities": {}
         }
       }
-    })
+    }),
+    signal
   });
 }
 
@@ -1536,21 +1537,7 @@ describe("isolated production runtime", () => {
       CODEX_MCP_BRIDGE_TEST_CONFORMANCE_DELAY_MS: "5000"
     }, true);
     const controller = new AbortController();
-    const pending = fetch(`${runtime.baseUrl}/mcp`, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "mcp-protocol-version": CURRENT_PROTOCOL,
-        "mcp-method": "tools/call",
-        "mcp-name": "test_logging_tool"
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0", id: "disconnect-after-body", method: "tools/call",
-        params: { name: "test_logging_tool", arguments: {} }
-      }),
-      signal: controller.signal
-    });
+    const pending = conformanceToolCall(runtime.baseUrl, controller.signal);
     const deadline = Date.now() + 3_000;
     while (Date.now() < deadline) {
       if ((await observedStateInFlight(runtime.baseUrl) || 0) === 1) break;
