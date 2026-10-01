@@ -43,12 +43,14 @@ test("scope delegate pin preserves uncertainty and prevents diagnostic normaliza
   expect(c.observeNonforcingExit().outcome).toBe("uncertain");
 });
 
-test("scope result accessors are rejected without executing them", () => {
+test("a scope result accessor that pins prevents continuation and retains its result", () => {
   let reads = 0;
-  const c = controller({ require() { return { get scopeId() { reads++; return "forged"; } }; } });
-  expect(() => c.requireOwnedScope({ mcpReq: {} }, "Events")).toThrow("MCP_EVENTS_DATA_UNCONFIRMED");
-  expect(reads).toBe(0);
-  c.pinNonforcingShutdown();
+  let c: any;
+  const scope = { get scopeId() { reads++; c.pinNonforcingShutdown(); return "scope"; } };
+  c = controller({ require() { return scope; } });
+  expect(() => c.requireOwnedScope({ mcpReq: {} }, "Events")).toThrow("MCP_EVENTS_NONFORCING_PINNED");
+  expect(reads).toBe(1);
+  expect(c.retainedErrors.get("conversation-scope")).toBe(scope);
   expect(c.observeNonforcingExit().outcome).toBe("uncertain");
 });
 

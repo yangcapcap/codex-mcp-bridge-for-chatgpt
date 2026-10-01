@@ -241,8 +241,11 @@ export class McpEventsController {
       throw new ProtocolError(-32001,"Events require valid original conversation metadata.",{reason:"invalid_conversation_scope"});
     }
     this.assertAdmission();
-    const captured=this.ownedData(scope,'conversation-scope');
-    const scopeId=captured.scopeId;this.assertAdmission();return scopeId;
+    // Preserve the existing pre-pin resolution contract. A synchronous scope
+    // accessor may pin while the request is owned; no continuation crosses it.
+    const scopeId=scope.scopeId;
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('conversation-scope',scope);}
+    this.assertAdmission();return scopeId;
   }
 
   private async subscribeOwned(params: z.infer<typeof subscribeSchema>, context: ServerContext) {
