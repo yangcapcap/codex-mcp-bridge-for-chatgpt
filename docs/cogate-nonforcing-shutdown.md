@@ -461,3 +461,16 @@ publications, and stop registration immediately after a pinning method lookup.
 Cleanup capabilities admitted before pin remain retained without late delegation.
 These checks provide registry resource evidence only; runtime and writer release
 remain separate requirements.
+
+Registry callback ownership uses the identity established when the Job enters
+the registry, independently of the mutable object supplied to callbacks. Late
+ACK rejection or unsupported fulfillment stays under that original identity.
+Terminal candidates copy only own data properties and retain the original owned
+producer Promise. Missing, replaced or accessor-backed producer fields, changed
+Job identity, or unsupported nested data retain the raw Job and original
+settlement with permanent `UNKNOWN`; their accessors are never invoked. Normal
+completion callbacks can still supply admitted thread data and an undo function.
+Subscription cleanup attempts each original capability after an ordinary error;
+if an explicit pin intervenes, later capabilities remain retained and uncalled.
+These are registry resource guarantees; independent review and complete runtime
+integration remain separate requirements.

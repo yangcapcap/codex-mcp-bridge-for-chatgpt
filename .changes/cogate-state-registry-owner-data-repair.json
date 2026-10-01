@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Bind callback and late ACK evidence to the original Job admission, retain owned producer Promises, snapshot terminal Job data without invoking accessors, and attempt or retain every subscription cleanup capability.",
+  "breaking": false,
+  "migration": null
+}

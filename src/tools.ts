@@ -2190,6 +2190,8 @@ const ackPromiseSpecies=Object.getOwnPropertyDescriptor(Promise,Symbol.species)?
 export class CodexJobRegistry {
   private readonly authBoundary?: () => string | null;
   private readonly jobs = new Map<string, CodexJob>();
+  private readonly ownedJobIds = new WeakMap<CodexJob,string>();
+  private readonly ownedJobPromises = new WeakMap<CodexJob,Promise<void>>();
   private readonly jobsByAgent = new Map<string, Set<string>>();
   private readonly indexedJobAgent = new Map<string, string>();
   private readonly waiters = new Map<string, Set<(reason: CodexJobWakeReason) => void>>();
@@ -2494,11 +2496,13 @@ export class CodexJobRegistry {
     finally{this.registryCallbacksInFlight--;}
   }
   releaseApplicationSubscriptions(subscriptions:Array<(()=>void)|undefined>):void {
+    let firstError:unknown,failed=false;
     for(const unsubscribe of subscriptions) {
       if(!unsubscribe)continue;
       if(this.nonforcingPinned){this.retainNonforcingObservation('application-subscription','retained-unsubscribe',unsubscribe);continue;}
-      this.publishApplicationChange(unsubscribe);
+      try{this.publishApplicationChange(unsubscribe);}catch(error){if(!failed){failed=true;firstError=error;}}
     }
+    if(failed)throw firstError;
   }
 
   private persistenceWarningShown = false;
@@ -2646,17 +2650,19 @@ export class CodexJobRegistry {
           value => record(job, extractThreadId(value), extractResultThreadLineage(value))))
         .catch(error => this.settleExecutionError(job, error))
         .finally(() => this.acknowledgeSettledExecution(job));
+      this.ownJobPromise(job);
     }
   }
 
   private acknowledgeSettledExecution(job: CodexJob): void {
     if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job) || this.executionAcknowledgements.has(job)) return;
+    const jobId=this.ownedJobId(job);
     const observation: {value?: unknown} = {};
     this.executionAcknowledgements.set(job,observation);
     const failed = (error: unknown) => {
       this.nonforcingUnknown = true;
       this.unconfirmedJobCallbacks.add(job);
-      this.retainNonforcingObservation(job.jobId,"execution-ack-error",error);
+      this.retainNonforcingObservation(jobId,"execution-ack-error",error);
     };
     try {
       const assignment = this.jobAssignment(job);
@@ -2721,7 +2727,18 @@ export class CodexJobRegistry {
   }
 
   private async settleExecution(job: CodexJob, settlement: DeferredJobSettlement): Promise<void> {
-    const jobId=job.jobId;
+    const jobId=this.ownedJobId(job);
+    if(!this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job)) {
+      try{this.terminalJobData(job,jobId);}catch(error){
+        this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+        this.retainNonforcingObservation(jobId,'terminal-job-validation',error);
+      }
+    }
+    if(this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) {
+      if(!this.deferredSettlements.has(jobId))this.deferredSettlements.set(jobId,settlement);
+      else this.retainNonforcingObservation(jobId,'terminal-settlement',settlement);
+      return;
+    }
     if (!this.nonforcingPinned && settlement.kind === "resolved") {
       const captured = snapshotNonforcingData(settlement.result, () => this.nonforcingPinned);
       if (!captured.ok) {
@@ -2925,7 +2942,8 @@ export class CodexJobRegistry {
   }
 
   private setIndexedJob(job: CodexJob): void {
-    this.jobs.set(job.jobId, job);
+    if (!this.ownedJobIds.has(job)) this.ownedJobIds.set(job,job.jobId);
+    this.jobs.set(this.ownedJobId(job), job);
     const previousAgent = this.indexedJobAgent.get(job.jobId);
     if (previousAgent && previousAgent !== job.agentId) {
       const ids = this.jobsByAgent.get(previousAgent);
@@ -2939,6 +2957,16 @@ export class CodexJobRegistry {
       this.jobsByAgent.set(job.agentId, ids);
       this.indexedJobAgent.set(job.jobId, job.agentId);
     }
+  }
+
+  private ownedJobId(job:CodexJob):string {
+    const id=this.ownedJobIds.get(job);
+    if(id===undefined)throw new Error("STATE_JOB_OWNER_UNREGISTERED");
+    return id;
+  }
+
+  private ownJobPromise(job:CodexJob):void {
+    this.ownedJobPromises.set(job,job.promise);
   }
 
   private deleteIndexedJob(jobId: string): void {
@@ -3693,6 +3721,7 @@ export class CodexJobRegistry {
     job.approvedFollowups = issueApprovedFollowups(job.jobId, job.approvedFollowups);
     this.assertNonforcingAdmission();
     this.setIndexedJob(job);
+    const jobId=this.ownedJobId(job);
     try {
       this.persistJob(job);
     } catch (error) {
@@ -3702,7 +3731,7 @@ export class CodexJobRegistry {
     const execute = () => Promise.resolve()
       .then(() => {
         this.assertNonforcingAdmission();
-        return withExecutionIdentity(job.jobId, () => run(
+        return withExecutionIdentity(jobId, () => run(
           (progress) => this.recordProgress(job, progress),
           (assignment) => {
             const captured = this.recordWorkerAssignment(job, assignment);
@@ -3714,28 +3743,21 @@ export class CodexJobRegistry {
               if (returned !== undefined) {
                 this.nonforcingUnknown = true;
                 this.unconfirmedJobCallbacks.add(job);
-                this.retainNonforcingObservation(job.jobId,"assignment-callback-result",returned);
+                this.retainNonforcingObservation(jobId,"assignment-callback-result",returned);
               }
+              if(!this.nonforcingPinned)this.terminalJobData(job,jobId);
             } catch (error) {
               this.nonforcingUnknown = true;
               this.unconfirmedJobCallbacks.add(job);
-              this.retainNonforcingObservation(job.jobId,"assignment-callback-error",error);
+              this.retainNonforcingObservation(jobId,"assignment-callback-error",error);
             } finally {this.registryCallbacksInFlight--;}
           }
         ));
       })
       .then((result) => {
-        if (job.status === "terminating") {
-          this.deferredSettlements.set(job.jobId, { kind: "resolved", result, onComplete });
-          return;
-        }
         return this.settleExecutionResult(job, result, onComplete);
       })
       .catch((error: unknown) => {
-        if (job.status === "terminating") {
-          this.deferredSettlements.set(job.jobId, { kind: "rejected", error });
-          return;
-        }
         return this.settleExecutionError(job, error);
       }).finally(() => this.acknowledgeSettledExecution(job));
     if (deferExecution) {
@@ -3745,11 +3767,11 @@ export class CodexJobRegistry {
           this.assertNonforcingAdmission();
           if (settled) return;
           settled = true;
-          this.deferredExecutions.delete(job.jobId);
+          this.deferredExecutions.delete(jobId);
           if (operation) void operation().then(resolve, reject);
           else resolve();
         };
-        this.deferredExecutions.set(job.jobId, {
+        this.deferredExecutions.set(jobId, {
           launch: () => finish(execute),
           discard: () => finish()
         });
@@ -3757,6 +3779,7 @@ export class CodexJobRegistry {
     } else {
       job.promise = execute();
     }
+    this.ownJobPromise(job);
     return job;
   }
 
@@ -3787,7 +3810,7 @@ export class CodexJobRegistry {
     callback?: JobCompletionCallback): (() => void) | undefined {
     this.assertNonforcingAdmission();
     if (!callback) return undefined;
-    const jobId=job.jobId;
+    const jobId=this.ownedJobId(job);
     this.registryCallbacksInFlight++;
     try {
       const returned = Reflect.apply(callback,undefined,[result,job]);
@@ -3820,6 +3843,40 @@ export class CodexJobRegistry {
     }finally{this.registryCallbacksInFlight--;}
   }
 
+  private terminalJobData(job:CodexJob,originalJobId:string):CodexJob {
+    this.assertNonforcingAdmission();
+    const descriptors=Object.getOwnPropertyDescriptors(job);
+    this.assertNonforcingAdmission();
+    const identity=descriptors.jobId;
+    if(!identity || !Object.hasOwn(identity,'value') || identity.value!==originalJobId) {
+      this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(originalJobId,'terminal-job-owner',job);
+      // Restore only the owned top-level identity, never discard the raw Job.
+      // An unmodifiable accessor remains UNKNOWN without being evaluated.
+      try{Object.defineProperty(job,'jobId',{value:originalJobId,writable:true,enumerable:true,configurable:true});}catch{}
+      throw new Error('STATE_TERMINAL_JOB_OWNER_UNCONFIRMED');
+    }
+    const promise=descriptors.promise;
+    if(!promise || !Object.hasOwn(promise,'value') || promise.value!==this.ownedJobPromises.get(job)) {
+      this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(originalJobId,'terminal-job-promise',job);
+      throw new Error('STATE_TERMINAL_JOB_PROMISE_UNCONFIRMED');
+    }
+    const data:Record<string,unknown>={};
+    for(const key of Reflect.ownKeys(descriptors)) {
+      if(typeof key!=='string' || !Object.hasOwn(descriptors[key],'value')) {
+        this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+        this.retainNonforcingObservation(originalJobId,'terminal-job-data',job);
+        throw new Error('STATE_TERMINAL_JOB_DATA_UNCONFIRMED');
+      }
+      if(key!=='promise')Object.defineProperty(data,key,{value:descriptors[key].value,enumerable:true,writable:true,configurable:true});
+    }
+    const captured=snapshotNonforcingData(data,()=>this.nonforcingPinned);
+    this.assertNonforcingAdmission();
+    if(!captured.ok){this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);this.retainNonforcingObservation(originalJobId,'terminal-job-data',job);throw new Error('STATE_TERMINAL_JOB_DATA_UNCONFIRMED');}
+    return {...captured.value,promise:promise.value} as CodexJob;
+  }
+
   private settleResolvedJob(
     job: CodexJob,
     result: ToolResult,
@@ -3839,15 +3896,16 @@ export class CodexJobRegistry {
       this.allowedRoots,
       this.steeringPromptsFor(job.jobId)
     );
-    const jobId=job.jobId;
+    const jobId=this.ownedJobId(job);
     let undo: (() => void) | undefined;
     try {
       const next = this.activityStore.transaction(() => {
         undo = this.invokeCompletionCallback(job,result,onComplete);
         this.assertNonforcingAdmission();
+        const capturedJob=this.terminalJobData(job,jobId);
         const candidate: CodexJob = {
-          ...job,
-          threadId: job.sessionDecision.threadId,
+          ...capturedJob,
+          threadId: capturedJob.sessionDecision.threadId,
           status: turnStatus === "interrupted" ? "interrupted" : "completed",
           terminalOrigin: turnStatus === "interrupted"
             ? "app-server-interrupted"
@@ -3861,7 +3919,7 @@ export class CodexJobRegistry {
             ? "The Codex App Server turn was interrupted before normal completion."
             : undefined,
           updatedAt: Date.now(),
-          version: job.version + 1
+          version: capturedJob.version + 1
         };
         this.persistJob(candidate, [], false);
         return candidate;
@@ -3889,7 +3947,7 @@ export class CodexJobRegistry {
       this.allowedRoots,
       this.steeringPromptsFor(job.jobId)
     );
-    const jobId=job.jobId;
+    const jobId=this.ownedJobId(job);
     let undo: (() => void) | undefined;
     try {
       const next = this.activityStore.transaction(() => {
@@ -3897,9 +3955,10 @@ export class CodexJobRegistry {
         // Keep the same callback in the atomic terminal transaction.
         undo = this.invokeCompletionCallback(job,result,onComplete);
         this.assertNonforcingAdmission();
+        const capturedJob=this.terminalJobData(job,jobId);
         const candidate: CodexJob = {
-          ...job,
-          threadId: job.sessionDecision.threadId,
+          ...capturedJob,
+          threadId: capturedJob.sessionDecision.threadId,
           status: "failed",
           terminalOrigin: "upstream-failure",
           cancellationIntentId: undefined,
@@ -3909,12 +3968,12 @@ export class CodexJobRegistry {
           pendingInteractions: [],
           error: sanitizeTextForJob(
             toolResultErrorMessage(result),
-            job.cwd,
+            capturedJob.cwd,
             this.allowedRoots,
-            this.steeringPromptsFor(job.jobId)
+            this.steeringPromptsFor(capturedJob.jobId)
           ).slice(0, 4_000),
           updatedAt: Date.now(),
-          version: job.version + 1
+          version: capturedJob.version + 1
         };
         this.persistJob(candidate, [], false);
         return candidate;
@@ -4004,6 +4063,7 @@ export class CodexJobRegistry {
     job.promise = this.settleExecution(job, settlement)
       .catch(error => this.settleExecutionError(job, error))
       .finally(() => this.acknowledgeSettledExecution(job));
+    this.ownJobPromise(job);
   }
 
   terminationImpact(jobId: string): { targetJobId: string; affectedJobIds: string[]; collateralJobIds: string[] } {
