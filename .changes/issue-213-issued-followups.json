@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "minor",
+  "summary": "BREAKING: Replace caller-named approved followup steps with bridge-issued opaque references recoverable from admission, exact status and terminal events.",
+  "breaking": true,
+  "migration": "Refresh tool discovery, omit stepId declarations, and use returned followupId and canonical requestId values; exact predecessor reads adapt retained v1 receipts without admitting replacement Jobs."
+}

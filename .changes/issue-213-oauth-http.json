@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "minor",
+  "summary": "Add opt-in single-operator OAuth access JWT verification, login discovery and authenticated HTTP Tunnel profiles for MCP Events.",
+  "breaking": false,
+  "migration": null
+}

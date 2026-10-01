@@ -55,6 +55,7 @@ const dashboardArguments = z.strictObject({
  * Model-visible recovery is deliberately a closed set of non-destructive
  * reads/openers plus a separate guidance branch. A recovery record never
  * authorizes a task, mutation, or cancellation by itself.
+ * Status shares this JSON Schema definition across its result branches.
  */
 export const modelNextActionOutputSchema = z.union([
   z.strictObject({
@@ -82,7 +83,7 @@ export const modelNextActionOutputSchema = z.union([
     message: message.optional()
   }),
   z.strictObject({ kind: z.literal("guidance"), message })
-]);
+]).meta({ id: "modelNextAction" });
 
 export type ModelNextAction = z.infer<typeof modelNextActionOutputSchema>;
 
