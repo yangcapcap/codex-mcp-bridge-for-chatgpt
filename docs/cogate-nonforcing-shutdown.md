@@ -508,3 +508,14 @@ unsupported Promise constructor/then accessors remain retained and `UNKNOWN`.
 Copied regression assertions for delayed owned-store closure require actual
 native connection closure before a new `EXIT`; the old candidate's original
 false-EXIT reproducer and rejection evidence remain retained separately.
+
+Directly constructed MCP servers require the same actual owned database closure
+as HTTP and stdio. Pin-only observation never closes a database; a previously
+requested explicit close may finish resource cleanup after its callbacks settle.
+Events request ownership begins before subscription scope and ledger preflight.
+Scope and ledger method lookup and invocation each stop at a reentrant pin, so
+an earlier callback cannot admit the next one. List and unsubscribe handlers
+share the request fence. Authentication metadata is captured as own data before
+inspection. Initial timeout observations remain immutable. These are ingress
+resource guarantees; the separately rejected registry, private process owner,
+durable writer and activation contracts still require their own validation.

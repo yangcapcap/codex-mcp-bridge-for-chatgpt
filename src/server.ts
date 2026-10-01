@@ -280,9 +280,12 @@ export function createBridgeMcpServer(
   };
   runtimeServer.observeNonforcingExit=()=>{
     if(!mcpPinned || mcpUnknown)return shutdownResult('uncertain');
-    return combineShutdown([requestFence.observeNonforcingExit(),jobRegistry.observeNonforcingExit(),
+    const observed=combineShutdown([requestFence.observeNonforcingExit(),jobRegistry.observeNonforcingExit(),
       events?.observeNonforcingExit() ?? shutdownResult('exited'),
       mcpClosed && !server.isConnected()?shutdownResult('exited'):shutdownResult('timeout',1)]);
+    if(composedStateStore || !fallbackStateStore)return observed;
+    const database=observed.exited && mcpClosed && closePromise ? fallbackStateStore.closeNonforcing() : fallbackStateStore.observeNonforcingExit();
+    return combineShutdown([observed,database]);
   };
   server.close = () => {
     if (!closePromise) {

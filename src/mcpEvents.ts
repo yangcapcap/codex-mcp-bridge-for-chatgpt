@@ -78,11 +78,13 @@ export class McpEventsController {
   private readonly retainedResponses=new Map<string,unknown>();
   private readonly retainedErrors=new Map<string,unknown>();
   private readonly senderFence=new RuntimeOperationFence();
+  private readonly requestFence=new RuntimeOperationFence();
 
   pinNonforcingShutdown():true {
     if(this.nonforcingPinned)return true;
     this.nonforcingPinned=true;this.nonforcingUnknown ||= this.ordinaryClose;
     this.senderFence.pinNonforcingShutdown();
+    this.requestFence.pinNonforcingShutdown();
     this.stop.abort();
     try{this.unsubscribe();}catch(error){this.nonforcingUnknown=true;this.retainedErrors.set('unsubscribe',error);}
     if(this.timer)clearTimeout(this.timer);this.timer=undefined;
@@ -91,7 +93,7 @@ export class McpEventsController {
   observeNonforcingExit():ShutdownResult {
     if(!this.nonforcingPinned || this.nonforcingUnknown)return shutdownResult('uncertain');
     const active=this.verifying.size+(this.running?1:0);
-    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit()]);
+    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit(),this.requestFence.observeNonforcingExit()]);
   }
   async closeNonforcing():Promise<ShutdownResult>{
     this.pinNonforcingShutdown();
@@ -112,19 +114,23 @@ export class McpEventsController {
   install(server: McpServer): void {
     // SDK v2's core types do not yet include the draft Events extension.
     server.server.registerCapabilities({ events: {} } as Parameters<typeof server.server.registerCapabilities>[0]);
-    server.server.setRequestHandler("events/list", { params: z.strictObject({ cursor: z.null().optional(), _meta: z.record(z.string(), z.unknown()).optional() }) }, (_params, context) => {
+    server.server.setRequestHandler("events/list", { params: z.strictObject({ cursor: z.null().optional(), _meta: z.record(z.string(), z.unknown()).optional() }) }, (_params, context) => this.requestFence.run(()=>{
       this.authorize(context);
+      this.assertAdmission();
       return { events: [JOB_TERMINAL_EVENT_DEFINITION], ttlMs: 0, cacheScope: "private" };
-    });
+    }));
     server.server.setRequestHandler("events/subscribe", { params: subscribeSchema }, (params, context) => this.subscribe(params, context));
-    server.server.setRequestHandler("events/unsubscribe", { params: unsubscribeSchema }, (params, context) => {
+    server.server.setRequestHandler("events/unsubscribe", { params: unsubscribeSchema }, (params, context) => this.requestFence.run(()=>{
       const principal = this.authorize(context);
-      const scopeId = this.scopes.require(context.mcpReq._meta as ToolCallMetadata, undefined, "Event unsubscribe").scopeId;
+      this.assertAdmission();
+      const scopeId=this.requireOwnedScope(context,'Event unsubscribe');
       const id = this.identity(principal, scopeId, params.arguments.jobId, params.delivery.url);
       if (this.verifying.has(id)) this.verifying.set(id, this.verifying.get(id)! + 1);
       const ledger = this.jobs.admissionStateStore.mcpEvents;
+      this.assertAdmission();
       this.jobs.activityTransaction(() => {
         const record = ledger.get(params.arguments.jobId, id);
+        this.assertAdmission();
         if (!record) return;
         if (record.scopeId !== scopeId || record.principal !== principal) throw this.denied();
         if (!ledger.save({ ...record, revision: record.revision + 1, disabled: "unsubscribed" }, record.revision)) {
@@ -132,17 +138,43 @@ export class McpEventsController {
         }
       });
       return {};
-    });
+    }));
   }
 
   private async subscribe(params: z.infer<typeof subscribeSchema>, context: ServerContext) {
+    const id=randomUUID();
+    try{return await this.requestFence.run(()=>this.subscribeOwned(params,context));}
+    catch(error){this.retainedErrors.set('subscription:'+id,error);throw error;}
+  }
+
+  private assertAdmission():void {
+    if(this.nonforcingPinned)throw new Error('MCP_EVENTS_NONFORCING_PINNED');
+  }
+
+  private requireOwnedScope(context:ServerContext,label:string):string {
+    const request=context.mcpReq;this.assertAdmission();
+    const metadata=request._meta;this.assertAdmission();
+    const require=this.scopes.require;this.assertAdmission();
+    const scope=Reflect.apply(require,this.scopes,[metadata as ToolCallMetadata,undefined,label]);this.assertAdmission();
+    const scopeId=scope.scopeId;this.assertAdmission();return scopeId;
+  }
+
+  private async subscribeOwned(params: z.infer<typeof subscribeSchema>, context: ServerContext) {
+    this.assertAdmission();
     const principal = this.authorize(context);
-    const scopeId = this.scopes.require(context.mcpReq._meta as ToolCallMetadata, undefined, "Event subscription").scopeId;
+    this.assertAdmission();
+    const scopeId=this.requireOwnedScope(context,'Event subscription');
     this.requireJob(params.arguments.jobId, scopeId, principal);
+    this.assertAdmission();
     const id = this.identity(principal, scopeId, params.arguments.jobId, params.delivery.url);
-    const ledger = this.jobs.admissionStateStore.mcpEvents;
-    ledger.maintain();
-    const old = ledger.get(params.arguments.jobId, id);
+    const state=this.jobs.admissionStateStore;this.assertAdmission();
+    const ledger=state.mcpEvents;
+    this.assertAdmission();
+    const maintain=ledger.maintain;this.assertAdmission();Reflect.apply(maintain,ledger,[]);
+    this.assertAdmission();
+    const get=ledger.get;this.assertAdmission();
+    const old = Reflect.apply(get,ledger,[params.arguments.jobId,id]);
+    this.assertAdmission();
     if (this.verifying.has(id) || this.verifying.size >= 8) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "verification_busy" });
     this.verifying.set(id, 0);
     try {
@@ -213,7 +245,11 @@ export class McpEventsController {
 
   private authorize(context: ServerContext): string {
     if(this.nonforcingPinned)throw new Error('MCP_EVENTS_NONFORCING_PINNED');
-    if (!this.principal || authenticatedMcpPrincipal(context) !== this.principal) throw this.denied();
+    const http=context.http;this.assertAdmission();
+    const auth=http?.authInfo;this.assertAdmission();
+    const captured=snapshotNonforcingData(auth,()=>this.nonforcingPinned);this.assertAdmission();
+    if(!captured.ok){this.nonforcingUnknown=true;this.retainedErrors.set('auth-info',auth);throw this.denied();}
+    if (!this.principal || authenticatedMcpPrincipal({http:{authInfo:captured.value}} as Pick<ServerContext,'http'>) !== this.principal) throw this.denied();
     return this.principal;
   }
 
