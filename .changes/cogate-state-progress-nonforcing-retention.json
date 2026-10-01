@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Preserve unconfirmed progress snapshots under a nonforcing queue pin without letting close, removal or scheduled callbacks erase them.","breaking":false,"migration":null}

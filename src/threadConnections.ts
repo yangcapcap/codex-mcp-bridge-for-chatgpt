@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { CodexUpstream } from "./upstream.js";
 import { BackgroundWorkSlice, CONNECTION_WORK_LIMITS } from "./backgroundWorkBudget.js";
+import { shutdownResult, type ShutdownResult } from "./shutdown.js";
 
 export type ThreadPersistence = "persistent" | "ephemeral" | "unknown";
 export type ThreadConnectionPhase = "connected" | "waiting" | "releasing" | "unsubscribed" | "released" | "blocked";
@@ -228,6 +229,8 @@ export class ThreadConnectionController {
   private idleCursor = {finishedAt:0,threadId:""};
   private idleFirst = false;
   private closed = false;
+  private nonforcingPinned = false;
+  private nonforcingUnknown = false;
   private readonly now: () => number;
 
   constructor(private readonly store: ThreadConnectionStore, private readonly upstream: CodexUpstream,
@@ -237,30 +240,56 @@ export class ThreadConnectionController {
 
   start(): void {
     if (this.timer || this.closed) return;
-    for (const threadId of this.store.protectedThreadIds()) this.upstream.protectThreadFromImplicitResume?.(threadId);
-    this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 30_000);
+    const intervalMs = this.options.intervalMs ?? 30_000;
+    if (this.closed) return;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2_147_483_647)
+      throw new Error("STATE_BACKGROUND_INTERVAL_INVALID");
+    for (const threadId of this.store.protectedThreadIds()) {
+      if (this.nonforcingPinned) return;
+      const protect = this.upstream.protectThreadFromImplicitResume;
+      if (this.nonforcingPinned) return;
+      if (protect && Reflect.apply(protect, this.upstream, [threadId]) !== undefined) this.nonforcingUnknown = true;
+    }
+    if (this.nonforcingPinned) return;
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     void this.sweep();
   }
 
   request(threadId: string): ThreadConnectionRecord {
-    const current = this.store.requestHandoff(threadId, this.now());
-    this.options.changed?.();
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+    const observedAt = this.now();
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+    const current = this.store.requestHandoff(threadId, observedAt);
+    this.publishChanges();
     void this.sweep();
     return current;
   }
 
   cancel(threadId: string): ThreadConnectionRecord {
-    const current = this.store.cancelHandoff(threadId, this.now());
-    this.options.changed?.();
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+    const observedAt = this.now();
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+    const current = this.store.cancelHandoff(threadId, observedAt);
+    this.publishChanges();
     return current;
   }
 
   sweep(): Promise<void> {
     if (this.closed) return Promise.resolve();
-    return this.pending ||= this.runSweep().catch(error => {
+    if (this.pending) return this.pending;
+    let resolve!: () => void;
+    const pending = new Promise<void>(done => {resolve = done;});
+    this.pending = pending;
+    // Publish the original work handle before callbacks can reenter the fence.
+    void this.runSweep().catch(error => {
+      if (this.nonforcingPinned) this.nonforcingUnknown = true;
       this.lastError = error instanceof Error ? error.message : String(error);
-    }).finally(() => { this.pending = undefined; });
+    }).finally(() => {
+      if (this.pending === pending) this.pending = undefined;
+      resolve();
+    });
+    return pending;
   }
 
   private eligible(record: ThreadConnectionRecord): boolean {
@@ -307,44 +336,115 @@ export class ThreadConnectionController {
         finishedAt:initial.lastFinishedAt!,threadId:initial.threadId
       };
       if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
+      if (this.nonforcingPinned) return;
       const current = this.store.get(initial.threadId)!;
       if (current.phase === "released") continue;
       const reason = current.persistence !== "persistent" ? current.persistence === "ephemeral" ? "ephemeral" : "persistence-unknown"
         : this.store.hasUnfinishedWork(current.threadId) ? "active-work" : !this.upstream.releaseThreadConnection ? "unsupported" : undefined;
+      if (this.nonforcingPinned) return;
       if (reason) {
         if (current.phase !== "blocked" || current.reason !== reason) {
-          this.store.update(current.threadId, { phase: "blocked", reason }, this.now());
-          this.options.changed?.();
+          const updatedAt = this.now();
+          if (this.nonforcingPinned) return;
+          this.store.update(current.threadId, { phase: "blocked", reason }, updatedAt);
+          this.publishChanges();
         }
         continue;
       }
       if (!this.eligible(current)) continue;
-      const releasing = this.store.update(current.threadId, { phase: "releasing" }, this.now(), current.revision);
+      if (this.nonforcingPinned) return;
+      const releaseStartedAt = this.now();
+      if (this.nonforcingPinned) return;
+      const releasing = this.store.update(current.threadId, { phase: "releasing" }, releaseStartedAt, current.revision);
       if (!releasing) continue;
       const canRelease = (threadId: string) => {
         if (this.closed) return false;
         const row = this.store.get(threadId);
-        return Boolean(row && this.eligible(row));
+        const eligible = Boolean(row && this.eligible(row));
+        return !this.closed && eligible;
       };
       let result: ThreadReleaseResult;
       try {
-        result = await budget.awaitExternal(this.upstream.releaseThreadConnection!(current.threadId, { eligibleThreadIds, canRelease, previousWorkerPid: current.workerPid }));
+        const release = this.upstream.releaseThreadConnection!;
+        if (this.nonforcingPinned) return;
+        result = await budget.awaitExternal(Reflect.apply(release, this.upstream, [current.threadId, { eligibleThreadIds, canRelease, previousWorkerPid: current.workerPid }]));
       } catch { result = { phase: "blocked", reason: "release-unconfirmed" }; }
       if (this.closed) return;
+      const retainedResult = snapshotThreadReleaseResult(result);
+      if (this.nonforcingPinned) return;
+      if (!retainedResult) {this.nonforcingUnknown = true; return;}
+      result = retainedResult;
       // An acknowledgement alone never becomes proof of unload or relinquished writing.
       if (result.phase === "released" && !result.evidence) result = { phase: "blocked", reason: "release-unconfirmed" };
-      this.store.update(current.threadId, result, this.now(), releasing.revision);
+      const releasedAt = this.now();
+      if (this.nonforcingPinned) return;
+      this.store.update(current.threadId, result, releasedAt, releasing.revision);
       if (result.evidence) for (const threadId of result.releasedThreadIds || []) {
-        if (threadId !== current.threadId && canRelease(threadId)) this.store.update(threadId, { phase: "released", evidence: result.evidence }, this.now());
+        if (this.nonforcingPinned) return;
+        if (threadId !== current.threadId && canRelease(threadId)) {
+          const peerReleasedAt = this.now();
+          if (this.nonforcingPinned) return;
+          this.store.update(threadId, { phase: "released", evidence: result.evidence }, peerReleasedAt);
+        }
       }
-      this.options.changed?.();
+      this.publishChanges();
     }
   }
 
   async close(): Promise<void> {
+    if (this.nonforcingPinned) { await this.pending; return; }
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     await this.pending;
   }
+
+  /** Internal writer fence; it never publishes connection-release evidence. */
+  pinNonforcingShutdown(): true {
+    if (this.nonforcingPinned) return true;
+    this.nonforcingUnknown ||= this.closed;
+    this.nonforcingPinned = true;
+    this.closed = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    return true;
+  }
+
+  private publishChanges(): void {
+    if (this.nonforcingPinned) return;
+    const changed = this.options.changed;
+    if (this.nonforcingPinned) return;
+    if (changed && Reflect.apply(changed, this.options, []) !== undefined) this.nonforcingUnknown = true;
+  }
+
+  observeNonforcingExit(): ShutdownResult {
+    if (!this.nonforcingPinned || this.nonforcingUnknown) return shutdownResult("uncertain");
+    return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
+  }
+}
+
+function snapshotThreadReleaseResult(value: ThreadReleaseResult): ThreadReleaseResult | undefined {
+  try {
+    const fields = Object.getOwnPropertyDescriptors(value);
+    const keys = ["phase", "reason", "evidence", "releasedThreadIds"];
+    if (!Object.hasOwn(fields,"phase") || keys.some(key => Object.hasOwn(fields,key) && !Object.hasOwn(fields[key],"value"))) return;
+    const result = Object.fromEntries(keys.filter(key => Object.hasOwn(fields,key)).map(key => [key,fields[key].value]));
+    if (!["blocked","unsubscribed","released"].includes(result.phase) ||
+        result.reason !== undefined && typeof result.reason !== "string" ||
+        result.evidence !== undefined && !["thread-unloaded","worker-exited"].includes(result.evidence)) return;
+    if (result.releasedThreadIds !== undefined) {
+      if (!Array.isArray(result.releasedThreadIds)) return;
+      const slots = Object.getOwnPropertyDescriptors(result.releasedThreadIds) as Record<string,PropertyDescriptor>;
+      const length = slots.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 || length > 128 || Reflect.ownKeys(slots).length !== length + 1) return;
+      const ids: string[] = [];
+      for (let index=0; index<length; index++) {
+        const slot = slots[String(index)];
+        if (!slot || !Object.hasOwn(slot,"value") || typeof slot.value !== "string") return;
+        ids.push(slot.value);
+      }
+      result.releasedThreadIds = Object.freeze(ids);
+    }
+    return Object.freeze(result) as ThreadReleaseResult;
+  } catch {return;}
 }

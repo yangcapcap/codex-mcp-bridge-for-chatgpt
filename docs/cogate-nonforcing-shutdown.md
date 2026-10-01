@@ -287,6 +287,29 @@ reporting while preserving the immutable original result. No fresh finalization
 or receipt request is sent once such uncertainty has been recorded. The new
 repair requires its own independent exact-head review.
 
+### Pending state progress queue retention
+
+The internal fair progress queue can pin without discarding pending snapshots
+or charging them as dropped. Once pinned, ordinary close and remove callbacks
+cannot erase retained work, including a remove predicate that reentrantly pins.
+An already delivered scheduler callback or run-method lookup also checks the
+fence before consuming work. A prior ordinary discard remains explicitly
+uncertain. This primitive still needs state-owner application wiring and an
+independent review; it does not prove whole-runtime quiescence.
+
+## Pending state background writer fences
+
+The state-owned progress queue now has a synchronous nonforcing pin that cancels
+scheduling while retaining unconfirmed snapshots and counters. The connection,
+automatic recovery and maintenance controllers similarly stop dispatch before
+awaiting outstanding work. Each controller reports its own remaining async work;
+these resource observations never prove that a durable writer was released.
+Late connection and recovery responses leave their exact original journal rows
+unconfirmed. Maintenance retains the original dispatched command ID and suppresses
+late registry mutation callbacks. Ordinary-close history and uncertain maintenance
+commands stay UNKNOWN. The resource APIs are internal and are not native/MCP
+methods. Production state/runtime composition and policy propagation are still
+pending; this component alone does not authorize a shutdown or database close.
 Lazy direct delegation captures each actionable backend method before a final
 admission check. A getter that reentrantly installs the nonforcing fence cannot
 invoke its returned method or clear retained resume protections afterward. This
@@ -303,3 +326,53 @@ starting an admission guard, after awaiting that guard, and after method lookup.
 An ordinary close also rechecks its captured close method before invocation, so
 lookup-time pinning cannot resume force recovery. These checks preserve prior
 rejected evidence and require a fresh independent review.
+
+Connection and recovery sweep handles are registered before any configurable
+callback or method lookup can reenter shutdown. A callback cannot observe EXIT
+while its original work is still running; later quiet observations do not alter
+that initial observation. The final candidate includes independent regressions
+for this synchronous registration race.
+
+## Pending state background reentry repair
+
+The rejected `abb21de` component is retained as evidence. Its successor snapshots
+recovery and connection result fields as validated own data properties before a
+journal write. Accessor or malformed receipts retain the original unconfirmed
+row and sticky uncertainty, rather than execute code inside a transaction or
+publish release evidence. Clock callbacks are checked before each write. Timer
+intervals and queue limits are read before admission, with a final fence check
+before installing a timer or changing retained queues. The retained independent
+regressions are copied implementation baselines; a new exact-head review remains
+required, and complete state/runtime propagation is still pending.
+
+The rejected `b3fc3fd` successor is also retained. Thread request/cancel commands
+now check the fence after their clock callback and before changing a handoff.
+Recovery captures page/job resolver methods once and checks before delegation
+and after callbacks. A captured page avoids a second method getter altogether;
+an initial getter or the callback itself can still pin and suppress further work.
+Discovery arrays (at most 4096 entries) and required candidate fields are copied
+from own data descriptors, with checks around each descriptor lookup. Accessors,
+sparse/malformed arrays, invalid identities and excessive discovery leave the
+journal untouched and retain uncertainty. These checks also cover page slots and
+release eligibility clocks. Only validated primitive snapshots reach journal
+writes. Root regression results are component evidence; fresh independent review
+and full state/runtime composition remain required.
+
+The rejected `6a5c3a6` admission candidate remains immutable. Its successor uses
+`Reflect.apply` for every captured connection, recovery and maintenance callback;
+it does not look up a callable's configurable `call` property after checking the
+fence. This retains the receiver and arguments while eliminating that second
+executable lookup. Five independent reproductions are copied root regression
+baselines. A revoked discovery Proxy rejected during Promise assimilation is a
+completed discovery failure, not proof of an admitted journal write or a pin.
+This repair still requires a new exact-head independent disposition.
+
+The rejected `aff9ef7` candidate is retained. Queue error handling now checks
+before looking up an error hook and after lookup, and invokes it intrinsically.
+Pinning during a running projection preserves its exact scope/value and counters
+and latches uncertainty; it cannot produce a quiet resource claim while the
+original callback is still executing. Non-void callback returns are unsupported
+ownership evidence and retain bounded (128) original values plus sticky UNKNOWN.
+Queue status reads the last validated primitive limits without executing option
+getters after pin. Nine root suites (116 cases) are regression evidence only;
+fresh exact-head independent review and complete runtime wiring remain pending.

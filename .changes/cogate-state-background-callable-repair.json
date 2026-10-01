@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Invoke captured state background callbacks without executable call-property lookups.","breaking":false,"migration":null}

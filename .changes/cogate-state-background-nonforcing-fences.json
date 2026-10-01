@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Fence state background dispatch and retain unconfirmed recovery, connection and maintenance receipts during explicit nonforcing shutdown.","breaking":false,"migration":null}
