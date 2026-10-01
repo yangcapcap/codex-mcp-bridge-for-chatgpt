@@ -63,6 +63,7 @@
     "macos:bundle": "./macos/build-app.sh",
     "macos:package": "./macos/package-release.sh",
     "bridge:local": "node scripts/start-codex-mcp-bridge.mjs --mode local",
+    "bridge:auth": "tsx src/mcpAuthCli.ts",
     "bridge:secure": "node scripts/start-codex-mcp-bridge.mjs --mode secure",
     "bridge:secure:stdio": "node scripts/start-codex-mcp-bridge.mjs --mode secure --transport stdio",
     "bridge:secure:write": "node scripts/start-codex-mcp-bridge.mjs --mode secure --write",

@@ -9,8 +9,12 @@ stable operator principal to Jobs, subscriptions and approved followups.
 
 The bridge now implements an opt-in HTTP access-JWT adapter and authenticated
 Tunnel launcher path, with isolated synthetic acceptance. As of 2026-10-01,
-the operator has no configured OAuth/OIDC provider. Provider configuration and
-actual ChatGPT acceptance remain pending; issue #213 stays open. The default
+no Bridge-specific OAuth issuer or access grant has been configured. An isolated
+OpenAI open-source registration/sign-in succeeded, but provider configuration
+for the Bridge resource and actual ChatGPT acceptance remain pending. An opt-in
+[local OpenAI/Bridge authorization prototype](mcp-events-openai-authorization.md)
+now implements the separate token issuer with isolated HTTP integration tests;
+no public HTTPS host has been selected or deployed. Issue #213 stays open. The default
 launcher still uses No Auth, and Events on that connection are denied. Existing
 static-bearer tests and the new JWT/JWKS fixture tests are bridge evidence,
 not evidence of a real ChatGPT login or conversation resume.
@@ -40,6 +44,52 @@ provider candidate, including resource compatibility, operator permissions,
 client registration choices and the tenant-plan limitation on CIMD private-key
 authentication. It is a configuration plan, not a provisioned account or proof
 of ChatGPT interoperability. Provider choice remains an operator decision.
+
+### OpenAI sign-in trial
+
+At the operator's request, isolated OpenAI sign-in trials were run on
+2026-10-01. The [official cookbook](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)
+distinguishes public open-source/local-project **ChatGPT plan usage** from
+**identity-only integration**, which is currently offered to selected commercial
+partners. The public open-source example requests `openid profile email
+offline_access resource.invoke chatgpt.tokens.use.direct`. The earlier
+profile-only trial requested just the first three scopes and returned
+`invalid_state` in the In-app Browser and Safari. Those failures do not establish
+that the complete public open-source registration flow is unavailable. Their
+precise cause remains unconfirmed; reaching a sign-in screen was not success.
+
+After the operator explicitly approved the additional plan-use, API-access and
+refresh scopes, the [open-source flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
+was tested in Safari with all six documented scopes. At 2026-10-01 05:32:10 UTC
+(14:32:10 KST), the loopback callback completed, OpenAI issued a client ID and
+authorization-code exchange succeeded. The probe verified the ID token's RS256
+signature against the advertised JWKS, exact issuer and issued-client audience,
+expiry, nonce and applicable `azp` checks. All six requested scopes were granted,
+with an access token and refresh token. No model/API inference or refresh
+request was made, and raw authorization codes or tokens were not retained by
+the probe. This establishes isolated registration and verified sign-in, not
+working model access, installed-product acceptance or MCP Events authentication.
+
+The probe used a stable system-issued host ID, fresh state/nonce/PKCE `S256`,
+a loopback-only listener and the issued client ID for code exchange. A nonsecret
+registration ID and verified-identity hash were retained privately for retries;
+profile values, raw subject and credentials were not written to repository or
+trial reports. The listener exited after verification. The safe local report
+records `identity_verified`, successful signature/audience/nonce checks,
+`planPermissionGranted: true`, `modelRequests: 0` and
+`mcpEventsVerified: false`. No partner application was submitted, and the
+installed app, operational database, Tunnel and existing Codex credentials
+were not changed.
+
+An OpenAI ID token identifies a user to its issued client. OpenAI plan-use tokens
+target the OpenAI API. Neither supplies the current Bridge's resource audience
+and `bridge` grant. The [local authorization prototype](mcp-events-openai-authorization.md)
+implements that separate grant boundary, but using it for actual Events still
+needs public HTTPS hosting and composed ChatGPT acceptance. The [native plugin integration](https://developers.openai.com/siwc/chatgpt-plugin)
+has a separate selected-partner registration contract; that restriction must
+not be generalized to the successful public open-source trial. Account hints,
+copied Codex credentials and the OpenAI API audience cannot replace the Bridge
+authorization boundary.
 
 This OAuth route introduces an external authentication dependency beyond the
 existing local bridge and outbound Tunnel. It remains optional: the current
@@ -86,7 +136,7 @@ identity, and is not a prerequisite for this OAuth connection.
 
 ## Configuration required before actual host acceptance
 
-No provider, tenant, issuer or login has been provisioned. The table identifies
+No Bridge-specific issuer, client or access grant has been provisioned. The table identifies
 the external configuration and evidence needed before the installed-product
 trial. The current adapter supports access JWTs, not opaque-token introspection.
 
@@ -175,7 +225,9 @@ The implementation applies these bounded changes to the existing architecture:
    non-operator tokens. `jose` verifies asymmetric signatures against the
    configured HTTPS JWKS, with a five-second fetch timeout, 128 KiB response
    limit, no redirects and bounded cache/rotation refresh. Token headers cannot
-   select key URLs. The bridge does not create an authorization server.
+   select key URLs. MCP dispatch does not create an authorization server; the
+   opt-in OpenAI prototype is a separate command with its own private listeners
+   and configuration.
 2. A dedicated verified principal passes from middleware into
    `authenticatedMcpPrincipal()` and the existing task/scope checks. Derive it
    from the configured resource and verified issuer/subject, using an unambiguous

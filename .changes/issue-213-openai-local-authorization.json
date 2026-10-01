@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "minor",
+  "summary": "Add an opt-in loopback OpenAI/Bridge authorization service and isolated Events integration tests; public deployment and ChatGPT acceptance remain pending.",
+  "breaking": false,
+  "migration": null
+}

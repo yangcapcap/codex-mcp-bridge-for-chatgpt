@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Record the isolated OpenAI sign-in trial and the remaining Events authorization boundary.",
+  "breaking": false,
+  "migration": null
+}

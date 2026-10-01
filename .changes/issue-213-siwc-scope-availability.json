@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Correct OpenAI sign-in availability and record successful isolated open-source registration without claiming Events acceptance.",
+  "breaking": false,
+  "migration": null
+}
