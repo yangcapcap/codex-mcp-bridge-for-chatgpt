@@ -486,3 +486,17 @@ at registration. Replacing it is rejected without invoking inherited setters.
 Terminal writeback rechecks the pin and native data shape, then defines own data
 properties directly. This resource contract does not repair or approve durable
 writer reconciliation.
+
+
+Terminal Job writeback additionally requires an extensible original live object
+and configurable own data fields before committing SQL. A completion callback
+cannot seal or freeze a field and leave a committed terminal row with an unusable
+live owner. Both successful and rejected producer paths recheck the permanent
+pin and the original object before defining live data; a database commit hook
+that pins cannot invoke inherited setters afterward. Database commits already
+completed before a pin remain historical evidence, not a new writer release.
+Completion callbacks receive a separate own-data result snapshot. Unsupported
+callback result data remains retained without accessor evaluation; the original
+producer result or rejection stays reserved under its admission identity.
+These component guarantees still require new independent exact-head review and
+complete runtime integration. They do not authorize deployment or reconciliation.
