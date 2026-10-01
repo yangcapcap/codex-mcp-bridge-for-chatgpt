@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
+import { shutdownResult, type ShutdownResult } from "./shutdown.js";
 import type {
   OperationalStateCommand,
   OperationalStateResult,
@@ -35,7 +36,10 @@ export class StateMaintenanceScheduler {
   private timer?: NodeJS.Timeout;
   private pending = false;
   private closed = false;
+  private nonforcingPinned = false;
+  private nonforcingUnknown = false;
   private cursor = 0;
+  private pendingCommand?: {slice: StateMaintenanceSlice; commandId: string; command: OperationalStateCommand};
   private deferredSince?: number;
   private readonly uncertainCommands = new Map<
     StateMaintenanceSlice,
@@ -102,18 +106,35 @@ export class StateMaintenanceScheduler {
     let committed = false;
     try {
       command ||= this.options.command?.(selected) ?? defaultMaintenanceCommand(selected);
-      const result = await this.stateService.execute(
+      if (this.nonforcingPinned) return;
+      const execute = this.stateService.execute;
+      if (this.nonforcingPinned) return;
+      this.pendingCommand = {slice: selected, commandId, command};
+      const result = await Reflect.apply(execute, this.stateService, [
         command,
         { commandId, aggregateKey: `maintenance:${selected}` }
-      );
+      ]);
+      if (this.nonforcingPinned) {
+        this.uncertainCommands.set(selected, {commandId, command});
+        return;
+      }
       committed = true;
-      this.options.completed?.(command, result);
+      const completed = this.options.completed;
+      if (this.nonforcingPinned) return;
+      completed?.(command, result);
+      if (this.nonforcingPinned) return;
       changed = result.changed;
+      if (this.nonforcingPinned) return;
       this.uncertainCommands.delete(selected);
       this.lastError = undefined;
       if (changed > 0) this.options.changed?.();
     } catch (error) {
       failed = true;
+      if (this.nonforcingPinned) {
+        this.nonforcingUnknown = true;
+        if (command) this.uncertainCommands.set(selected, {commandId, command});
+        return;
+      }
       if (
         command &&
         (wasUncertain || committed || stateProcessErrorCode(error) === "STATE_OUTCOME_UNKNOWN")
@@ -125,6 +146,7 @@ export class StateMaintenanceScheduler {
       this.lastError = error instanceof Error ? error.message : String(error);
     } finally {
       this.pending = false;
+      this.pendingCommand = undefined;
     }
     const observation = {
       slice: selected,
@@ -142,9 +164,30 @@ export class StateMaintenanceScheduler {
   }
 
   close(): void {
+    if (this.nonforcingPinned) return;
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+  }
+
+  pinNonforcingShutdown(): true {
+    if (this.nonforcingPinned) return true;
+    this.nonforcingUnknown = this.closed;
+    this.nonforcingPinned = true;
+    if (this.pendingCommand) {
+      const {slice, commandId, command} = this.pendingCommand;
+      this.uncertainCommands.set(slice, {commandId, command});
+    }
+    this.closed = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    return true;
+  }
+
+  observeNonforcingExit(): ShutdownResult {
+    if (!this.nonforcingPinned || this.nonforcingUnknown || this.uncertainCommands.size > 0)
+      return shutdownResult("uncertain");
+    return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
   }
 
   private record(observation: StateMaintenanceObservation): StateMaintenanceObservation {

@@ -295,3 +295,17 @@ An already delivered scheduler callback or run-method lookup also checks the
 fence before consuming work. A prior ordinary discard remains explicitly
 uncertain. This primitive still needs state-owner application wiring and an
 independent review; it does not prove whole-runtime quiescence.
+
+## Pending state background writer fences
+
+The state-owned progress queue now has a synchronous nonforcing pin that cancels
+scheduling while retaining unconfirmed snapshots and counters. The connection,
+automatic recovery and maintenance controllers similarly stop dispatch before
+awaiting outstanding work. Each controller reports its own remaining async work;
+these resource observations never prove that a durable writer was released.
+Late connection and recovery responses leave their exact original journal rows
+unconfirmed. Maintenance retains the original dispatched command ID and suppresses
+late registry mutation callbacks. Ordinary-close history and uncertain maintenance
+commands stay UNKNOWN. The resource APIs are internal and are not native/MCP
+methods. Production state/runtime composition and policy propagation are still
+pending; this component alone does not authorize a shutdown or database close.

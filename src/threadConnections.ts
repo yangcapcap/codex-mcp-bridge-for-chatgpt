@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { CodexUpstream } from "./upstream.js";
 import { BackgroundWorkSlice, CONNECTION_WORK_LIMITS } from "./backgroundWorkBudget.js";
+import { shutdownResult, type ShutdownResult } from "./shutdown.js";
 
 export type ThreadPersistence = "persistent" | "ephemeral" | "unknown";
 export type ThreadConnectionPhase = "connected" | "waiting" | "releasing" | "unsubscribed" | "released" | "blocked";
@@ -228,6 +229,8 @@ export class ThreadConnectionController {
   private idleCursor = {finishedAt:0,threadId:""};
   private idleFirst = false;
   private closed = false;
+  private nonforcingPinned = false;
+  private nonforcingUnknown = false;
   private readonly now: () => number;
 
   constructor(private readonly store: ThreadConnectionStore, private readonly upstream: CodexUpstream,
@@ -237,13 +240,20 @@ export class ThreadConnectionController {
 
   start(): void {
     if (this.timer || this.closed) return;
-    for (const threadId of this.store.protectedThreadIds()) this.upstream.protectThreadFromImplicitResume?.(threadId);
+    for (const threadId of this.store.protectedThreadIds()) {
+      if (this.nonforcingPinned) return;
+      const protect = this.upstream.protectThreadFromImplicitResume;
+      if (this.nonforcingPinned) return;
+      protect?.call(this.upstream, threadId);
+    }
+    if (this.nonforcingPinned) return;
     this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 30_000);
     this.timer.unref();
     void this.sweep();
   }
 
   request(threadId: string): ThreadConnectionRecord {
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
     const current = this.store.requestHandoff(threadId, this.now());
     this.options.changed?.();
     void this.sweep();
@@ -251,6 +261,7 @@ export class ThreadConnectionController {
   }
 
   cancel(threadId: string): ThreadConnectionRecord {
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
     const current = this.store.cancelHandoff(threadId, this.now());
     this.options.changed?.();
     return current;
@@ -259,6 +270,7 @@ export class ThreadConnectionController {
   sweep(): Promise<void> {
     if (this.closed) return Promise.resolve();
     return this.pending ||= this.runSweep().catch(error => {
+      if (this.nonforcingPinned) this.nonforcingUnknown = true;
       this.lastError = error instanceof Error ? error.message : String(error);
     }).finally(() => { this.pending = undefined; });
   }
@@ -307,10 +319,12 @@ export class ThreadConnectionController {
         finishedAt:initial.lastFinishedAt!,threadId:initial.threadId
       };
       if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
+      if (this.nonforcingPinned) return;
       const current = this.store.get(initial.threadId)!;
       if (current.phase === "released") continue;
       const reason = current.persistence !== "persistent" ? current.persistence === "ephemeral" ? "ephemeral" : "persistence-unknown"
         : this.store.hasUnfinishedWork(current.threadId) ? "active-work" : !this.upstream.releaseThreadConnection ? "unsupported" : undefined;
+      if (this.nonforcingPinned) return;
       if (reason) {
         if (current.phase !== "blocked" || current.reason !== reason) {
           this.store.update(current.threadId, { phase: "blocked", reason }, this.now());
@@ -319,16 +333,20 @@ export class ThreadConnectionController {
         continue;
       }
       if (!this.eligible(current)) continue;
+      if (this.nonforcingPinned) return;
       const releasing = this.store.update(current.threadId, { phase: "releasing" }, this.now(), current.revision);
       if (!releasing) continue;
       const canRelease = (threadId: string) => {
         if (this.closed) return false;
         const row = this.store.get(threadId);
-        return Boolean(row && this.eligible(row));
+        const eligible = Boolean(row && this.eligible(row));
+        return !this.closed && eligible;
       };
       let result: ThreadReleaseResult;
       try {
-        result = await budget.awaitExternal(this.upstream.releaseThreadConnection!(current.threadId, { eligibleThreadIds, canRelease, previousWorkerPid: current.workerPid }));
+        const release = this.upstream.releaseThreadConnection!;
+        if (this.nonforcingPinned) return;
+        result = await budget.awaitExternal(Reflect.apply(release, this.upstream, [current.threadId, { eligibleThreadIds, canRelease, previousWorkerPid: current.workerPid }]));
       } catch { result = { phase: "blocked", reason: "release-unconfirmed" }; }
       if (this.closed) return;
       // An acknowledgement alone never becomes proof of unload or relinquished writing.
@@ -342,9 +360,26 @@ export class ThreadConnectionController {
   }
 
   async close(): Promise<void> {
+    if (this.nonforcingPinned) { await this.pending; return; }
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     await this.pending;
+  }
+
+  /** Internal writer fence; it never publishes connection-release evidence. */
+  pinNonforcingShutdown(): true {
+    if (this.nonforcingPinned) return true;
+    this.nonforcingUnknown = this.closed;
+    this.nonforcingPinned = true;
+    this.closed = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    return true;
+  }
+
+  observeNonforcingExit(): ShutdownResult {
+    if (!this.nonforcingPinned || this.nonforcingUnknown) return shutdownResult("uncertain");
+    return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
   }
 }

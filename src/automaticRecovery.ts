@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { BackgroundWorkSlice, RECOVERY_WORK_LIMITS } from "./backgroundWorkBudget.js";
+import { shutdownResult, type ShutdownResult } from "./shutdown.js";
 
 export type AutomaticRecoveryKind = "recheck" | "retry-stop" | "release";
 export type AutomaticRecoveryState = "retrying" | "resolved" | "blocked";
@@ -238,6 +239,8 @@ export class AutomaticRecoveryController {
   private scheduled?: NodeJS.Timeout;
   private pending?: Promise<void>;
   private closed = false;
+  private nonforcingPinned = false;
+  private nonforcingUnknown = false;
   private candidateCursor = "";
   private agentCursor = "";
   private fullScanScheduled = false;
@@ -272,6 +275,7 @@ export class AutomaticRecoveryController {
     } else this.fullScanScheduled = true;
     if (this.scheduled) return;
     this.scheduled = setTimeout(() => {
+      if (this.nonforcingPinned) return;
       this.scheduled = undefined;
       const full = this.fullScanScheduled;
       this.fullScanScheduled = false;
@@ -299,24 +303,47 @@ export class AutomaticRecoveryController {
   sweep(jobId?: string, agentId?: string): Promise<void> {
     if (this.closed) return Promise.resolve();
     return this.pending ||= this.runSweep(jobId, agentId).catch(error => {
+      if (this.nonforcingPinned) this.nonforcingUnknown = true;
       this.lastError = error instanceof Error ? error.message : String(error);
     }).finally(() => { this.pending = undefined; });
   }
 
   async recoverJob(jobId: string): Promise<void> {
     await this.pending;
-    await this.sweep(jobId, this.options.agentForJob?.(jobId));
+    if (this.nonforcingPinned) return;
+    const agentId = this.options.agentForJob?.(jobId);
+    if (this.nonforcingPinned) return;
+    await this.sweep(jobId, agentId);
   }
 
   async close(): Promise<void> {
+    if (this.nonforcingPinned) { await this.pending; return; }
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     if (this.scheduled) clearTimeout(this.scheduled);
     await this.pending;
   }
 
+  /** Retain scheduled identities and durable attempts; stop future dispatch. */
+  pinNonforcingShutdown(): true {
+    if (this.nonforcingPinned) return true;
+    this.nonforcingUnknown = this.closed;
+    this.nonforcingPinned = true;
+    this.closed = true;
+    if (this.timer) clearInterval(this.timer);
+    if (this.scheduled) clearTimeout(this.scheduled);
+    this.timer = undefined;
+    this.scheduled = undefined;
+    return true;
+  }
+
+  observeNonforcingExit(): ShutdownResult {
+    if (!this.nonforcingPinned || this.nonforcingUnknown) return shutdownResult("uncertain");
+    return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
+  }
+
   private async runSweep(jobId?: string, agentId?: string): Promise<void> {
-    if (this.options.enabled?.() === false) return;
+    if (this.options.enabled?.() === false || this.nonforcingPinned) return;
     this.store.reconcileInterrupted(this.now());
     const budget = new BackgroundWorkSlice(RECOVERY_WORK_LIMITS);
     budget.roundTrips = 1; // bounded interrupted-attempt reconciliation
@@ -333,6 +360,7 @@ export class AutomaticRecoveryController {
           dispatched += result.dispatched;
           if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
         }
+        if (this.nonforcingPinned) return;
         let page = this.options.pageAgents(this.agentCursor, Math.max(1,budget.limits.maxTargets-budget.targets));
         if (page.length === 0 && this.agentCursor) {
           this.agentCursor = "";
@@ -364,7 +392,10 @@ export class AutomaticRecoveryController {
 
   private async survey(agentId: string | undefined, jobId: string | undefined, dispatchLimit: number,
     budget: BackgroundWorkSlice): Promise<{candidates:number;dispatched:number}> {
-    const available = await budget.awaitExternal(this.options.candidates(agentId));
+    const discover = this.options.candidates;
+    if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+    const available = await budget.awaitExternal(Reflect.apply(discover, this.options, [agentId]));
+    if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
     const keys = new Set(available.map(candidate => candidate.key));
     // A production Agent has at most three current candidate kinds. Every
     // nonmatching retry is resolved in this pass, so repeated first pages
@@ -398,9 +429,15 @@ export class AutomaticRecoveryController {
       if (!attempt) continue;
       dispatched++;
       this.options.changed?.();
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
       let result: AutomaticRecoveryResult;
-      try { result = await budget.awaitExternal(this.options.attempt(candidate)); }
+      try {
+        const attemptWork = this.options.attempt;
+        if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+        result = await budget.awaitExternal(Reflect.apply(attemptWork, this.options, [candidate]));
+      }
       catch { result = {resolved:false,reason:"recovery-unconfirmed"}; }
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
       this.store.finish(candidate.key,attempt.attempts,result,this.now());
       this.options.changed?.();
       // A shared-worker release may resolve a peer. Its durable state is
