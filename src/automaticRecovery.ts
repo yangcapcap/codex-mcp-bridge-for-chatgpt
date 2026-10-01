@@ -326,8 +326,11 @@ export class AutomaticRecoveryController {
   async recoverJob(jobId: string): Promise<void> {
     await this.pending;
     if (this.nonforcingPinned) return;
-    const agentId = this.options.agentForJob?.(jobId);
+    const agentForJob = this.options.agentForJob;
     if (this.nonforcingPinned) return;
+    const agentId = agentForJob?.call(this.options, jobId);
+    if (this.nonforcingPinned) return;
+    if (agentId !== undefined && typeof agentId !== "string") {this.nonforcingUnknown = true; return;}
     await this.sweep(jobId, agentId);
   }
 
@@ -376,8 +379,12 @@ export class AutomaticRecoveryController {
     let agents = 0, candidates = 0, dispatched = 0;
     const full = !agentId;
     try {
-      if (!agentId && this.options.pageAgents) {
-        const due = this.store.dueAgentIds(this.now());
+      const pageAgents = !agentId ? this.options.pageAgents : undefined;
+      if (this.nonforcingPinned) return;
+      if (pageAgents) {
+        const dueAt = this.now();
+        if (this.nonforcingPinned) return;
+        const due = this.store.dueAgentIds(dueAt);
         for (const id of due) {
           if (this.closed || dispatched >= 3 || !budget.take(12)) break;
           const result = await this.survey(id, jobId, 3 - dispatched, budget);
@@ -387,10 +394,17 @@ export class AutomaticRecoveryController {
           if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
         }
         if (this.nonforcingPinned) return;
-        let page = this.options.pageAgents(this.agentCursor, Math.max(1,budget.limits.maxTargets-budget.targets));
+        const pageLimit = Math.max(1,budget.limits.maxTargets-budget.targets);
+        let page = snapshotOwnArray(pageAgents.call(this.options, this.agentCursor, pageLimit),
+          () => this.nonforcingPinned, value => typeof value === "string" ? value : undefined);
+        if (this.nonforcingPinned) return;
+        if (!page) {this.nonforcingUnknown = true; return;}
         if (page.length === 0 && this.agentCursor) {
           this.agentCursor = "";
-          page = this.options.pageAgents("", Math.max(1,budget.limits.maxTargets-budget.targets));
+          page = snapshotOwnArray(pageAgents.call(this.options, "", pageLimit),
+            () => this.nonforcingPinned, value => typeof value === "string" ? value : undefined);
+          if (this.nonforcingPinned) return;
+          if (!page) {this.nonforcingUnknown = true; return;}
         }
         for (const id of page) {
           if (this.closed || dispatched >= 4 || !budget.take(12)) break;
@@ -400,6 +414,7 @@ export class AutomaticRecoveryController {
             candidates += result.candidates;
             dispatched += result.dispatched;
           }
+          if (this.nonforcingPinned) return;
           this.agentCursor = id;
           if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
         }
@@ -420,8 +435,14 @@ export class AutomaticRecoveryController {
     budget: BackgroundWorkSlice): Promise<{candidates:number;dispatched:number}> {
     const discover = this.options.candidates;
     if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
-    const available = await budget.awaitExternal(Reflect.apply(discover, this.options, [agentId]));
+    const discovered = await budget.awaitExternal(Reflect.apply(discover, this.options, [agentId]));
     if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+    // Capture only primitive own data before any candidate reaches a journal
+    // operation. Accessors are rejected without invocation; a descriptor trap
+    // that pins the owner stops further inspection and admission.
+    const available = snapshotOwnArray(discovered, () => this.nonforcingPinned, snapshotRecoveryCandidate);
+    if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+    if (!available) {this.nonforcingUnknown = true; return {candidates: 0, dispatched: 0};}
     const keys = new Set(available.map(candidate => candidate.key));
     // A production Agent has at most three current candidate kinds. Every
     // nonmatching retry is resolved in this pass, so repeated first pages
@@ -445,9 +466,13 @@ export class AutomaticRecoveryController {
     let dispatched = 0;
     for (const candidate of [...after,...before]) {
       if (this.closed || dispatched >= dispatchLimit) break;
-      if (candidate.kind === "release" && !this.store.canBegin(candidate,this.now())) {
-        this.candidateCursor = candidate.key;
-        continue;
+      if (candidate.kind === "release") {
+        const releaseAt = this.now();
+        if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+        if (!this.store.canBegin(candidate,releaseAt)) {
+          this.candidateCursor = candidate.key;
+          continue;
+        }
       }
       // A shared-worker release can inspect 31 additional connections. Charge
       // that work before persisting an attempt, so a deferred release keeps
@@ -482,6 +507,46 @@ export class AutomaticRecoveryController {
     }
     return {candidates:candidates.length,dispatched};
   }
+}
+
+/** Bounded discovery is copied without executing array slots or field getters. */
+function snapshotOwnArray<T>(value: unknown, pinned: () => boolean,
+  capture: (value: unknown, pinned: () => boolean) => T | undefined): T[] | undefined {
+  try {
+    if (pinned() || !Array.isArray(value)) return;
+    const length = Object.getOwnPropertyDescriptor(value, "length");
+    if (pinned() || !length || !Object.hasOwn(length,"value") ||
+        !Number.isSafeInteger(length.value) || length.value < 0 || length.value > 4096) return;
+    const result: T[] = [];
+    for (let index = 0; index < length.value; index++) {
+      if (pinned()) return;
+      const slot = Object.getOwnPropertyDescriptor(value, String(index));
+      if (pinned() || !slot || !Object.hasOwn(slot,"value")) return;
+      const item = capture(slot.value, pinned);
+      if (pinned() || item === undefined) return;
+      result.push(item);
+    }
+    return result;
+  } catch {return;}
+}
+
+function snapshotRecoveryCandidate(value: unknown, pinned: () => boolean): AutomaticRecoveryCandidate | undefined {
+  try {
+    if (!value || typeof value !== "object") return;
+    const result: Record<string, string> = {};
+    for (const key of ["key", "scopeId", "agentId", "kind", "jobId"]) {
+      if (pinned()) return;
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (pinned()) return;
+      if (!field && key === "jobId") continue;
+      if (!field || !Object.hasOwn(field,"value")) return;
+      if (key === "jobId" && field.value === undefined) continue;
+      if (typeof field.value !== "string" || !field.value) return;
+      result[key] = field.value;
+    }
+    if (!["recheck", "retry-stop", "release"].includes(result.kind)) return;
+    return Object.freeze(result) as AutomaticRecoveryCandidate;
+  } catch {return;}
 }
 
 /** Receipt fields must be own data; no callback can run inside a journal write. */

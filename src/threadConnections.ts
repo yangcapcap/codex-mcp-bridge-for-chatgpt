@@ -258,7 +258,9 @@ export class ThreadConnectionController {
 
   request(threadId: string): ThreadConnectionRecord {
     if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
-    const current = this.store.requestHandoff(threadId, this.now());
+    const observedAt = this.now();
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+    const current = this.store.requestHandoff(threadId, observedAt);
     this.publishChanges();
     void this.sweep();
     return current;
@@ -266,7 +268,9 @@ export class ThreadConnectionController {
 
   cancel(threadId: string): ThreadConnectionRecord {
     if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
-    const current = this.store.cancelHandoff(threadId, this.now());
+    const observedAt = this.now();
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+    const current = this.store.cancelHandoff(threadId, observedAt);
     this.publishChanges();
     return current;
   }

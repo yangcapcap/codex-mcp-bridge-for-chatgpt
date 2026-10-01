@@ -343,3 +343,16 @@ intervals and queue limits are read before admission, with a final fence check
 before installing a timer or changing retained queues. The retained independent
 regressions are copied implementation baselines; a new exact-head review remains
 required, and complete state/runtime propagation is still pending.
+
+The rejected `b3fc3fd` successor is also retained. Thread request/cancel commands
+now check the fence after their clock callback and before changing a handoff.
+Recovery captures page/job resolver methods once and checks before delegation
+and after callbacks. A captured page avoids a second method getter altogether;
+an initial getter or the callback itself can still pin and suppress further work.
+Discovery arrays (at most 4096 entries) and required candidate fields are copied
+from own data descriptors, with checks around each descriptor lookup. Accessors,
+sparse/malformed arrays, invalid identities and excessive discovery leave the
+journal untouched and retain uncertainty. These checks also cover page slots and
+release eligibility clocks. Only validated primitive snapshots reach journal
+writes. Root regression results are component evidence; fresh independent review
+and full state/runtime composition remain required.
