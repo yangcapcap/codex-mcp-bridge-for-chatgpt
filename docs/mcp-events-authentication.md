@@ -12,10 +12,14 @@ Tunnel launcher path, with isolated synthetic acceptance. On 2026-10-01, the
 operator approved a temporary HTTPS authorization-only edge and a dedicated
 test Tunnel/ChatGPT connector. Actual ChatGPT OAuth discovery and connector
 creation succeeded through the product launcher after correcting its private
-metadata source. No composed OpenAI/Bridge access grant or real A/B execution
-has completed: Safari login is waiting for the operator to unlock the Mac.
+metadata source. Safari subsequently completed the inner OpenAI sign-in and
+pinned operator verification. The separate Bridge consent was rejected by a
+browser Origin/header mismatch, now corrected without weakening consent checks.
+No composed Bridge access grant or real A/B execution has completed; a fresh
+Safari retry is waiting for the operator to unlock the Mac again.
 The [live discovery audit](audits/2026-10-01-issue-213-tunnel-oauth-discovery.md)
-records the original failure, fix and observed boundary. An opt-in
+records the first failure/fix; the [consent audit](audits/2026-10-01-issue-213-oauth-consent.md)
+records the later browser regression and observed boundary. An opt-in
 [local OpenAI/Bridge authorization prototype](mcp-events-openai-authorization.md)
 now implements the separate token issuer with isolated HTTP integration tests.
 No permanent public HTTPS hosting has been selected. Issue #213 stays open. The default
@@ -332,7 +336,9 @@ and the [MCP Events contract](https://developers.openai.com/plugins/build/mcp-ev
    limitations; webhook `2xx` is not evidence of preserved mode or GPT review.
 
 The official connection design, JWT adapter and synthetic acceptance are complete.
-Provider configuration and actual host acceptance remain pending. The
+The separate OpenAI/Bridge issuer is configured in the approved temporary
+trial. Its completed composed grant and actual Events host acceptance remain
+pending, as does a permanent hosting choice. The
 [design investigation](audits/2026-10-01-issue-213-auth-connection.md) and
 [implementation audit](audits/2026-10-01-issue-213-oauth-http.md) separate
 source/synthetic evidence from installed-product acceptance.

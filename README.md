@@ -14,7 +14,7 @@ Use ChatGPT to run Codex against projects on your own computer, keep work organi
 - Run one Mac as the server and use another Mac as a client for status and settings.
 - Keep the normal starting policy read-only and place an operator-controlled ceiling on broader access.
 
-An opt-in authenticated HTTP [MCP Events extension](docs/mcp-events.md) provides exact Job completion webhooks and bridge-issued references for pre-approved followups. The current No Auth / Secure MCP Tunnel path cannot authorize these subscriptions. The [OAuth connection](docs/mcp-events-authentication.md) includes an access-JWT adapter and authenticated HTTP launcher. A separate opt-in [OpenAI authorization prototype](docs/mcp-events-openai-authorization.md) has passed local tests and actual ChatGPT OAuth discovery/connector creation through a temporary HTTPS trial; composed login and actual conversation resume acceptance remain pending. The existing completion policies remain the default.
+An opt-in authenticated HTTP [MCP Events extension](docs/mcp-events.md) provides exact Job completion webhooks and bridge-issued references for pre-approved followups. The current No Auth / Secure MCP Tunnel path cannot authorize these subscriptions. The [OAuth connection](docs/mcp-events-authentication.md) includes an access-JWT adapter and authenticated HTTP launcher. A separate opt-in [OpenAI authorization prototype](docs/mcp-events-openai-authorization.md) has passed local tests, actual ChatGPT OAuth discovery/connector creation and inner OpenAI sign-in through a temporary HTTPS trial; the composed Bridge grant and actual conversation resume acceptance remain pending. The existing completion policies remain the default.
 
 ```text
 ChatGPT

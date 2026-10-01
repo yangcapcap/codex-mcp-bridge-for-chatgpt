@@ -264,6 +264,9 @@ export async function createOpenAiMcpAuthorization(input: OpenAiMcpAuthorization
     if (req.method === "GET" && url.pathname === "/oauth/consent") {
       const transaction = browserTransaction(req, params.get("transaction"));
       if (transaction.phase !== "verified" || !transaction.consent) fail(403, "access_denied");
+      // no-referrer makes a browser form POST send Origin: null. Keep the exact
+      // issuer Origin check usable without sending referrers across origins.
+      res.setHeader("Referrer-Policy", "same-origin");
       html(res, "Bridge 연결 권한 확인", `<p>등록된 운영자 계정의 OpenAI 로그인을 확인했습니다.</p><p>ChatGPT가 Bridge의 작업·결과·이벤트에 접근하도록 허용합니다. 개별 작업 실행은 Bridge의 기존 승인 정책을 따릅니다.</p><p>연결 권한은 최대 8시간 유지됩니다. 연결을 해제해도 이미 발급된 접근 권한은 최장 15분간 유효할 수 있습니다.</p><p>대상: ${escapeHtml(config.resource)}</p><form method="post" action="/oauth/consent"><input type="hidden" name="transaction" value="${transaction.id}"><input type="hidden" name="consent" value="${transaction.consent}"><button name="decision" value="allow">연결 허용</button> <button name="decision" value="deny">취소</button></form>`); return;
     }
     if (req.method === "POST" && url.pathname === "/oauth/consent") {

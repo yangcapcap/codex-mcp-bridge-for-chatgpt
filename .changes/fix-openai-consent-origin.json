@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Allow same-origin browser consent after OpenAI sign-in while preserving strict Origin, cookie, and one-time consent checks.",
+  "breaking": false,
+  "migration": null
+}

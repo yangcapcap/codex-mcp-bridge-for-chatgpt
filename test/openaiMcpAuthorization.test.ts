@@ -252,6 +252,28 @@ describe("isolated OpenAI / Bridge authorization", () => {
     expect(location.searchParams.has("code")).toBe(false); expect(f.service.diagnostics().pendingCodes).toBe(0);
   });
 
+  it("preserves the consent form Origin without allowing opaque, absent or foreign origins", async () => {
+    const f = await start(), login = await verified(f);
+    const consent = await publicRequest(f, "/oauth/consent?transaction=" + login.transaction, { headers: { cookie: login.cookie } });
+    expect(consent.headers.get("referrer-policy")).toBe("same-origin");
+    expect(consent.headers.get("content-security-policy")).toContain("form-action 'self'");
+    expect(consent.headers.get("cache-control")).toBe("no-store");
+    const fields = { transaction: login.transaction, consent: login.consent, decision: "allow" };
+    for (const headers of [{ cookie: login.cookie }, { cookie: login.cookie, origin: "null" },
+      { cookie: login.cookie, origin: "https://foreign.fixture.example" }, { cookie: "", origin: issuer }]) {
+      expect((await post(f, "/oauth/consent", fields, headers)).status).toBe(403);
+    }
+    expect((await post(f, "/oauth/consent", { ...fields, consent: "forged" }, { cookie: login.cookie, origin: issuer })).status).toBe(403);
+    expect(f.service.diagnostics().pendingCodes).toBe(0);
+    const accepted = await approve(f, login);
+    expect(accepted.status).toBe(303);
+    expect(accepted.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(new URL(accepted.headers.get("location")!).searchParams.has("code")).toBe(true);
+    expect((await approve(f, login)).status).toBe(403);
+    expect(f.service.diagnostics().pendingCodes).toBe(1);
+    expect((await publicRequest(f, "/oauth/jwks")).headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
   it("binds code exchange to client, exact callback, resource and outer PKCE, consuming it once", async () => {
     const f = await start(), login = await authorized(f);
     for (const changes of [{ client_secret: "wrong" }, { redirect_uri: "https://evil.fixture.example" },

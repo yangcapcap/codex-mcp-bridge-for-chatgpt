@@ -36,9 +36,10 @@ The selected [product connection design](mcp-events-authentication.md) is user
 OAuth 2.1 over a private HTTP Tunnel, with a separately reachable public identity
 provider. OpenAI does not support customer-defined API keys for this ChatGPT
 connection. The access-JWT adapter and authenticated HTTP launcher are implemented
-and synthetically tested. Provider configuration is pending; no existing login
-provider is configured. This remains a product connection gate before actual
-host acceptance. Conversation metadata and
+and synthetically tested. A separate OpenAI/Bridge issuer is configured in an
+approved temporary HTTPS trial; actual ChatGPT discovery and inner OpenAI
+sign-in have succeeded. The composed Bridge grant and actual Events host
+acceptance remain pending. Conversation metadata and
 callback verification cannot replace authentication. Enabling Events on the
 default No Auth connection still does not make the feature usable. Issue #213
 remains open.

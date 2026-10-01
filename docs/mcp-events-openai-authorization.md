@@ -7,8 +7,12 @@ verification**, with no public HTTPS domain/server. This opt-in prototype
 implements the missing Bridge token issuer. The operator subsequently approved
 a temporary authorization-only HTTPS trial and a separate ChatGPT connector.
 Actual ChatGPT OAuth discovery and connector creation now succeed through the
-product launcher; composed login awaits a manual Mac unlock for Safari. No
-Bridge grant, actual Events resume or A/B execution has completed. The service
+product launcher. Safari completed OpenAI sign-in and verified the pinned
+operator, but the separate Bridge consent failed because the page's
+`no-referrer` policy made a normal browser POST use an opaque Origin. The
+consent page now uses `same-origin`; exact issuer Origin, browser cookie and
+one-time consent checks remain enforced. A fresh retry awaits another manual
+Mac unlock. No Bridge grant, actual Events resume or A/B execution has completed. The service
 is not selected by the default launcher or connected to the installed app.
 [Issue #213](https://github.com/menaje/codex-mcp-bridge-for-chatgpt/issues/213)
 remains open. The [successful OpenAI registration trial](mcp-events-authentication.md#openai-sign-in-trial)
@@ -188,6 +192,8 @@ The [implementation audit](audits/2026-10-01-issue-213-openai-authorization.md)
 records locally executed checks, retry history and the compiled CLI smoke check.
 The [live discovery audit](audits/2026-10-01-issue-213-tunnel-oauth-discovery.md)
 records the subsequent approved HTTPS/Tunnel trial and current login boundary.
+The [consent audit](audits/2026-10-01-issue-213-oauth-consent.md) records the later
+successful OpenAI verification, browser POST regression and correction.
 
 The isolated tests use a local HTTP OpenAI/JWKS fixture, real authorization
 handlers, actual Bridge HTTP MCP dispatch and a temporary SQLite database.
