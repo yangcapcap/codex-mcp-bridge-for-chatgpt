@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Take a fresh bounded worker observation after concurrent pool shutdown before reporting the enclosing execution owner receipt.",
+  "breaking": false,
+  "migration": null
+}

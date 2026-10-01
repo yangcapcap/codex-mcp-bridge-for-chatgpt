@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,test,vi} from "vitest";
-import {ExecutionShutdownOwner} from "../src/executionShutdownOwner.js";
+import {ExecutionShutdownOwner,observeResourcesAfterClose} from "../src/executionShutdownOwner.js";
 import {snapshotExecutionShutdownRequest,snapshotExecutionShutdownReceipt} from "../src/executionShutdownProtocol.js";
 import {shutdownResult} from "../src/shutdown.js";
 const generation="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",controllerId="cccccccc-cccc-4ccc-8ccc-cccccccccccc",closeId="dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -10,6 +10,28 @@ function fixture(){const hooks={pin:vi.fn(()=>true as const),close:vi.fn(async()
  return {hooks,owner:new ExecutionShutdownOwner(generation,990101,hooks)};}
 afterEach(()=>vi.useRealTimers());
 describe("authenticated owner shutdown correlation and sealed history",()=>{
+ test("enclosing owner refreshes a pre-exit pool timeout without rewriting its original receipt",async()=>{
+  const old=shutdownResult("timeout",1),observe=vi.fn(async()=>shutdownResult("exited"));
+  expect((await observeResourcesAfterClose(old,observe)).exited).toBe(true);expect(observe).toHaveBeenCalledOnce();
+  expect(old.outcome).toBe("timeout");expect(old.survivors).toBe(1);
+ });
+ test("fresh observation still reports a real retained descendant",async()=>{
+  expect(await observeResourcesAfterClose(shutdownResult("timeout",2),async()=>shutdownResult("timeout",1))).toEqual(shutdownResult("timeout",1));
+ });
+ test.each(["exited","uncertain"] as const)("%s initial resource receipt does not request a success upgrade",async outcome=>{
+  const observe=vi.fn(async()=>shutdownResult("exited"));expect((await observeResourcesAfterClose(shutdownResult(outcome),observe)).outcome).toBe(outcome);
+  expect(observe).not.toHaveBeenCalled();
+ });
+ test.each(["void","reject"])("a %s fresh resources observation remains UNKNOWN",async mode=>{
+  const result=await observeResourcesAfterClose(shutdownResult("timeout",1),async()=>{if(mode==="reject")throw Error("fault");return undefined as never;});
+  expect(result.outcome).toBe("uncertain");
+ });
+ test("fresh resources observation is bounded and cannot rewrite its original timeout after late success",async()=>{
+  vi.useFakeTimers();const old=shutdownResult("timeout",1);let finish!:(r:ReturnType<typeof shutdownResult>)=>void;
+  const pending=observeResourcesAfterClose(old,()=>new Promise(done=>{finish=done;}));await vi.advanceTimersByTimeAsync(6000);
+  const current=await pending;expect(current.outcome).toBe("uncertain");finish(shutdownResult("exited"));await Promise.resolve();
+  expect(old.outcome).toBe("timeout");expect(current.outcome).toBe("uncertain");
+ });
  test("a cached successful receipt cannot authorize a new finalization after observation uncertainty",async()=>{
   const f=fixture();await f.owner.handle(close(),controllerId);const old=await f.owner.handle(later("finalize-nonforcing"),controllerId);
   expect(f.owner.finalizationAllowed).toBe(true);f.owner.invalidateObservation();

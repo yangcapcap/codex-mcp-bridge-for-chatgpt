@@ -1,5 +1,13 @@
 import {snapshotExecutionShutdownRequest,type ExecutionShutdownRequest,type ExecutionShutdownReceipt} from "./executionShutdownProtocol.js";
-import {boundedShutdown,shutdownResult,type ShutdownResult} from "./shutdown.js";
+import {boundedShutdown,combineShutdown,shutdownResult,type ShutdownResult} from "./shutdown.js";
+
+/** A pool can observe its tree before the concurrently closing transport exits.
+ * Keep that initial receipt unchanged and take a fresh bounded observation for
+ * the enclosing owner's first receipt. UNKNOWN is never upgraded here. */
+export async function observeResourcesAfterClose(initial:ShutdownResult,observe:()=>Promise<ShutdownResult>):Promise<ShutdownResult>{
+ const snapshot=combineShutdown([initial]);
+ return snapshot.outcome==="timeout" ? boundedShutdown(observe) : snapshot;
+}
 type CloseRequest=Extract<ExecutionShutdownRequest,{type:"close-nonforcing"}>;
 type Hooks=Readonly<{
  pin(policy:CloseRequest["policy"]):true;

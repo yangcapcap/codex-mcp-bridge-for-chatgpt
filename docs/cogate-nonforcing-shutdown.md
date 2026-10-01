@@ -222,3 +222,10 @@ activation or establish complete launcher/state/runtime shutdown. It requires a
 new independent exact-head review before integration and final acceptance. The
 local tests cover correlation, real owned exit, retained writer evidence, prior
 force history, serialization reentrancy and an observed detached descendant.
+
+The enclosing execution owner refreshes a pool TIMEOUT after the pool's concurrent
+transport/tree close has settled. The lower pool receipt is retained unchanged;
+the owner uses a fresh bounded read-only pool observation for its own receipt.
+This avoids reporting an early live-worker snapshot after actual owned-worker
+exit. It preserves initial UNKNOWN and still reports a surviving detached child.
+Finalization and controller actual owned-exit checks remain mandatory.
