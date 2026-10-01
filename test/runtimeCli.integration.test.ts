@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +10,17 @@ import { COMPANION_PROTOCOL_NAME, COMPANION_PROTOCOL_VERSION } from "../src/comp
 
 it.each(["cli", "stdio"])("starts native and remote app connections in the built %s entrypoint", async (entrypoint) => {
   const root = mkdtempSync(path.join(tmpdir(), "cb-cli-"));
+  // A sparse child environment must not fall back to the operator's home or
+  // Codex authentication. Keep all default discovery inside this fixture.
+  const homes = Object.fromEntries(["home", "codex", "config", "cache", "data", "state"].map(name => {
+    const directory = path.join(root, name);
+    mkdirSync(directory, { mode: 0o700 });
+    return [name, directory];
+  }));
+  const isolation = process.env.GATEWAY_VALIDATION_ROOT ? Object.fromEntries(
+    ["GATEWAY_VALIDATION_ROOT", "GATEWAY_VALIDATION_SHORT_ROOT_TOKEN", "NODE_OPTIONS"]
+      .filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]])
+  ) : {};
   const socketPath = path.join(root, "run", "b.sock");
   const listener = createServer();
   await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
@@ -18,6 +29,10 @@ it.each(["cli", "stdio"])("starts native and remote app connections in the built
   const child = spawn(process.execPath, [path.resolve(process.env.CODEX_BRIDGE_TEST_RUNTIME_DIST || "dist", `${entrypoint}.js`)], {
     env: {
       PATH: process.env.PATH, TMPDIR: process.env.TMPDIR,
+      HOME: homes.home, CODEX_HOME: homes.codex,
+      XDG_CONFIG_HOME: homes.config, XDG_CACHE_HOME: homes.cache,
+      XDG_DATA_HOME: homes.data, XDG_STATE_HOME: homes.state,
+      ...isolation,
       CODEX_MCP_BRIDGE_NO_AUTH: "1", CODEX_MCP_BRIDGE_HOST: "127.0.0.1",
       CODEX_MCP_BRIDGE_PORT: String(port), CODEX_MCP_BRIDGE_CODEX: "/usr/bin/false",
       CODEX_MCP_BRIDGE_RUNTIME_HOME: path.join(root, "runtime"),
