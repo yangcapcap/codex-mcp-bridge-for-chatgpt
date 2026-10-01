@@ -1,0 +1,7 @@
+# Original observer index authority
+
+Observer inventory belongs to the original private Job Map. Module-captured native entries, iterator-next, and get methods avoid mutable per-instance iteration or lookup. Before and after callback execution, the public index property must still be an own data property holding that exact Map, its original prototype and no added instance capabilities.
+
+Inventory capture and validation run inside callback accounting's catch/finally boundary. Failure retains the original Map/property descriptors, original error or returned cleanup, flags the original Jobs uncertain, and balances the callback count. No external iterator getter is invoked merely to discover ownership. The supported ordinary cleanup retains its identity and receiver behavior.
+
+The prior 4d75fed review remains CHANGES_REQUIRED. Its three failing characterizations were reproduced before repair. Successor assertions now require zero iterator-getter reads and retained original descriptors rather than executing the rejected getter; the pre-repair log is retained. Three additional controls cover Map replacement, lookup accessor rejection, and raw snapshot exception/producer retention. Sixteen focused cases and 870 cases across 45 explicit isolated suites passed, as did typecheck. An accidentally selected default all-suite run was interrupted and supplies no validation evidence. Fresh independent review and relevant host checks remain required. No production or writer state changes.

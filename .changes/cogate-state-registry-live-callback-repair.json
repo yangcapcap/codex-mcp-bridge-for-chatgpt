@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Validate native ACK Promise fulfillment and retain internal application subscription uncertainty without formatting original terminal error causes or reading Job fields after pin.",
+  "breaking": false,
+  "migration": null
+}

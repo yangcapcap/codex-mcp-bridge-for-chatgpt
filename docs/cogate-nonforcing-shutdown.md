@@ -417,6 +417,14 @@ returning captured data. Cancellation, steering and persistence errors inspect
 own message data without invoking accessor messages or writing after pinning.
 Explicit retained-Job maintenance also rejects after the permanent pin.
 
+Native Promise ACK observation accepts only the unchanged intrinsic Promise
+prototype, constructor and species descriptors, with no own constructor field.
+Other objects remain unconfirmed without invoking a constructor/species getter.
+Worker assignment persistence/runtime fields must satisfy their semantic types.
+Completion callback exceptions and rollback undo exceptions or non-void returns
+retain the original successful producer outcome and callback uncertainty; they
+cannot fabricate a failed terminal Job or authorize an execution ACK.
+
 This registry component does not close the state database, retire a durable writer
 or approve the complete runtime. The full runtime owner must additionally fence
 in-flight application RPCs and frontends before closing resources and authenticating
@@ -656,3 +664,158 @@ publication and descriptor close fail, an AggregateError retains both original
 objects and the original publication error as its cause. No failed publication
 returns a retained lease capability. Earlier tests expecting automatic failed
 temporary deletion remain preserved as qualified predecessor evidence.
+Native asynchronous execution ACKs require an undefined fulfillment as well as
+a validated ordinary Promise observation. Nonvoid fulfillment retains the exact
+ACK Promise and returned value as UNKNOWN. Terminal callbacks are followed by
+an admission check before any live Job spread or getter; commit failure wrapping
+retains its original cause without string conversion. Internal application
+subscriptions track every listener return/error, including settings and catalog
+publications, and stop registration immediately after a pinning method lookup.
+Cleanup capabilities admitted before pin remain retained without late delegation.
+These checks provide registry resource evidence only; runtime and writer release
+remain separate requirements.
+
+Registry callback ownership uses the identity established when the Job enters
+the registry, independently of the mutable object supplied to callbacks. Late
+ACK rejection or unsupported fulfillment stays under that original identity.
+Terminal candidates copy only own data properties and retain the original owned
+producer Promise. Missing, replaced or accessor-backed producer fields, changed
+Job identity, or unsupported nested data retain the raw Job and original
+settlement with permanent `UNKNOWN`; their accessors are never invoked. Normal
+completion callbacks can still supply admitted thread data and an undo function.
+Subscription cleanup attempts each original capability after an ordinary error;
+if an explicit pin intervenes, later capabilities remain retained and uncalled.
+These are registry resource guarantees; independent review and complete runtime
+integration remain separate requirements.
+
+Callbacks also preserve the complete admitted Job envelope, including execution
+receipt ownership, authentication boundary, worker generation, request and
+project identity, and execution selection. Correlated thread ID metadata may
+change; all other own data must match its pre-callback snapshot. A mismatch keeps
+the original producer outcome reserved under its admission ID and retains both
+snapshots and the original live object as `UNKNOWN`; it cannot commit a terminal
+receipt or acknowledge a replacement owner. The original Job prototype is owned
+at registration. Replacing it is rejected without invoking inherited setters.
+Terminal writeback rechecks the pin and native data shape, then defines own data
+properties directly. This resource contract does not repair or approve durable
+writer reconciliation.
+
+
+Terminal Job writeback additionally requires an extensible original live object
+and configurable own data fields before committing SQL. A completion callback
+cannot seal or freeze a field and leave a committed terminal row with an unusable
+live owner. Both successful and rejected producer paths recheck the permanent
+pin and the original object before defining live data; a database commit hook
+that pins cannot invoke inherited setters afterward. Database commits already
+completed before a pin remain historical evidence, not a new writer release.
+Completion callbacks receive a separate own-data result snapshot. Unsupported
+callback result data remains retained without accessor evaluation; the original
+producer result or rejection stays reserved under its admission identity.
+These component guarantees still require new independent exact-head review and
+complete runtime integration. They do not authorize deployment or reconciliation.
+
+
+The original live Job is checked across the complete terminal store boundary,
+including the configured post-commit observer. A changed owner stays retained as
+`UNKNOWN`; terminal writeback cannot silently restore it and erase the change.
+Execution ACK checks include authentication/ownership callbacks, method lookup,
+callback return and native Promise fulfillment. A void ACK return is not proof
+that the original worker binding survived. Undo callbacks preserve the admitted
+Job envelope (apart from correlated thread metadata); an ownership change stops
+terminal retry and preserves the original producer outcome. Unconfirmed or pinned
+undo capabilities remain retained and uncalled. None of these checks reverses a
+SQL commit completed before a pin or grants durable writer release.
+
+Observer authority and rollback evidence
+----------------------------------------
+
+Application, registry and waiter observers run with a registered in-flight
+boundary. Their before/after Job envelopes and index identities must agree;
+changed ownership remains UNKNOWN and cannot produce an execution ACK. The
+initial placeholder promise is registered before startup persistence publishes
+its first notification, then replaced only by the original execution promise.
+Unsupported rollback return values are retained before validating callback
+ownership. A failed rollback preflight retains the original uncalled undo
+capability. No callback result or notification constitutes writer retirement.
+
+Failed observer and undo capability retention
+-----------------------------------------------
+
+An observer's unsupported return or original thrown error marks every original
+Job seen at the boundary unconfirmed, including an owner removed from the map.
+The original producer settlement remains deferred even when the terminal SQL
+transaction succeeded before the notification. A supported observer returning
+void keeps existing notification behavior; UNKNOWN prevents an execution ACK.
+Subscription registration uses the same authority comparison while accepting
+only its original synchronous cleanup function. Failed, unsupported or pinned
+undo calls retain their original capability as well as raw outcomes and errors.
+
+
+Original producer lifetime and transaction reindexing
+-----------------------------------------------------
+
+Nonforcing observation tracks the original producer outcome separately from the
+Job's display status. A caller changing a running Job to a terminal status cannot
+prove producer exit. Observation validates original Job identity, prototype,
+promise and status through own data descriptors; unsupported accessors remain
+unread and retain UNKNOWN. An originally loaded terminal Job has no live producer.
+A received producer outcome does not release callbacks or durable writer evidence.
+
+Reindexing after a persistence transaction checks the original admitted owner
+before rewriting the index. A transaction notification that deletes or replaces
+an entry remains an ownership contradiction even if the original entry could be
+reconstructed. That contradiction retains the original outcome and prevents the
+assignment continuation, terminal ACK and persistence accounting retirement.
+These controls require fresh independent review and full runtime integration.
+
+
+Native producer Promise and recovered delegation
+------------------------------------------------
+
+The original Job Promise remains active through terminal persistence retries.
+Private completion evidence comes from that exact native Promise settling, not
+from entering a settlement routine or changing a display status. Loaded terminal
+Jobs remain passive until actual recovery is admitted. Proxy or unsupported
+Promises retain UNKNOWN without delegated traps.
+
+Recovery lookup, authentication and original invocation remain registered until
+the original return or error is captured. A reentrant pin retains those values
+and stops before property inspection, Promise chaining or Job Promise installation.
+Validated native returns use captured native Promise operations and an unchanged
+own data descriptor; original getters/setters never receive a post-pin call.
+Raw recovery errors remain retained and are rethrown unchanged. These checks do
+not retire durable writer evidence or grant whole-runtime acceptance.
+
+
+Recovery authority envelopes and passive native rejection capture
+----------------------------------------------------------------
+
+Recovery compares the complete original Job envelope across method lookup,
+authentication and original invocation. Synchronous native progress and assignment
+callbacks may advance that envelope only after their entry still matches; direct
+rewrites cannot be adopted by a later callback. Late normal callbacks keep the
+existing validated lifecycle behavior. Changed receipt or worker authority remains
+UNKNOWN and never produces terminal persistence or ACK.
+
+After pin, a retained valid native Promise may receive only captured intrinsic
+fulfillment/rejection handlers that retain raw observations. Those handlers do no
+state mutation, recovery or ACK. Constructor/species validation remains strict;
+unsupported Promise shapes stay unconfirmed without delegated getters or traps.
+The valid-native rejection path preserves the exact original reason without an
+unhandled event. This does not certify arbitrary malformed Promise producers.
+
+
+### Original authority across asynchronous recovery
+
+Original Job receipt, authorization boundary, immutable admission fields, and worker binding descriptors are retained in a private registry-owned WeakMap. A producer continuation cannot acquire a new binding by changing the observable Job or by forwarding a matching assignment afterward. Only the original native worker-assignment operation can advance the retained binding after validating the prior authority and copying its bounded DATA-only payload.
+
+Progress and assignment callbacks compare their original Job envelope before and after payload inspection. Descriptor traps that rewrite authority remain unconfirmed; their raw payload and producer settlement are retained, with no terminal SQL or execution acknowledgement. Common terminal capture, observer inventory, ACK and nonforcing observation recheck private original authority throughout the asynchronous producer lifetime. Normal asynchronous progress/assignment and permitted thread metadata updates remain supported. Pin retains original late payloads and outcomes without starting mutation or cleanup.
+
+The initial 03d independent regression had six reproducible failures and two normal controls. The successor adds eight immutable/binding mutation cases; its 50-suite local regression passed 928 assertions. These local results do not grant writer release, global descendant proof, whole-runtime approval or production activation. The earlier observer-return regression initially lost its secondary authority observation through an early inventory exception; the implementation now retains both observations before rejecting, without weakening that test.
+
+
+### Private authority update capability
+
+The retained authority capture and comparison helpers are ECMAScript private methods as well as retaining their records in a private WeakMap. Ordinary JavaScript prototype/property lookup cannot obtain the update capability or rebind a receipt/worker tuple after an asynchronous wait. The original native assignment callback still advances the binding normally.
+
+The 242 component review preserved two reproducible local encapsulation failures. The successor passed both original assertions and four normal lifecycle controls, including correlated reassignment/thread metadata, pin/rejection retention, cancellation with every acknowledgement bound to the original Job ID, and terminal SQL retry. A cancellation fixture's initial single-ACK assumption was qualified: ordinary cancellation may acknowledge the same original Job more than once; raw original source/logs remain retained. The 51-suite local result is 934 assertions passed and does not grant whole-runtime or production approval.

@@ -1,0 +1,45 @@
+import {test,expect,vi} from 'vitest';import {randomUUID} from 'node:crypto';import {appendFileSync} from 'node:fs';import {dirname,join} from 'node:path';
+import {CodexJobRegistry} from '../src/tools.js';import {BridgeStateStore} from '../src/stateStore.js';import {snapshotNonforcingData} from '../src/nonforcingData.js';
+const result:any={content:[{type:'text',text:'retained-original'}],structuredContent:{threadId:'review-thread'}};
+function input(){return {operation:'start' as const,cwd:process.cwd(),sandbox:'read-only' as const,scopeId:randomUUID(),requestId:randomUUID(),requestHash:'a'.repeat(64),requestHashVersion:2 as const,exclusiveKeys:[],sessionDecision:{requestedMode:'new' as const,action:'start' as const,reason:'explicit-new' as const}};}
+function record(_label:string,_data:unknown){}
+function fixture(options:any={}){const state=new BridgeStateStore({file:':memory:'});const jobs=new CodexJobRegistry({stateStore:state,allowedRoots:[process.cwd()],...options});return {state,jobs};}
+function upstream(ack:any=vi.fn()){return {listTools:async()=>({tools:[]}),callTool:async()=>result,close:async()=>{},supportsExecutionRecovery:()=>true,acknowledgeExecution:ack};}
+import {registerBridgeTools} from '../src/tools.js';import {loadConfig} from '../src/config.js';import {SessionRegistry} from '../src/sessionRegistry.js';import {UserSettingsStore} from '../src/userSettings.js';import {ScopeResolver} from '../src/scopeResolver.js';
+
+function application(){const f=fixture({projectionOnly:true});const config=loadConfig({HOME:process.env.HOME,CODEX_MCP_BRIDGE_NO_AUTH:'1',CODEX_MCP_BRIDGE_ROOTS:process.cwd(),CODEX_MCP_BRIDGE_CODEX:'/usr/bin/false',CODEX_MCP_BRIDGE_STATE_DATABASE_FILE:join(process.env.HOME!,'not-opened.sqlite')});const settings=new UserSettingsStore(config,{stateStore:f.state});const sessions=new SessionRegistry({stateStore:f.state,allowedRoots:[process.cwd()]});const resolver=new ScopeResolver({stateStore:f.state});const catalog:any={getCatalog:async()=>({models:[],source:'fixture',fetchedAt:new Date().toISOString(),fingerprint:'a'.repeat(64),cached:false,stale:false,validation:'valid'})};const server:any={registerResource:()=>({}),registerTool:()=>({})};const u:any=upstream();const registered=registerBridgeTools(server,config,u,sessions,f.jobs,catalog,settings,resolver);return {...f,settings,catalog,registered,u};}
+
+
+
+
+
+
+
+for(const phase of ['before-pin','after-pin'])test('FRESH pending original producer cannot become EXIT by mutable status '+phase,async()=>{
+ const {state,jobs}=fixture();let finish:any,launched=0;const producer=new Promise<any>(r=>finish=r);const job=jobs.start(input(),async()=>{launched++;return producer;}),id=job.jobId,p=job.promise;
+ try{await Promise.resolve();expect(launched).toBe(1);if(phase==='after-pin'){jobs.pinNonforcingShutdown();expect(jobs.observeNonforcingExit().outcome).toBe('timeout');}(job as any).status='completed';if(phase==='before-pin')jobs.pinNonforcingShutdown();const resource=jobs.observeNonforcingExit();record('status-'+phase,{launched,liveStatus:job.status,sqlStatus:state.listJobs()[0].status,originalPromise:job.promise===p,resource});expect(resource.exited).toBe(false);}finally{(job as any).status='running';finish(result);await p;state.close();}
+});
+for(const kind of ['return','throw'])test('FRESH resource measurement must reject original status getter unread '+kind,async()=>{
+ const {state,jobs}=fixture();let finish:any,launched=0,reads=0;const producer=new Promise<any>(r=>finish=r);const job=jobs.start(input(),async()=>{launched++;return producer;}),p=job.promise,descriptor=Object.getOwnPropertyDescriptor(job,'status')!,raw={status:'getter-error'};
+ try{await Promise.resolve();expect(launched).toBe(1);jobs.pinNonforcingShutdown();const getter=()=>{reads++;if(kind==='throw')throw raw;return 'completed';};Object.defineProperty(job,'status',{get:getter,configurable:true,enumerable:true});let error:any,resource:any;try{resource=jobs.observeNonforcingExit();}catch(e){error=e;}record('status-getter-'+kind,{launched,reads,rawError:error===raw,resource,counter:(jobs as any).registryCallbacksInFlight});expect(reads).toBe(0);expect(error).toBeUndefined();expect(resource.outcome).toBe('uncertain');}finally{Object.defineProperty(job,'status',descriptor);finish(result);await p;state.close();}
+});
+for(const shape of ['replace','delete'])test('FRESH original promise '+shape+' without observer is retained UNKNOWN at pin',async()=>{
+ const {state,jobs}=fixture();let finish:any,launched=0;const producer=new Promise<any>(r=>finish=r);const job=jobs.start(input(),async()=>{launched++;return producer;}),p=job.promise,descriptor=Object.getOwnPropertyDescriptor(job,'promise')!;
+ try{await Promise.resolve();expect(launched).toBe(1);if(shape==='replace')job.promise=Promise.resolve();else delete (job as any).promise;jobs.pinNonforcingShutdown();const resource=jobs.observeNonforcingExit();record('promise-'+shape,{launched,originalPromisePresent:job.promise===p,sqlStatus:state.listJobs()[0].status,resource});expect(resource.outcome).toBe('uncertain');}finally{Object.defineProperty(job,'promise',descriptor);finish(result);await p;state.close();}
+});
+test('FRESH ordinary genuine pending producer remains TIMEOUT and same original promise',async()=>{
+ const {state,jobs}=fixture();let finish:any,launched=0;const producer=new Promise<any>(r=>finish=r);const job=jobs.start(input(),async()=>{launched++;return producer;}),p=job.promise;try{await Promise.resolve();expect(launched).toBe(1);jobs.pinNonforcingShutdown();expect(job.promise).toBe(p);expect(jobs.observeNonforcingExit().outcome).toBe('timeout');finish(result);await p;expect((jobs as any).deferredSettlements.get(job.jobId)?.result).toBe(result);expect(jobs.observeNonforcingExit().outcome).toBe('uncertain');}finally{finish(result);await p;state.close();}
+});
+test('FRESH ordinary fulfilled original owner authorizes terminal removal and remains EXIT',async()=>{
+ const {state,jobs}=fixture(),ack=vi.fn();jobs.attachUpstream(upstream(ack));try{const job=jobs.start(input(),async()=>result);await job.promise;expect(job.status).toBe('completed');expect(ack).toHaveBeenCalledOnce();(jobs as any).deleteIndexedJob(job.jobId);expect((jobs as any).jobs.has(job.jobId)).toBe(false);jobs.pinNonforcingShutdown();expect(jobs.observeNonforcingExit().exited).toBe(true);}finally{state.close();}
+});
+for(const kind of ['delete','replace','foreign'])test('FRESH contradiction restoration remains sticky original owner '+kind,async()=>{
+ const {state,jobs}=fixture(),ack=vi.fn();jobs.attachUpstream(upstream(ack));let finish:any;const producer=new Promise<any>(r=>finish=r);const job=jobs.start(input(),async()=>producer),id=job.jobId,p=job.promise,map=(jobs as any).jobs,foreign='foreign-'+id;
+ try{await Promise.resolve();map.delete(id);if(kind==='replace')map.set(id,{...job});if(kind==='foreign')map.set(foreign,job);expect(()=>jobs.publishApplicationChange(()=>{})).toThrow();map.delete(foreign);map.set(id,job);expect(job.jobId).toBe(id);finish(result);await p;expect(ack).not.toHaveBeenCalled();expect((jobs as any).deferredSettlements.get(id)?.result).toBe(result);jobs.pinNonforcingShutdown();expect(jobs.observeNonforcingExit().outcome).toBe('uncertain');}finally{finish(result);await p;state.close();}
+});
+
+for(const mutate of [true,false])test('FRESH native assignment transaction reentry must not silently heal original index '+mutate,async()=>{
+ let jobs:any,job:any,armed=false,deleted=0,commits=0,assigned:any,finish:any,launched=0;
+ const state=new BridgeStateStore({file:':memory:',onTransactionCommitted:()=>{if(!armed)return;commits++;armed=false;if(mutate){deleted++;(jobs as any).jobs.delete(job.jobId);}}});jobs=new CodexJobRegistry({stateStore:state,allowedRoots:[process.cwd()]});const ack=vi.fn();jobs.attachUpstream(upstream(ack));const producer=new Promise<any>(r=>finish=r);
+ try{job=jobs.start(input(),async(_p:any,a:any)=>{launched++;assigned=a;return producer;});const id=job.jobId,p=job.promise;await Promise.resolve();expect(launched).toBe(1);armed=true;assigned({backendKind:'app-server',workerId:'reentry-original-worker',workerGeneration:1});expect(commits).toBe(1);expect(deleted).toBe(mutate?1:0);const indexed=(jobs as any).jobs.get(id)===job;finish(result);await p;jobs.pinNonforcingShutdown();record('assignment-index-reentry-'+mutate,{launched,commits,deleted,indexed,originalUnknown:(jobs as any).unconfirmedJobCallbacks.has(job),originalRetained:(jobs as any).deferredSettlements.get(id)?.result===result,liveStatus:job.status,sqlStatus:state.listJobs()[0].status,ackCalls:ack.mock.calls.length,resource:jobs.observeNonforcingExit()});if(mutate){expect(ack).not.toHaveBeenCalled();expect((jobs as any).deferredSettlements.get(id)?.result).toBe(result);expect(jobs.observeNonforcingExit().outcome).toBe('uncertain');}else{expect(ack).toHaveBeenCalledOnce();expect(job.status).toBe('completed');expect(jobs.observeNonforcingExit().exited).toBe(true);}}finally{finish?.(result);if(job)await job.promise;state.close();}
+});

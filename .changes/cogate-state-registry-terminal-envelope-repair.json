@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Validate terminal Job field capabilities before SQL, preserve original producer outcomes and prevent rejected-path live updates after a nonforcing pin.",
+  "breaking": false,
+  "migration": null
+}
