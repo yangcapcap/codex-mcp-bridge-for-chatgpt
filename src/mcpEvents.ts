@@ -3,7 +3,7 @@ import { McpServer, ProtocolError, type ServerContext } from "@modelcontextproto
 import { z } from "zod";
 import type { BridgeConfig } from "./config.js";
 import type { CodexJobRegistry } from "./tools.js";
-import type { ScopeResolver, ToolCallMetadata } from "./scopeResolver.js";
+import { isMissingConversationScopeError, type ScopeResolver, type ToolCallMetadata } from "./scopeResolver.js";
 import { JOB_TERMINAL_EVENT, type EventJob, type EventSubscription } from "./mcpEventStore.js";
 import { EventDestinationVault, sendPublicWebhook, signedHeaders, validateCallbackUrl, validateSigningSecret, type WebhookSender } from "./mcpWebhook.js";
 import { FOLLOWUP_ID_PATTERN } from "./taskFollowups.js";
@@ -228,8 +228,21 @@ export class McpEventsController {
   private requireOwnedScope(context:ServerContext,label:string):string {
     const request=context.mcpReq;this.assertAdmission();
     const metadata=request._meta;this.assertAdmission();
-    const scope=this.ownedCall(this.scopes,'require',[metadata as ToolCallMetadata,undefined,label]);this.assertAdmission();
-    const scopeId=scope.scopeId;this.assertAdmission();return scopeId;
+    let scope;
+    try {
+      scope=this.ownedCall(this.scopes,'require',[metadata as ToolCallMetadata,undefined,label]);
+    } catch(error) {
+      // A pinned delegate retains its raw uncertainty and cannot be normalized
+      // into an ordinary metadata rejection.
+      this.assertAdmission();
+      if(isMissingConversationScopeError(error)) {
+        throw new ProtocolError(-32001,"Events require original conversation metadata.",{reason:"missing_conversation_scope"});
+      }
+      throw new ProtocolError(-32001,"Events require valid original conversation metadata.",{reason:"invalid_conversation_scope"});
+    }
+    this.assertAdmission();
+    const captured=this.ownedData(scope,'conversation-scope');
+    const scopeId=captured.scopeId;this.assertAdmission();return scopeId;
   }
 
   private async subscribeOwned(params: z.infer<typeof subscribeSchema>, context: ServerContext) {

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retrieve completion results through the originating component connection and classify missing Events conversation metadata as an authorization error.",
+  "breaking": false,
+  "migration": null
+}

@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-01",
+  "source": "actual ChatGPT native Events over authenticated private HTTP Tunnel; task-only observer",
+  "host": {
+    "browser": "Codex In-app Browser",
+    "surface": "ChatGPT Work conversation",
+    "modelPicker": "Light (2 of 6)",
+    "fastMode": false,
+    "exactModelIdExposed": false
+  },
+  "observations": [
+    {
+      "label": "original-A-positive-control",
+      "time": "2026-10-01T12:07:45.334Z",
+      "method": "tools/call",
+      "httpStatus": 200,
+      "jsonRpcErrorCode": null,
+      "authenticated": true,
+      "principalMatchesOriginalA": true,
+      "scopeResolved": true,
+      "scopeMatchesOriginalA": true,
+      "callbackVerificationStarted": false
+    },
+    {
+      "label": "authenticated-Events-discovery",
+      "time": "2026-10-01T12:10:43.603Z",
+      "method": "events/list",
+      "httpStatus": 200,
+      "jsonRpcErrorCode": null,
+      "authenticated": true,
+      "principalMatchesOriginalA": true,
+      "callbackVerificationStarted": false
+    },
+    {
+      "label": "first-native-subscription",
+      "time": "2026-10-01T12:14:55.767Z",
+      "method": "events/subscribe",
+      "httpStatus": 200,
+      "jsonRpcErrorCode": -32603,
+      "authenticated": true,
+      "principalMatchesOriginalA": true,
+      "scopeResolved": false,
+      "scopeMatchesOriginalA": null,
+      "callbackVerificationStarted": false
+    },
+    {
+      "label": "original-A-wire-control",
+      "time": "2026-10-01T12:35:14.728Z",
+      "method": "tools/call",
+      "httpStatus": 200,
+      "jsonRpcErrorCode": null,
+      "authenticated": true,
+      "principalMatchesOriginalA": true,
+      "wireHasOpenaiSession": true,
+      "scopeResolved": true,
+      "scopeMatchesOriginalA": true,
+      "handlerHasOpenaiSession": true,
+      "callbackVerificationStarted": false
+    },
+    {
+      "label": "native-subscription-after-diagnostic-correction",
+      "time": "2026-10-01T12:35:31.393Z",
+      "method": "events/subscribe",
+      "httpStatus": 200,
+      "jsonRpcErrorCode": -32001,
+      "authenticated": true,
+      "principalMatchesOriginalA": true,
+      "wireHasOpenaiSession": false,
+      "scopeResolved": false,
+      "scopeMatchesOriginalA": null,
+      "handlerHasOpenaiSession": false,
+      "callbackVerificationStarted": false
+    },
+    {
+      "label": "native-cleanup-after-diagnostic-correction",
+      "time": "2026-10-01T12:35:31.888Z",
+      "method": "events/unsubscribe",
+      "httpStatus": 200,
+      "jsonRpcErrorCode": -32001,
+      "authenticated": true,
+      "principalMatchesOriginalA": true,
+      "wireHasOpenaiSession": false,
+      "scopeResolved": false,
+      "scopeMatchesOriginalA": null,
+      "handlerHasOpenaiSession": false,
+      "callbackVerificationStarted": false
+    }
+  ],
+  "retainedTrialState": {
+    "totalCodexJobs": 1,
+    "originalAJobs": 1,
+    "additionalCodexJobs": 0,
+    "subscriptions": 0
+  },
+  "callbackVerificationStarts": 0,
+  "privacy": {
+    "rawBodiesLogged": false,
+    "credentialsLogged": false,
+    "callbackLocationsLogged": false,
+    "scopeOrPrincipalValuesLogged": false
+  },
+  "supportInquirySent": false
+}

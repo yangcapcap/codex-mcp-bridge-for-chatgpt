@@ -214,6 +214,28 @@ describe("MCP Events exact-Job lifecycle", () => {
     expect(failed.state.mcpEvents.list()).toHaveLength(0);
   });
 
+  it("reports missing conversation metadata as an authorization failure before callback verification or persistence", async () => {
+    const f = await start();
+    const a = await task(f); await completed(f, a.jobId);
+    const subscribe = await rpc(f, "events/subscribe", subscription(a.jobId), {} as typeof meta);
+    expect(subscribe.error).toMatchObject({ code: -32001, data: { reason: "missing_conversation_scope" } });
+    const { secret: _secret, ...delivery } = subscription(a.jobId).delivery;
+    const unsubscribe = await rpc(f, "events/unsubscribe", { name: JOB_TERMINAL_EVENT, arguments: { jobId: a.jobId }, delivery }, {} as typeof meta);
+    expect(unsubscribe.error).toMatchObject({ code: -32001, data: { reason: "missing_conversation_scope" } });
+    expect(f.deliveries).toHaveLength(0);
+    expect(f.state.mcpEvents.list()).toHaveLength(0);
+    expect(f.upstream.calls).toBe(1);
+  });
+
+  it("rejects invalid conversation metadata with a bounded authorization reason without treating it as a callback or token failure", async () => {
+    const f = await start();
+    const a = await task(f); await completed(f, a.jobId);
+    const rejected = await rpc(f, "events/subscribe", subscription(a.jobId), { ...meta, "openai/session": "" });
+    expect(rejected.error).toMatchObject({ code: -32001, data: { reason: "invalid_conversation_scope" } });
+    expect(f.deliveries).toHaveLength(0);
+    expect(f.state.mcpEvents.list()).toHaveLength(0);
+  });
+
   it("does not reactivate a new subscription when unsubscribe races callback verification", async () => {
     let release!: () => void; let began!: () => void;
     const begin = new Promise<void>(resolve => { began = resolve; });

@@ -12,7 +12,7 @@ export const UI_RESOURCE_MANIFEST = {
   },
   "releaseInventory": {
     "catalog": "ui-release-catalog.json",
-    "catalogSha256": "56a20b4eb7c2777c7b2b257042b60707fa58f58e90fcbd0b84ce2f8db4210c3e",
+    "catalogSha256": "ca50c51cd1534f67a20f7dd2f6e00bab11caa7baee8a86da6fcfe8e8d08e895a",
     "activeResources": [
       "settings",
       "dashboard"
@@ -67,7 +67,7 @@ export const UI_RESOURCE_MANIFEST = {
       {
         "name": "dashboard",
         "uriVersion": 2,
-        "digest": "9de1176c5bb01bae35d2a20a84c99d86d61fdd094efb580d3291c7031784bc56",
+        "digest": "62f2d44ad632632d459f55da11bf1a7ac3fdd6d4401646fbe82e59db6d90699d",
         "uri": "ui://codex-mcp-bridge/dashboard/v2.html",
         "inventories": [
           "development-current"
@@ -78,6 +78,7 @@ export const UI_RESOURCE_MANIFEST = {
         "presenterTool": "codex_dashboard",
         "requiredTools": [
           "codex_dashboard",
+          "codex_status",
           "codex_ui_completion",
           "codex_ui_problem",
           "codex_ui_read",
@@ -133,7 +134,7 @@ export const UI_RESOURCE_MANIFEST = {
     },
     "dashboard": {
       "uriVersion": 2,
-      "digest": "9de1176c5bb01bae35d2a20a84c99d86d61fdd094efb580d3291c7031784bc56",
+      "digest": "62f2d44ad632632d459f55da11bf1a7ac3fdd6d4401646fbe82e59db6d90699d",
       "uri": "ui://codex-mcp-bridge/dashboard/v2.html",
       "metadata": {
         "descriptor": {
@@ -160,7 +161,7 @@ export const UI_RESOURCE_MANIFEST = {
             ]
           },
           "openai/widgetDomain": "https://web-sandbox.oaiusercontent.com",
-          "codex/uiContractGeneration": 36
+          "codex/uiContractGeneration": 37
         }
       },
       "releaseProvenance": {
@@ -173,6 +174,7 @@ export const UI_RESOURCE_MANIFEST = {
         "presenterTool": "codex_dashboard",
         "requiredTools": [
           "codex_dashboard",
+          "codex_status",
           "codex_ui_completion",
           "codex_ui_problem",
           "codex_ui_read",

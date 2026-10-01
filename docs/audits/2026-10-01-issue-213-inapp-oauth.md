@@ -2,6 +2,11 @@
 
 Date: 2026-10-01 KST. Integration target: `dev`. Baseline: `4aef89c`.
 
+Later evidence: [actual Events request tracing](2026-10-01-issue-213-events-request-trace.md)
+supersedes the inference from the earlier “no subscription tool” responses.
+Native subscription requests did arrive; the remaining boundary is missing
+original conversation metadata, with OAuth verified.
+
 ## Observed result
 
 The already approved temporary HTTPS issuer, dedicated private HTTP Tunnel,

@@ -12,6 +12,13 @@ const CHATGPT_CONVERSATION_URL_PREFIX = "https://chatgpt.com/c/";
 
 export type ToolCallMetadata = Record<string, unknown> | undefined;
 
+// Classify only errors created here, without reading a caller's error fields or
+// invoking a Proxy trap. The diagnostic does not grant routing authority.
+const missingScopeErrors = new WeakSet<object>();
+export function isMissingConversationScopeError(error: unknown): boolean {
+  return (typeof error === "object" && error !== null || typeof error === "function") && missingScopeErrors.has(error as object);
+}
+
 export type ScopeResolution = {
   scopeId: string;
   source: "host-metadata" | "explicit-compatibility";
@@ -101,9 +108,11 @@ export class ScopeResolver {
   ): ScopeResolution {
     const resolution = this.resolve(metadata, explicitScopeId);
     if (resolution) return resolution;
-    throw new Error(
+    const error = new Error(
       `${operation} requires ChatGPT conversation metadata or an explicit compatibility scopeId from a non-ChatGPT MCP host.`
     );
+    missingScopeErrors.add(error);
+    throw error;
   }
 
   conversationUrl(scopeId: string): string | undefined {

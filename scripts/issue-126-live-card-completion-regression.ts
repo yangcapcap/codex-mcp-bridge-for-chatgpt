@@ -85,7 +85,12 @@ function hostHtml(scenario: string): string {
         reply(frame,message.id,{protocolVersion:"2026-01-26",hostContext:{locale:"ko-KR"}});window.__readyFrames+=1;return;
       }
       if(message.method==="tools/call"&&message.id!==undefined){
-        const args=message.params&&message.params.arguments||{},operation=args.operation;window.__events.push({frame:frameIndex,type:"tool",operation});
+        const args=message.params&&message.params.arguments||{},operation=args.operation;window.__events.push({frame:frameIndex,type:"tool",name:message.params.name,operation});
+        if(message.params.name==="codex_status"){
+          if(args.query?.kind!=="completion"||args.query?.receipt!==${JSON.stringify(receipt)}){reply(frame,message.id,undefined,{code:-32000,message:"Wrong completion identity"});return}
+          // A second installation has the same tool names. This frame remains bound to its own connection.
+          reply(frame,message.id,{structuredContent:{kind:"job",items:[{type:"job",id:${JSON.stringify(jobId)},terminal:true,state:"completed",answer:"Originating connection result"}]},content:[{type:"text",text:"Originating connection result"}],_meta:{privateProof:"must-not-be-forwarded"}});return;
+        }
         if(message.params.name!=="codex_ui_completion"){reply(frame,message.id,delivery("settled"));return}
         if(operation==="wait"){
           window.__waitCount+=1;
@@ -170,7 +175,7 @@ try {
       return {...host,datasets:await Promise.all(frames.map(frame=>frame.evaluate(()=>({...document.documentElement.dataset})))),errors:(await Promise.all(frames.map(frame=>frame.evaluate(()=>window.__errors)))).flat()};
     }`);
     const observed = JSON.parse(raw) as {
-      events: Array<{ type: string; operation?: string; content?: unknown }>;
+      events: Array<{ type: string; name?: string; operation?: string; content?: unknown }>;
       messageCount: number;
       waitCount: number;
       settled: boolean;
@@ -178,6 +183,13 @@ try {
       errors: string[];
     };
     assert.deepEqual(observed.errors, [], scenario);
+    for(const message of observed.events.filter(event=>event.type==="message")){
+      const text=JSON.stringify(message.content);
+      assert.equal(text.includes("Originating connection result"),true,scenario);
+      assert.equal(text.includes("Use only Codex MCP Bridge for ChatGPT"),false,scenario);
+      assert.equal(text.includes("must-not-be-forwarded"),false,scenario);
+      assert.equal(text.includes(receipt),false,scenario);
+    }
     const diagnosticText = JSON.stringify(observed.datasets);
     assert.equal(diagnosticText.includes(jobId), false, `${scenario}: raw Job ID leaked into diagnostics`);
     assert.equal(diagnosticText.includes(presentationRef), false, `${scenario}: presentation ref leaked into diagnostics`);

@@ -20,6 +20,7 @@
       "presenterTool": "codex_dashboard",
       "requiredTools": [
         "codex_dashboard",
+        "codex_status",
         "codex_ui_completion",
         "codex_ui_problem",
         "codex_ui_read",
