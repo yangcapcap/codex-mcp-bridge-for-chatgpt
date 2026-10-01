@@ -519,3 +519,17 @@ share the request fence. Authentication metadata is captured as own data before
 inspection. Initial timeout observations remain immutable. These are ingress
 resource guarantees; the separately rejected registry, private process owner,
 durable writer and activation contracts still require their own validation.
+
+
+Events authentication requires an exact bridge scope in an array and a finite,
+nonnegative numeric expiry when present. Malformed controlled SDK metadata
+cannot acquire the capability; this check does not claim remote reachability of
+those malformed shapes. Unsupported raw authentication snapshots are retained
+as `UNKNOWN` even when a descriptor trap pins the controller during inspection.
+Unsubscribe and post-verification transaction method lookups stop before invoking
+any callback returned by a pinning getter. Job/Activity/Agent ownership reads,
+public request data and ledger records are captured before downstream use; sender
+signal lookup and delivery/timer ledger stages observe the same permanent pin.
+Expiry after network verification uses a newly validated own-data auth snapshot.
+Initial resource receipts remain immutable. Whole private-runtime and durable
+writer admission still require independent evidence.

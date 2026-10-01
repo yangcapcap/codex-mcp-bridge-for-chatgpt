@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Require strict Events auth shape, retain interrupted auth evidence and stop unsubscribe, ownership, delivery and renewal callbacks at each nonforcing boundary.",
+  "breaking": false,
+  "migration": null
+}

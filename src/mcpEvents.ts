@@ -34,10 +34,17 @@ export function mcpBearerPrincipal(token: string): string {
   return "bridge-bearer-" + createHash("sha256").update("mcp-events/principal/v1\0" + token).digest("hex");
 }
 
+const eventAuthSchema=z.object({scopes:z.array(z.string()),expiresAt:z.number().finite().nonnegative().optional(),
+  extra:z.object({bridgeMcpPrincipal:z.string().min(1)}).passthrough()}).passthrough();
+function eventAuthPrincipal(auth:unknown):string|undefined {
+  const parsed=eventAuthSchema.safeParse(auth);
+  if(!parsed.success || !parsed.data.scopes.includes('bridge') ||
+    parsed.data.expiresAt!==undefined && parsed.data.expiresAt*1000<=Date.now())return undefined;
+  return parsed.data.extra.bridgeMcpPrincipal;
+}
 export function authenticatedMcpPrincipal(context: Pick<ServerContext, "http">): string | undefined {
-  const auth = context.http?.authInfo;
-  if (!auth?.scopes.includes("bridge") || (auth.expiresAt !== undefined && auth.expiresAt * 1_000 <= Date.now())) return undefined;
-  return typeof auth.extra?.bridgeMcpPrincipal === "string" ? auth.extra.bridgeMcpPrincipal : undefined;
+  const captured=snapshotNonforcingData(context.http?.authInfo,()=>false);
+  return captured.ok?eventAuthPrincipal(captured.value):undefined;
 }
 
 export const JOB_TERMINAL_EVENT_DEFINITION = {
@@ -121,22 +128,30 @@ export class McpEventsController {
     }));
     server.server.setRequestHandler("events/subscribe", { params: subscribeSchema }, (params, context) => this.subscribe(params, context));
     server.server.setRequestHandler("events/unsubscribe", { params: unsubscribeSchema }, (params, context) => this.requestFence.run(()=>{
+      params=this.ownedData(params,'unsubscribe-params');
       const principal = this.authorize(context);
       this.assertAdmission();
       const scopeId=this.requireOwnedScope(context,'Event unsubscribe');
       const id = this.identity(principal, scopeId, params.arguments.jobId, params.delivery.url);
       if (this.verifying.has(id)) this.verifying.set(id, this.verifying.get(id)! + 1);
-      const ledger = this.jobs.admissionStateStore.mcpEvents;
+      const state=this.jobs.admissionStateStore;this.assertAdmission();
+      const ledger = state.mcpEvents;
       this.assertAdmission();
-      this.jobs.activityTransaction(() => {
-        const record = ledger.get(params.arguments.jobId, id);
+      const transaction=this.ownedMethod(this.jobs,'activityTransaction');
+      Reflect.apply(transaction,this.jobs,[() => {
+        const get=this.ownedMethod(ledger,'get');
+        const record=this.ownedData(Reflect.apply(get,ledger,[params.arguments.jobId,id]),'unsubscribe-record');
         this.assertAdmission();
         if (!record) return;
         if (record.scopeId !== scopeId || record.principal !== principal) throw this.denied();
-        if (!ledger.save({ ...record, revision: record.revision + 1, disabled: "unsubscribed" }, record.revision)) {
+        const save=this.ownedMethod(ledger,'save');
+        const saved=Reflect.apply(save,ledger,[{...record,revision:record.revision+1,disabled:'unsubscribed'},record.revision]);
+        this.assertAdmission();
+        if(!saved) {
           throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
         }
-      });
+      }]);
+      this.assertAdmission();
       return {};
     }));
   }
@@ -151,16 +166,59 @@ export class McpEventsController {
     if(this.nonforcingPinned)throw new Error('MCP_EVENTS_NONFORCING_PINNED');
   }
 
+  private ownedMethod<T extends object,K extends keyof T>(owner:T,key:K):T[K] {
+    this.assertAdmission();const method=owner[key];
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('method:'+String(key),method);}
+    this.assertAdmission();return method;
+  }
+  private ownedCall<T extends object,K extends keyof T>(owner:T,key:K,args:unknown[]):ReturnType<Extract<T[K],(...args:any[])=>any>> {
+    const method=this.ownedMethod(owner,key);
+    let value:unknown;
+    try{value=Reflect.apply(method as (...args:any[])=>any,owner,args);}
+    catch(error){this.retainedErrors.set('call-error:'+String(key),error);throw error;}
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('call-result:'+String(key),value);}
+    this.assertAdmission();return value as ReturnType<Extract<T[K],(...args:any[])=>any>>;
+  }
+  private ownedData<T>(value:T,label:string):T {
+    const captured=snapshotNonforcingData(value,()=>this.nonforcingPinned);
+    if(!captured.ok){this.nonforcingUnknown=true;this.retainedErrors.set(label,value);throw new Error('MCP_EVENTS_DATA_UNCONFIRMED');}
+    this.assertAdmission();return captured.value;
+  }
+
+  private ownedFields<T>(value:object,keys:readonly string[],label:string):T {
+    const fields:Record<string,unknown>={};
+    for(const key of keys){
+      this.assertAdmission();const field=Object.getOwnPropertyDescriptor(value,key);
+      if(this.nonforcingPinned || field&&!Object.hasOwn(field,'value')) {
+        this.nonforcingUnknown=true;this.retainedErrors.set(label,value);throw new Error('MCP_EVENTS_DATA_UNCONFIRMED');
+      }
+      fields[key]=field?.value;
+    }
+    const captured=snapshotNonforcingData(fields,()=>this.nonforcingPinned);
+    if(!captured.ok){this.nonforcingUnknown=true;this.retainedErrors.set(label,value);throw new Error('MCP_EVENTS_DATA_UNCONFIRMED');}
+    this.assertAdmission();return captured.value as T;
+  }
+
+  private requestSignal(context:ServerContext):AbortSignal {
+    const request=context.mcpReq;
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('signal-request',request);}
+    this.assertAdmission();
+    const signal=request.signal;
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('request-signal',signal);}
+    this.assertAdmission();return signal;
+  }
+
   private requireOwnedScope(context:ServerContext,label:string):string {
     const request=context.mcpReq;this.assertAdmission();
     const metadata=request._meta;this.assertAdmission();
-    const require=this.scopes.require;this.assertAdmission();
+    const require=this.ownedMethod(this.scopes,'require');
     const scope=Reflect.apply(require,this.scopes,[metadata as ToolCallMetadata,undefined,label]);this.assertAdmission();
     const scopeId=scope.scopeId;this.assertAdmission();return scopeId;
   }
 
   private async subscribeOwned(params: z.infer<typeof subscribeSchema>, context: ServerContext) {
     this.assertAdmission();
+    params=this.ownedData(params,'subscribe-params');
     const principal = this.authorize(context);
     this.assertAdmission();
     const scopeId=this.requireOwnedScope(context,'Event subscription');
@@ -173,7 +231,7 @@ export class McpEventsController {
     const maintain=ledger.maintain;this.assertAdmission();Reflect.apply(maintain,ledger,[]);
     this.assertAdmission();
     const get=ledger.get;this.assertAdmission();
-    const old = Reflect.apply(get,ledger,[params.arguments.jobId,id]);
+    const old = this.ownedData(Reflect.apply(get,ledger,[params.arguments.jobId,id]),'subscribe-old-record');
     this.assertAdmission();
     if (this.verifying.has(id) || this.verifying.size >= 8) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "verification_busy" });
     this.verifying.set(id, 0);
@@ -190,9 +248,10 @@ export class McpEventsController {
         const body = JSON.stringify({ type: "verification", challenge });
         const verificationId = "msg_verification_" + randomUUID();
         try {
+          const signal=this.requestSignal(context);
           const response = await this.senderFence.run(()=>this.sender(params.delivery.url, body,
             signedHeaders(verificationId, id, body, [params.delivery.secret]),
-            AbortSignal.any([this.stop.signal, context.mcpReq.signal, AbortSignal.timeout(10_000)])));
+            AbortSignal.any([this.stop.signal, signal, AbortSignal.timeout(10_000)])));
           this.retainedResponses.set(id,response);
           if(this.stop.signal.aborted)throw new Error('RUNTIME_NONFORCING_PINNED');
           const captured=snapshotNonforcingData(response,()=>this.nonforcingPinned);
@@ -214,19 +273,24 @@ export class McpEventsController {
       if(this.stop.signal.aborted)throw new ProtocolError(-32015,'CallbackEndpointError',{reason:'timeout'});
       this.retainedResponses.delete(id);
       const verifiedAt = Date.now();
-      this.authorize(context); // A token can expire while the callback challenge is running.
+      const auth=this.authorizedAuth(context); // Validate expiry again after network verification.
       const expiresAt = Math.min(verifiedAt + Math.min(params.ttlMs ?? SUBSCRIPTION_TTL_MS, MAX_TTL_MS),
-        context.http?.authInfo?.expiresAt !== undefined ? context.http.authInfo.expiresAt * 1_000 : Infinity);
-      this.jobs.activityTransaction(() => {
-        const current = ledger.get(params.arguments.jobId, id);
+        auth.expiresAt!==undefined?auth.expiresAt*1000:Infinity);
+      const transaction=this.ownedMethod(this.jobs,'activityTransaction');
+      Reflect.apply(transaction,this.jobs,[() => {
+        const get=this.ownedMethod(ledger,'get');
+        const current=this.ownedData(Reflect.apply(get,ledger,[params.arguments.jobId,id]),'subscribe-current-record');
+        this.assertAdmission();
         if (this.verifying.get(id) !== 0) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
         if ((current?.revision || 0) !== (old?.revision || 0)) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
         const job = this.requireJob(params.arguments.jobId, scopeId, principal);
-        if (context.mcpReq.signal.aborted || this.stop.signal.aborted) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "timeout" });
+        this.assertAdmission();
+        if (this.requestSignal(context).aborted || this.stop.signal.aborted) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "timeout" });
         const rotating = destination && destination.secret !== params.delivery.secret;
         // Delivery can advance without changing the grant revision while the
         // challenge awaits. Preserve its event, ACK, attempts and retry state.
-        const saved = ledger.save({
+        const save=this.ownedMethod(ledger,'save');
+        const saved = Reflect.apply(save,ledger,[{
           ...current,
           id, jobId: job.jobId, scopeId, principal, verifiedAt, expiresAt, revision: (current?.revision || 0) + 1,
           disabled: undefined,
@@ -234,36 +298,51 @@ export class McpEventsController {
             ...(rotating ? { previousSecret: destination!.secret, rotateUntil: verifiedAt + ROTATION_MS }
               : destination?.rotateUntil && destination.rotateUntil > verifiedAt ? { previousSecret: destination.previousSecret, rotateUntil: destination.rotateUntil } : {}) }),
           delivery: current?.delivery || "waiting", attempts: current?.attempts || 0, nextAttemptAt: current?.nextAttemptAt || 0
-        }, current?.revision ?? 0);
+        }, current?.revision ?? 0]);
+        this.assertAdmission();
         if (!saved) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
-        ledger.enqueue(job);
-      });
+        const enqueue=this.ownedMethod(ledger,'enqueue');
+        Reflect.apply(enqueue,ledger,[job]);this.assertAdmission();
+      }]);
+      this.assertAdmission();
       this.wake();
       return { id, refreshBefore: new Date(expiresAt).toISOString(), cursor: null, truncated: false };
     } finally { this.verifying.delete(id); }
   }
 
-  private authorize(context: ServerContext): string {
-    if(this.nonforcingPinned)throw new Error('MCP_EVENTS_NONFORCING_PINNED');
-    const http=context.http;this.assertAdmission();
-    const auth=http?.authInfo;this.assertAdmission();
-    const captured=snapshotNonforcingData(auth,()=>this.nonforcingPinned);this.assertAdmission();
+  private authorizedAuth(context:ServerContext) {
+    this.assertAdmission();
+    const http=context.http;
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('auth-http',http);}
+    this.assertAdmission();
+    const auth=http?.authInfo;
+    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('auth-info',auth);}
+    this.assertAdmission();
+    const captured=snapshotNonforcingData(auth,()=>this.nonforcingPinned);
+    // Capture unsupported raw data before a descriptor trap's pin can throw.
     if(!captured.ok){this.nonforcingUnknown=true;this.retainedErrors.set('auth-info',auth);throw this.denied();}
-    if (!this.principal || authenticatedMcpPrincipal({http:{authInfo:captured.value}} as Pick<ServerContext,'http'>) !== this.principal) throw this.denied();
-    return this.principal;
+    this.assertAdmission();
+    if(!this.principal || eventAuthPrincipal(captured.value)!==this.principal)throw this.denied();
+    return {principal:this.principal,expiresAt:eventAuthSchema.parse(captured.value).expiresAt};
   }
+  private authorize(context: ServerContext): string {return this.authorizedAuth(context).principal;}
 
   private denied() { return new ProtocolError(-32001, "Events require an authenticated connection and the original conversation's owned Job."); }
 
   private requireJob(jobId: string, scopeId: string, principal: string): EventJob {
-    const job = this.jobs.get(jobId);
-    const activity = job && this.jobs.getActivity(job.activityId);
-    const agent = job?.agentId && this.jobs.getAgent(job.agentId);
-    if (!job || job.scopeId !== scopeId || job.mcpPrincipal !== principal ||
-        activity?.scopeId !== scopeId || !agent || agent.scopeId !== scopeId ||
-        job.projectId && !this.jobs.admissionStateStore.isEventProjectAvailable(job.projectId)) throw this.denied();
-    const completion = this.jobs.admissionStateStore.getJobCompletionDelivery(jobId, scopeId);
-    return { ...job, terminalVersion: completion?.terminalVersion, updatedAt: completion?.createdAt || job.updatedAt };
+    const get=this.ownedMethod(this.jobs,'get');const original=Reflect.apply(get,this.jobs,[jobId]);this.assertAdmission();
+    if(!original)throw this.denied();
+    const job=this.ownedFields<EventJob>(original,['jobId','scopeId','activityId','agentId','projectId','mcpPrincipal','status','version','updatedAt','approvedFollowups'],'event-job');
+    if(job.jobId!==jobId || job.scopeId!==scopeId || job.mcpPrincipal!==principal || !job.activityId || !job.agentId)throw this.denied();
+    const getActivity=this.ownedMethod(this.jobs,'getActivity');const activity=Reflect.apply(getActivity,this.jobs,[job.activityId]);this.assertAdmission();
+    if(!activity || this.ownedFields<{scopeId:string}>(activity,['scopeId'],'event-activity').scopeId!==scopeId)throw this.denied();
+    const getAgent=this.ownedMethod(this.jobs,'getAgent');const agent=Reflect.apply(getAgent,this.jobs,[job.agentId]);this.assertAdmission();
+    if(!agent || this.ownedFields<{scopeId:string}>(agent,['scopeId'],'event-agent').scopeId!==scopeId)throw this.denied();
+    const state=this.jobs.admissionStateStore;this.assertAdmission();
+    if(job.projectId){const available=this.ownedMethod(state,'isEventProjectAvailable');const allowed=Reflect.apply(available,state,[job.projectId]);this.assertAdmission();if(!allowed)throw this.denied();}
+    const completionRead=this.ownedMethod(state,'getJobCompletionDelivery');const rawCompletion=Reflect.apply(completionRead,state,[jobId,scopeId]);this.assertAdmission();
+    const completion=rawCompletion?this.ownedFields<{terminalVersion:number;createdAt:number}>(rawCompletion,['terminalVersion','createdAt'],'event-completion'):undefined;
+    return {...job,terminalVersion:completion?.terminalVersion,updatedAt:completion?.createdAt||job.updatedAt};
   }
 
   private identity(principal: string, scopeId: string, jobId: string, url: string): string {
@@ -283,7 +362,9 @@ export class McpEventsController {
         if (!this.stop.signal.aborted) {
           try {
             const now = Date.now();
-            const deadlines = this.jobs.admissionStateStore.mcpEvents.list().flatMap(record => [
+            const state=this.jobs.admissionStateStore;this.assertAdmission();
+            const ledger=state.mcpEvents;this.assertAdmission();
+            const deadlines = this.ownedData(this.ownedCall(ledger,'list',[]),'event-timer-records').flatMap(record => [
               Math.max(record.expiresAt, record.recoverUntil || 0),
               ...(!record.disabled && record.expiresAt > now && record.event && record.delivery === "pending" ? [record.nextAttemptAt] : [])
             ]);
@@ -304,32 +385,33 @@ export class McpEventsController {
 
   private async deliver(): Promise<void> {
     if(this.stop.signal.aborted)return;
-    const ledger = this.jobs.admissionStateStore.mcpEvents;
-    ledger.maintain();
+    const state=this.jobs.admissionStateStore;this.assertAdmission();
+    const ledger = state.mcpEvents;this.assertAdmission();
+    this.ownedCall(ledger,'maintain',[]);
     if(this.stop.signal.aborted)return;
-    const records=ledger.list();
+    const records=this.ownedData(this.ownedCall(ledger,'list',[]),'event-delivery-records');
     if(this.stop.signal.aborted)return;
     for (const { jobId, id } of records) {
       if (this.stop.signal.aborted) break;
       // Another subscription's network await may have allowed this grant to
       // expire, renew or unsubscribe. The list supplies identities only.
-      const record = ledger.get(jobId, id);
+      const record = this.ownedData(this.ownedCall(ledger,'get',[jobId,id]),'event-delivery-record');
       if(this.stop.signal.aborted)break;
       if (!record || record.disabled || record.expiresAt <= Date.now() || record.delivery !== "pending" || record.nextAttemptAt > Date.now()) continue;
       if (!record.event) continue;
-      if (record.attempts >= MAX_ATTEMPTS) { ledger.save({ ...record, delivery: "failed" }, record.revision); continue; }
+      if (record.attempts >= MAX_ATTEMPTS) { this.ownedCall(ledger,'save',[{...record,delivery:'failed'},record.revision]); continue; }
       try { this.requireJob(record.jobId, record.scopeId, record.principal); if (record.principal !== this.principal) throw this.denied(); }
       catch (error) {
         if(this.stop.signal.aborted){this.retainedErrors.set(record.id,error);break;}
         // An unavailable state read is not evidence of revoked access.
         if (!(error instanceof ProtocolError)) throw error;
-        ledger.save({ ...record, revision: record.revision + 1, disabled: "revoked" }, record.revision); continue;
+        this.ownedCall(ledger,'save',[{...record,revision:record.revision+1,disabled:'revoked'},record.revision]); continue;
       }
       if(this.stop.signal.aborted)break;
       let response;
       // Persist before opening keys or sending, including failed signing attempts.
       record.attempts += 1;
-      if (!ledger.save(record, record.revision)) continue;
+      if (!this.ownedCall(ledger,'save',[record,record.revision])) continue;
       try {
         const destination = this.vault!.open(record.id, record.destination);
         const body = JSON.stringify(record.event);
@@ -351,19 +433,19 @@ export class McpEventsController {
       response=captured.value;
       if(this.stop.signal.aborted)break;
       this.retainedResponses.delete(record.id);
-      const current = ledger.get(record.jobId, record.id);
+      const current = this.ownedData(this.ownedCall(ledger,'get',[record.jobId,record.id]),'event-delivery-current');
       if (!current || current.revision !== record.revision || current.disabled || current.expiresAt <= Date.now() ||
           current.delivery !== "pending" || current.event?.eventId !== record.event.eventId) continue;
       const status = response.status;
       const acknowledged = status >= 200 && status < 300;
       const transient = status === 0 || status === 408 || status === 425 || status === 429 || status >= 500;
       const failed = !acknowledged && (!transient || current.attempts >= MAX_ATTEMPTS);
-      ledger.save({ ...current, lastStatus: status,
+      this.ownedCall(ledger,'save',[{ ...current, lastStatus: status,
         delivery: acknowledged ? "acknowledged" : failed ? "failed" : "pending",
         ...(status === 410 ? { disabled: "gone" as const, revision: current.revision + 1 } : {}),
         ...(acknowledged ? { acknowledgedAt: Date.now() } : {}),
         nextAttemptAt: Date.now() + Math.min(60_000, 1_000 * 2 ** current.attempts)
-      }, current.revision);
+      }, current.revision]);
     }
   }
 
