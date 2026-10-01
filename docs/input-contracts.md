@@ -44,17 +44,21 @@ the existing request contract cannot prove that two new IDs mean the same step.
 Do not treat `HANDLE_UNAVAILABLE` as proof that an old request was never admitted.
 
 For an exact step approved before its predecessor starts, the optional
-`approvedFollowups: [{"stepId":"B","prompt":"the exact approved B prompt"}]`
-declares that authorization on the predecessor admission. After reading and
-reviewing its completed exact result, use the same prompt with
-`followup: {"jobId":"the predecessor UUID","stepId":"B","reviewedVersion":2}`
+`approvedFollowups: [{"prompt":"the exact approved B prompt"}]` declares that
+authorization on predecessor admission. The bridge returns opaque `followupId`
+and canonical `requestId` references in declaration order. Recover those same
+values from the predecessor's exact Job/request read after lost responses or
+restart; GPT must not name or recreate a stage ID. After reviewing its completed
+exact result, use that requestId and same prompt with
+`followup: {"followupId":"the bridge-issued reference","reviewedVersion":2}`
 and omit project and selection. Use the actual version from the exact read.
-The bridge derives a durable canonical requestId from the original scope,
-predecessor and approved step, so different caller UUIDs and resumed GPT runs
+Different caller UUIDs and resumed GPT runs using the same issued reference
 converge to one admission. A different prompt, changed context/model, unavailable
 result, unapproved step or occupied canonical ID is rejected. The exact result
 offer and the caller's review assertion do not prove private GPT review.
 See [MCP Events and approved followups](mcp-events.md) for expiry and recovery.
+Old caller `stepId` inputs are rejected. Retained v1 receipts keep their canonical
+IDs and admitted Jobs, exposed through current system-issued references.
 
 All new work uses one asynchronous admission path. The bridge persists the Job,
 request receipt, versions, and requery handles before returning. It does not wait
@@ -75,7 +79,9 @@ channel without changing that snapshot. Subscription authorization requires a
 server-verified principal as well as the original conversation scope. Callback
 ACK never settles a live-card claim or counts as result review. No Auth / Tunnel
 correlation metadata alone cannot authorize a subscription; actual ChatGPT
-resume support remains subject to isolated host acceptance.
+resume support requires the [OAuth product connection](mcp-events-authentication.md)
+and isolated host acceptance. Its JWT adapter is implemented; provider configuration
+and actual host acceptance are pending. The default No Auth path cannot use Events today.
 
 An exact Job/request `codex_status` wait is a bounded read. `waitFor="change"`
 wakes on a Job version change; `waitFor="terminal"` uses a lifecycle-only signal

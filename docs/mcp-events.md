@@ -16,7 +16,7 @@ verification remain separate facts.
 
 ## Authentication and enablement
 
-Enable an isolated HTTP installation with
+For the isolated static-bearer bridge tests, enable HTTP with
 `CODEX_MCP_BRIDGE_EVENTS_ENABLED=1`, a configured
 `CODEX_MCP_BRIDGE_TOKEN`, and `CODEX_MCP_BRIDGE_NO_AUTH=0`. The endpoint's
 existing bearer check establishes one installation operator principal; it is
@@ -26,12 +26,22 @@ conversation scope. The original Activity, Agent and active project must also
 remain accessible. Scope IDs and `openai/session`, subject and organization
 metadata are correlation values, not authentication credentials.
 
-The current No Auth / Secure MCP Tunnel stdio path supplies no independently
+The current No Auth / Secure MCP Tunnel HTTP or stdio path supplies no independently
 verified subscriber principal. Events requests on that path are denied. Setting
 `openai/subject`, knowing a Job ID, or echoing a callback challenge cannot enable
-it. A future host-supported trusted identity adapter requires separate actual
-acceptance; this feature neither adds OAuth nor loosens existing scope checks.
+it. The opt-in OAuth adapter preserves the existing scope checks.
 Existing execution and status tools continue normally.
+
+The selected [product connection design](mcp-events-authentication.md) is user
+OAuth 2.1 over a private HTTP Tunnel, with a separately reachable public identity
+provider. OpenAI does not support customer-defined API keys for this ChatGPT
+connection. The access-JWT adapter and authenticated HTTP launcher are implemented
+and synthetically tested. Provider configuration is pending; no existing login
+provider is configured. This remains a product connection gate before actual
+host acceptance. Conversation metadata and
+callback verification cannot replace authentication. Enabling Events on the
+default No Auth connection still does not make the feature usable. Issue #213
+remains open.
 
 Discovery advertises `events` when the opt-in configuration is enabled. Use
 `events/list`, `events/subscribe` and `events/unsubscribe` on the same
@@ -44,6 +54,10 @@ Subscribe using `name: "codex.job.terminal"`, `arguments: {"jobId":"..."}` and
 `delivery: {"mode":"webhook","url":"https://...","secret":"whsec_..."}`.
 The signing key must decode from base64 to 24–64 bytes. The service grants one
 hour by default and at most 24 hours; a smaller positive `ttlMs` is honored.
+In OAuth mode, the granted expiry is also capped at verified access-token expiry
+and checked again after callback verification. Renewal uses the same stable
+operator identity and subscription ID. Expiry stops delivery without cancelling
+or repeating the Job.
 `ttlMs: null` still receives a finite grant. `refreshBefore` is the granted
 expiration. Refresh uses the same principal, scope, exact Job and callback
 identity. Unsubscribe uses that event, arguments and callback URL, without a key.
@@ -63,12 +77,16 @@ event ID and current signing timestamp. Application bodies remain below 256 KiB;
 responses and connection lifetimes are bounded.
 
 Callback URLs and signing keys are AES-GCM encrypted in the existing database
-using a key derived from the installation bearer credential, which remains
+using a key derived from the stable installation `CODEX_MCP_BRIDGE_TOKEN`, which remains
 outside SQLite. The subscription ID is authenticated encryption context.
 Database-only dumps cannot disclose destinations or signing keys. Backups need
 the separately secured original bearer credential to recover those encrypted
-records. Rotating that credential changes the operator principal and revokes
-old subscriptions; it does not change Codex authentication or cancel Jobs.
+records. In static-bearer mode, rotating that credential changes the operator
+principal and revokes old subscriptions. In OAuth mode it is only a local
+sealing secret; rotating access tokens preserves the issuer/subject/resource
+principal and does not change it. Keep the original sealing secret to recover
+old encrypted destinations. Neither operation changes Codex authentication or
+cancels Jobs.
 
 The bounded subscription journal uses `bridge_meta` keys under
 `mcp_events_v1/`, with at most 256 records and eight per Job. It has its own
@@ -101,13 +119,32 @@ approved:
 ```json
 {
   "approvedFollowups": [
-    { "stepId": "review-B", "prompt": "The exact already-approved B instruction" }
+    { "prompt": "The exact already-approved B instruction" }
   ]
 }
 ```
 
-This optional input is part of task contract 6. It grants at most eight named
-steps, scoped to A's original Activity and Agent. Prompts are stored as hashes.
+This optional input is part of task contract 6. It grants at most eight steps,
+scoped to A's original Activity and Agent. GPT supplies meaning, not stage IDs.
+The bridge issues opaque `followupId` and canonical `requestId` values at A's
+atomic admission and returns them in declaration order:
+
+```json
+{
+  "approvedFollowups": [
+    { "followupId": "<bridge-issued reference>", "requestId": "<bridge-issued UUID>", "status": "approved-pending" }
+  ]
+}
+```
+
+Admission retries and exact Job/request status reads recover those same values,
+including after server/store recreation. A completed event carries only
+`availableFollowups: [{"followupId":"<bridge-issued reference>"}]`; it is a
+snapshot hint, so requery the exact result and current references before acting.
+Never name, parse, regenerate or guess a reference. Separate declarations receive
+separate IDs even if their exact prompts match; repeating one reference cannot
+create another stage. The IDs are references, not authentication credentials.
+Prompts remain stored as hashes, so B must resubmit the exact approved text.
 The approval expires after seven days if unused; it cannot be added to A by
 reading its output or replaying an event. This is the model's declaration of
 existing user authorization, not proof of authorization independent of the
@@ -120,13 +157,12 @@ After an event, the resumed GPT calls the supplied exact query:
 ```
 
 It reviews that answer before calling `codex_task` with the exact B prompt,
-the current contract/envelope, any UUID requestId, and:
+the current contract/envelope, the returned canonical requestId, and:
 
 ```json
 {
   "followup": {
-    "jobId": "A-job-id",
-    "stepId": "review-B",
+    "followupId": "<bridge-issued reference>",
     "reviewedVersion": 2
   }
 }
@@ -140,8 +176,8 @@ retained result, thread, access mode and model in the atomic Job admission.
 It cannot inspect private GPT reasoning and does not equate result offer with
 actual human/model review.
 
-`original scope + predecessor Job + stepId` resolves to a durable canonical
-requestId. Admission binds that receipt and B's Job in the same existing
+`original scope + predecessor Job + system-issued followupId` resolves to a
+durable canonical requestId. Admission binds that receipt and B's Job in the same existing
 transaction. Different UUIDs, GPT runs, event batches, duplicate card delivery,
 and response-loss retries converge to B. An expired B result still reserves
 the stage and cannot admit a replacement. Distinct approved steps and explicitly
@@ -150,6 +186,15 @@ external side effects performed inside Codex. Consumed receipts remain durable
 admission tombstones; the existing receipt maintenance slice removes unused
 expired approvals in bounded pages.
 
+The general new-task requestId contract remains caller/host-owned. Followup
+callers may also use different submission UUIDs; the issued reference always
+resolves to the stored canonical receipt. Old `stepId` caller inputs are rejected.
+Refresh discovery and use returned references. Retained v1 Job metadata and
+receipts are adapted internally without changing their canonical requestIds or
+admitted Jobs; this is stored-data compatibility, not a public caller alias.
+Pending older webhook bodies stay intact and their exact result query recovers
+the references. No SQL schema migration or new workflow engine is introduced.
+
 Without a declared approved step, the backend rejects followup admission. The
 GPT may report the result and ask for a new instruction. Event text can never
 create a grant. Do not call an ordinary new task to evade a stage's receipt.
@@ -157,8 +202,9 @@ create a grant. Do not call an ordinary new task to evade a stage's receipt.
 ## Acceptance boundary
 
 Protocol and synthetic regression tests cover the implementation. Actual
-ChatGPT / Tunnel discovery, callback support, resumed-call metadata and
-original scope equality still need an isolated authenticated host trial.
+ChatGPT / Tunnel must first have an officially supported connection that supplies
+a verified subscriber principal. Its discovery, callback support, resumed-call
+metadata and original scope equality then need an isolated authenticated trial.
 Record webhook receipt separately from exact result retrieval, actual review,
 and B admission. The test must include a B-not-approved control and two distinct
 GPT runs delivering the same logical step.

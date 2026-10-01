@@ -119,6 +119,7 @@
     "better-sqlite3": "^13.0.3",
     "hono": "^4.13.7",
     "ipaddr.js": "^2.5.0",
+    "jose": "^6.2.12",
     "standardwebhooks": "^1.1.1",
     "tar": "7.5.22",
     "zod": "^4.2.0"

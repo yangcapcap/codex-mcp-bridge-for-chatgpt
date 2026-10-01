@@ -11,12 +11,69 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const launcherPath = path.join(repositoryRoot, "scripts", "start-codex-mcp-bridge.mjs");
 
 describe("managed launcher lifecycle", () => {
+  it("starts authenticated HTTP without downgrading and rebuilds the profile when OAuth identity changes", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "codex-launcher-oauth-"));
+    const envFile = path.join(root, "config", ".env");
+    const profileFile = path.join(root, "profile.yaml");
+    const paths = {
+      envFile, fakeCodex: path.join(root, "fake-codex.mjs"), fakeTunnel: path.join(root, "fake-tunnel-client.mjs"),
+      profileMetadataFile: path.join(root, "profile-meta.json"), runtimeStatusFile: path.join(root, "run", "status.json"),
+      healthURLFile: path.join(root, "run", "health.url"), tunnelPIDFile: path.join(root, "run", "tunnel.pid"),
+      runtimeLockDirectory: path.join(root, "ownership-lock"), transport: "http" as const
+    };
+    const initializationLog = path.join(root, "init.log");
+    const controlPlaneReadyFile = path.join(root, "ready");
+    mkdirSync(path.dirname(envFile), { recursive: true, mode: 0o700 });
+    const writeEnvironment = (subject: string) => writeFileSync(envFile, [
+      "CONTROL_PLANE_API_KEY=sk-launcher-test-1234567890123456",
+      "CONTROL_PLANE_TUNNEL_ID=tunnel_llllllllllllllllllllllllllllllll",
+      "CODEX_MCP_BRIDGE_OAUTH_ISSUER=https://id.fixture.example/tenant/",
+      "CODEX_MCP_BRIDGE_OAUTH_RESOURCE=https://bridge.fixture.example/mcp",
+      "CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL=https://bridge.fixture.example/.well-known/oauth-protected-resource/mcp",
+      "CODEX_MCP_BRIDGE_OAUTH_JWKS_URI=https://id.fixture.example/keys",
+      `CODEX_MCP_BRIDGE_OAUTH_OPERATOR_SUBJECT=${subject}`,
+      "CODEX_MCP_BRIDGE_TOKEN=installation-sealing-secret-is-not-an-access-token",
+      `CODEX_MCP_BRIDGE_RUNTIME_HOME=${path.join(root, "runtime")}`,
+      `CODEX_HOME=${path.join(root, "codex")}`,
+      `CODEX_MCP_BRIDGE_STATE_DATABASE_FILE=${path.join(root, "state.sqlite")}`,
+      ""
+    ].join("\n"), { mode: 0o600 });
+    writeEnvironment("first-subject");
+    writeExecutable(paths.fakeCodex, "process.exit(2);");
+    writeExecutable(paths.fakeTunnel, fakeTunnelSource({ profileFile, initializationLog, controlPlaneReadyFile,
+      shutdownLog: path.join(root, "shutdown.log"), codexEnvironmentLog: path.join(root, "environment.json") }));
+    const portServer = createServer();
+    await new Promise<void>(r => portServer.listen(0, "127.0.0.1", r));
+    const port = (portServer.address() as { port: number }).port;
+    await new Promise<void>(r => portServer.close(() => r()));
+    const checkWhileConnected = async () => {
+      const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`);
+      expect(metadata.status).toBe(200);
+      expect(await metadata.json()).toMatchObject({ authorization_servers: ["https://id.fixture.example/tenant/"] });
+      const denied = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "probe", method: "events/list", params: {} }) });
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get("www-authenticate")).toContain("oauth-protected-resource/mcp");
+    };
+    await runLauncher({ ...paths, port, checkWhileConnected });
+    expect(readFileSync(profileFile, "utf8")).toContain("sample: sample_mcp_with_dcr");
+    const firstIdentity = JSON.parse(readFileSync(paths.profileMetadataFile, "utf8")).identity;
+    expect(firstIdentity.authentication).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(firstIdentity)).not.toContain("installation-sealing-secret");
+    await runLauncher({ ...paths, port, checkWhileConnected });
+    expect(initializationCount(initializationLog)).toBe(1);
+    writeEnvironment("second-subject");
+    await runLauncher({ ...paths, port, checkWhileConnected });
+    expect(initializationCount(initializationLog)).toBe(2);
+  }, 45_000);
+
   it("waits for tunnel readiness and shutdown, then reuses only an unchanged profile", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "codex-launcher-lifecycle-"));
     const configDirectory = path.join(root, "config");
@@ -184,6 +241,8 @@ if (args[0] === "init") {
   mkdirSync(path.dirname(profileFile), { recursive: true, mode: 0o700 });
   writeFileSync(profileFile, [
     "profile: managed",
+    "sample: " + option("--sample"),
+    "url: " + option("--mcp-server-url"),
     "tunnel: " + option("--tunnel-id"),
     "command: " + option("--mcp-command"),
     ""
@@ -262,6 +321,9 @@ async function runLauncher(paths: {
   runtimeLockDirectory: string;
   controlPlaneReadyFile?: string;
   detachOutput?: boolean;
+  transport?: "http" | "stdio";
+  port?: number;
+  checkWhileConnected?: () => Promise<void>;
 }): Promise<{ output: string }> {
   const environment = { ...process.env };
   delete environment.CONTROL_PLANE_API_KEY;
@@ -276,7 +338,8 @@ async function runLauncher(paths: {
   const child = spawn(process.execPath, [
     launcherPath,
     "--mode", "secure",
-    "--transport", "stdio",
+    "--transport", paths.transport || "stdio",
+    ...(paths.port ? ["--port", String(paths.port)] : []),
     "--env-file", paths.envFile,
     "--profile", "managed",
     "--tunnel-client", paths.fakeTunnel,
@@ -297,6 +360,7 @@ async function runLauncher(paths: {
   child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
   try {
     await waitForConnectedStatus(paths.runtimeStatusFile, child);
+    await paths.checkWhileConnected?.();
     expect(existsSync(paths.runtimeLockDirectory)).toBe(true);
     expect(existsSync(
       path.join(path.dirname(paths.envFile), "run", "launcher.lock")

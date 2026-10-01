@@ -43,7 +43,8 @@
           "arguments": {},
           "message": "Open Settings and register the project folder."
         }
-      ]
+      ],
+      "approvedFollowups": null
     }
   },
   {
@@ -83,7 +84,8 @@
           "tool": "codex_status",
           "arguments": { "query": { "kind": "job", "id": "job-replay" } }
         }
-      ]
+      ],
+      "approvedFollowups": null
     }
   },
   {
@@ -117,7 +119,8 @@
       "answer": null,
       "error": null,
       "warnings": [],
-      "nextActions": []
+      "nextActions": [],
+      "approvedFollowups": null
     }
   },
   {
@@ -151,7 +154,8 @@
       "answer": "ISSUE38_FOREGROUND_SENTINEL\n\n## Files\n- src/tools.ts\n\n## Tests\n- output contract passed\n\n## Remaining\n- none",
       "error": null,
       "warnings": [],
-      "nextActions": []
+      "nextActions": [],
+      "approvedFollowups": null
     }
   },
   {
@@ -196,7 +200,8 @@
           "kind": "guidance",
           "message": "Start a fresh Agent context with an explicit handoff summary."
         }
-      ]
+      ],
+      "approvedFollowups": null
     }
   },
   {
@@ -236,7 +241,8 @@
         "contextContinuity": null
       },
       "warnings": ["Cancellation does not roll back partial filesystem changes."],
-      "nextActions": []
+      "nextActions": [],
+      "approvedFollowups": null
     }
   }
 ]

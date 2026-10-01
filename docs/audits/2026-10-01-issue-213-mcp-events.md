@@ -1,5 +1,9 @@
 # Issue 213: exact-Job Events implementation and acceptance boundary
 
+This record describes `8b8d40a`. The subsequent
+[system-issued followup ID review](2026-10-01-issue-213-issued-followups.md)
+replaces caller-named steps and clarifies the product connection gate.
+
 ## Basis
 
 This work started from clean `dev` and `origin/dev` at
@@ -23,7 +27,7 @@ limit. Default `live-card` and retained `direct-wait` policies are preserved.
 | --- | --- |
 | Official contract | Discovery, webhook subscription/verification, signatures, finite refresh and callback handling were checked against the official document. It describes a subscribed conversation; it does not establish this installation's host support or Pro mode. |
 | Synthetic protocol tests | Real local HTTP MCP handler and SDK clients, temporary SQLite, fixture Codex upstream and injected callback sender. Security socket tests mock DNS/HTTPS to inspect connection pinning. These are not actual ChatGPT runs or public TLS endpoint trials. |
-| Actual host acceptance | Pending. No isolated authenticated ChatGPT/plugin/Tunnel connection was supplied. No real resumed-call metadata, GPT result review, card closure or background trial was observed. |
+| Actual host acceptance | Pending behind a product connection gate: the default No Auth/Tunnel path has no verified subscriber principal. A supported authentication connection must be settled before an isolated trial. No real resumed-call metadata, GPT result review, card closure or background trial was observed. |
 | Installation | Pending. This task did not replace the installed app, change its operational authentication/settings, inject faults into its database, or publish a release. |
 
 The currently supported Events authorization is the existing HTTP installation

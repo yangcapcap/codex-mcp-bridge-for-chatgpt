@@ -27,6 +27,7 @@ export function expectedTunnelProfileIdentity(values) {
     profile: values.profile,
     tunnelId: values.tunnelId,
     transport: values.transport,
+    authentication: values.authentication || "noauth",
     endpoint: values.endpoint,
     runtimeBuildId: values.runtimeBuildId,
     runtimeRoot: resolve(values.runtimeRoot),

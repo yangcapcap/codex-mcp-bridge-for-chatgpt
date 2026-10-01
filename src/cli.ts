@@ -38,7 +38,7 @@ async function main(): Promise<void> {
       resolve();
     });
   });
-  const authHint = config.token && !config.noAuth ? "Bearer token required" : "no auth";
+  const authHint = config.oauth ? "OAuth access token required" : config.token && !config.noAuth ? "Bearer token required" : "no auth";
   console.log(`${PRODUCT_INFO.displayName} listening on http://${config.host}:${config.port}/mcp (${authHint})`);
   console.log(`build: ${BRIDGE_BUILD_INFO.id} (${BRIDGE_BUILD_INFO.version})`);
 }

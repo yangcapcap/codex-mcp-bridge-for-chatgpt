@@ -19,6 +19,25 @@ import { authProfileHome, authSelectionRoot, desiredAuthSelection, knownExternal
 
 const RUNTIME_CONFIG_DIRECTORY = "codex-mcp-bridge";
 const RUNTIME_ENV_FILENAME = ".env";
+const MCP_OAUTH_NAMES = ["ISSUER", "RESOURCE", "RESOURCE_METADATA_URL", "JWKS_URI", "OPERATOR_SUBJECT"];
+
+/** Only MCP login configuration; never Codex execution authentication. */
+export function mcpOAuthRequested(environment) {
+  return MCP_OAUTH_NAMES.some(name => Boolean(
+    environment[`CODEX_MCP_BRIDGE_OAUTH_${name}`] || environment[`CODEX_GPT_BRIDGE_OAUTH_${name}`]
+  ));
+}
+
+export function mcpOAuthEnvironment(environment) {
+  const selected = {};
+  for (const prefix of ["CODEX_MCP_BRIDGE_", "CODEX_GPT_BRIDGE_"]) {
+    for (const suffix of [...MCP_OAUTH_NAMES.map(name => `OAUTH_${name}`), "TOKEN"]) {
+      const key = prefix + suffix;
+      if (environment[key] !== undefined) selected[key] = environment[key];
+    }
+  }
+  return selected;
+}
 export const RUNTIME_ENV_MANAGED_KEYS = [
   "CONTROL_PLANE_API_KEY",
   "CONTROL_PLANE_TUNNEL_ID",
@@ -124,7 +143,8 @@ export function codexProcessEnvironment(environment) {
   for (const name of Object.keys(projected)) {
     if (name.startsWith("CONTROL_PLANE_") || name.startsWith("CLOUDFLARED_") ||
         name === "TUNNEL_CLIENT" || name.startsWith("TUNNEL_CLIENT_") ||
-        name === "CODEX_MCP_BRIDGE_TOKEN" || name === "CODEX_GPT_BRIDGE_TOKEN") {
+        name === "CODEX_MCP_BRIDGE_TOKEN" || name === "CODEX_GPT_BRIDGE_TOKEN" ||
+        name.startsWith("CODEX_MCP_BRIDGE_OAUTH_") || name.startsWith("CODEX_GPT_BRIDGE_OAUTH_")) {
       delete projected[name];
     }
   }

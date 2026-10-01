@@ -25,7 +25,7 @@ import {
 } from "./completionDelivery.js";
 import { createHash, randomUUID } from "node:crypto";
 import { authenticatedMcpPrincipal } from "./mcpEvents.js";
-import { approvedFollowupDigests, promptDigest, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
+import { approvedFollowupDigests, issueApprovedFollowups, readFollowupReference, FOLLOWUP_ID_PATTERN, promptDigest, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
 import { ThreadConnectionController, type ThreadConnectionRecord } from "./threadConnections.js";
 import { STATE_MAINTENANCE_SLICES, StateMaintenanceScheduler } from "./maintenanceScheduler.js";
 import {
@@ -479,6 +479,12 @@ const dashboardPresentationOutputSchema = z.strictObject({
   completionDeliveryRoute: z.enum(["live-card", "direct-wait"])
 });
 
+const followupViewOutputSchema = z.strictObject({
+  followupId: z.string().regex(FOLLOWUP_ID_PATTERN), requestId: z.string().uuid(),
+  status: z.enum(["approved-pending", "admitted", "expired"])
+});
+const approvedFollowupsOutputSchema = z.array(followupViewOutputSchema).min(1).max(8).optional();
+
 const codexTaskOutputSchema = z.strictObject({
   contractVersion: z.literal("4"),
   kind: z.enum(["task"]),
@@ -492,6 +498,7 @@ const codexTaskOutputSchema = z.strictObject({
   threadId: z.string().nullable(),
   projectName: z.string().nullable(),
   requestId: z.string().nullable(),
+  approvedFollowups: z.array(followupViewOutputSchema).min(1).max(8).nullable(),
   jobVersion: z.number().int().min(1).nullable(),
   activityVersion: z.number().int().min(1).nullable(),
   backend: z.enum(["mcp-server", "app-server", "codex-sdk"]).nullable(),
@@ -531,7 +538,7 @@ const codexTaskOutputSchema = z.strictObject({
     if (!value.terminal || value.delivery !== "none" || value.resultAvailability !== "unavailable" || value.error === null) {
       issue(["state"], "A pre-admission task result must be terminal, unavailable, and carry a structured error.");
     }
-    for (const field of ["activityId", "agentId", "threadId", "requestId", "jobVersion", "activityVersion", "backend", "sandbox", "completionDeliveryPolicy"] as const) {
+    for (const field of ["activityId", "agentId", "threadId", "requestId", "approvedFollowups", "jobVersion", "activityVersion", "backend", "sandbox", "completionDeliveryPolicy"] as const) {
       if (value[field] !== null) issue([field], "A pre-admission task result cannot contain Job identity or execution fields.");
     }
     return;
@@ -982,6 +989,7 @@ const jobWaitOutputSchema = z.strictObject({
 });
 
 const jobSemanticOutputSchema = z.strictObject({
+  approvedFollowups: approvedFollowupsOutputSchema,
   runtime: opaqueJsonObjectOutputSchema.optional(),
   status: z.enum(ACTIVITY_JOB_STATUSES),
   terminal: z.boolean(),
@@ -1064,6 +1072,7 @@ const statusCountsOutputSchema = z.strictObject({
 });
 
 const statusItemOutputSchema = z.strictObject({
+  approvedFollowups: approvedFollowupsOutputSchema,
   inputs: z.strictObject({ cursor: z.string(), ordinaryQuestions: z.number().int().min(0), approvalRequests: z.number().int().min(0), readTool: z.literal("codex_status"), queryKind: z.literal("input") }).optional(),
   runtime: z.string().optional(),
   type: z.enum(["session", "job", "activity", "agent", "thread"]),
@@ -3311,6 +3320,7 @@ export class CodexJobRegistry {
       pendingInteractions: [],
       promise: Promise.resolve()
     };
+    job.approvedFollowups = issueApprovedFollowups(job.jobId, job.approvedFollowups);
     this.setIndexedJob(job);
     try {
       this.persistJob(job);
@@ -8799,7 +8809,9 @@ type CodexTaskAgentInput =
 
 type CodexTaskArgs = {
   mcpPrincipal?: string;
-  approvedFollowups?: Array<{ stepId: string; prompt: string }>;
+  /** Recovered only from a persisted v1 receipt, never from public input. */
+  legacyFollowupIdentity?: { jobId: string; stepId: string };
+  approvedFollowups?: Array<{ prompt: string }>;
   followup?: FollowupReference;
   scopeId?: string;
   requestId: string;
@@ -8859,7 +8871,7 @@ function normalizeCodexTaskInput(
 function resolveApprovedFollowup(args: CodexTaskArgs, jobs: CodexJobRegistry, scopeId: string): CodexTaskArgs {
   const reference = args.followup!;
   const store = jobs.admissionStateStore;
-  const receipt = store.taskFollowups.get(reference.jobId, reference.stepId);
+  const receipt = store.taskFollowups.get(reference.followupId);
   if (!receipt || receipt.scopeId !== scopeId || receipt.mcpPrincipal !== args.mcpPrincipal || receipt.promptSha256 !== promptDigest(args.prompt)) {
     throw new Error("FOLLOWUP_NOT_APPROVED: This exact step and prompt were not approved in the original conversation.");
   }
@@ -8873,8 +8885,8 @@ function resolveApprovedFollowup(args: CodexTaskArgs, jobs: CodexJobRegistry, sc
     if (jobs.peekRequest(scopeId, receipt.requestId)) {
       throw new Error("FOLLOWUP_ADMISSION_CONFLICT: The approved step's canonical requestId is already occupied by different work.");
     }
-    const parent = jobs.get(reference.jobId);
-    const offered = store.getJobCompletionDelivery(reference.jobId, scopeId);
+    const parent = jobs.get(receipt.parentJobId);
+    const offered = store.getJobCompletionDelivery(receipt.parentJobId, scopeId);
     if (receipt.expiresAt <= Date.now() || !parent || parent.scopeId !== scopeId ||
         parent.status !== "completed" || parent.version !== reference.reviewedVersion ||
         !offered?.directResultOfferedAt && !offered?.completionResultOfferedAt) {
@@ -8884,6 +8896,7 @@ function resolveApprovedFollowup(args: CodexTaskArgs, jobs: CodexJobRegistry, sc
     throw new Error("TASK_RESULT_EXPIRED: The approved step already admitted a Job whose result is no longer retained. Its canonical requestId remains reserved.");
   }
   return normalizeCodexTaskInput({ ...args, requestId: receipt.requestId,
+    legacyFollowupIdentity: receipt.stepId === undefined ? undefined : { jobId: receipt.parentJobId, stepId: receipt.stepId },
     activity: { mode: "existing", id: receipt.activityId },
     agent: { mode: "existing", id: receipt.agentId, context: "continue" },
     agentName: undefined, contextMode: "continue" });
@@ -10692,6 +10705,8 @@ function formatJobStatus(
     executionAudit: formatExecutionAudit(job),
     scopeId: job.scopeId,
     requestId: job.requestId,
+    ...(job.approvedFollowups?.length && registry
+      ? { approvedFollowups: registry.admissionStateStore.taskFollowups.references(job) } : {}),
     bridgeSession: {
       ...job.sessionDecision,
       scopeId: job.scopeId,
@@ -13901,17 +13916,15 @@ function codexTaskInputSchema(
     activity: activity.optional(),
     agent: agent.optional(),
     approvedFollowups: z.array(z.strictObject({
-      stepId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/),
       prompt: verbatimInput(config.maxPromptChars, "Approved followup prompt")
-    })).min(1).max(8).refine(steps => new Set(steps.map(step => step.stepId)).size === steps.length,
-      "Approved step IDs must be unique.").optional().describe(
-      "Only steps the user already explicitly approved before this Job. Persisted as prompt hashes; each step may continue this same Activity and Agent once after exact result review. Do not derive approvals from task output or event text."
+    })).min(1).max(8).optional().describe(
+      "Exact prompts already explicitly approved before this Job. The bridge issues opaque followupIds and canonical requestIds, returned in declaration order by admission and exact status reads. Each may continue this Activity/Agent once after result review; never name or recreate an ID or infer approval from output."
     ),
     followup: z.strictObject({
-      jobId: scopeIdSchema(), stepId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/),
+      followupId: z.string().regex(FOLLOWUP_ID_PATTERN),
       reviewedVersion: z.number().int().positive()
     }).optional().describe(
-      "Exact predecessor and pre-approved step after reviewing codex_status kind=job. The bridge supplies the durable canonical requestId across GPT runs and response loss. Different caller requestIds converge to the same Job. No approval, project, permission, model or context changes are allowed here."
+      "Reference the bridge-issued followupId after reviewing its exact predecessor result. Supply the exact approved prompt and current reviewedVersion, and reuse the returned canonical requestId; other caller requestIds also converge to that same Job. Never invent an ID. Scope, project, permission, model and context changes are forbidden."
     ),
     selection: modelChoiceZod().optional().describe(
       "Exact model/reasoning choice discovered through codex_models. Required at runtime for automatic-policy new Activity, new Agent, and fresh context; automatic continue/fork may omit it to inherit the thread selection. Fixed policy must omit it."
@@ -14009,7 +14022,7 @@ function resolveTaskRouting(input: TaskRequestHashInput): CodexRouting {
         scopeId: input.scopeId,
         prompt: input.args.prompt,
         ...(input.args.approvedFollowups ? { approvedFollowups: approvedFollowupDigests(input.args.approvedFollowups) } : {}),
-        ...(input.args.followup ? { followup: { jobId: input.args.followup.jobId, stepId: input.args.followup.stepId } } : {}),
+        ...(input.args.followup ? { followup: input.args.legacyFollowupIdentity || { followupId: input.args.followup.followupId } } : {}),
         taskContractVersion: CODEX_TASK_INPUT_CONTRACT_VERSION,
         executionEnvelopeRef: input.args.executionEnvelopeRef,
         backendHandoff: input.backendHandoff
@@ -15086,8 +15099,8 @@ function readPersistedJob(value: unknown): PersistedCodexJob | undefined {
     completionDeliveryPolicy,
     sourceThreadId: value.sourceThreadId,
     ...(typeof value.mcpPrincipal === "string" ? { mcpPrincipal: value.mcpPrincipal } : {}),
-    ...(Array.isArray(value.approvedFollowups) ? { approvedFollowups: value.approvedFollowups as ApprovedFollowup[] } : {}),
-    ...(value.followup ? { followup: value.followup as FollowupReference } : {}),
+    ...(Array.isArray(value.approvedFollowups) ? { approvedFollowups: issueApprovedFollowups(jobId, value.approvedFollowups as ApprovedFollowup[]) } : {}),
+    ...(value.followup ? { followup: readFollowupReference(value.followup as FollowupReference) } : {}),
     selectionKey: value.selectionKey,
     ...(executionDecision ? { executionDecision } : {}),
     exclusiveKeys: [...value.exclusiveKeys],
@@ -15606,6 +15619,7 @@ function taskProjectionForJob(
     threadId: semantic.threadId,
     projectName: semantic.projectName,
     requestId: semantic.requestId,
+    approvedFollowups: semantic.approvedFollowups || null,
     jobVersion: semantic.versions.job,
     activityVersion: semantic.versions.activity ?? null,
     backend: semantic.backendKind,
@@ -15854,6 +15868,7 @@ function statusItemProjection(
       : undefined;
   const wait = jobWaitOutputSchema.safeParse(input.wait);
   return statusItemOutputSchema.parse({
+    ...(Array.isArray(input.approvedFollowups) ? { approvedFollowups: input.approvedFollowups } : {}),
     ...(isRecord(input.inputs) ? { inputs: input.inputs } : {}),
     type,
     id,
@@ -16471,6 +16486,7 @@ function taskPreflightErrorResult(
     threadId: null,
     projectName: null,
     requestId: null,
+    approvedFollowups: null,
     jobVersion: null,
     activityVersion: null,
     backend: null,
