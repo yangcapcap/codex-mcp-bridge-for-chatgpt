@@ -545,3 +545,21 @@ pipes can reenter shutdown, so a late error keeps the original response and
 request accounting. Classification cleanup keeps its edge through rejection or
 replacement dispatch; a failed transfer cannot discard the original capture.
 These are resource-observation controls and never grant database writer release.
+
+
+CLI lease publication and original release admission
+---------------------------------------------------
+
+Only a manager's original release capability can prove passive retained lease
+identity. Calling that capability immediately and permanently invalidates its
+private observation before ordinary asynchronous unlink begins, including calls
+made outside the execution router. Nonforcing close never invokes it.
+
+Lease publication binds the manager-generated payload digest and the temporary
+file's original inode, private metadata and write timestamp before rename. The
+post-publication stable read must match those values and the original directory
+identity; a changed payload or replacement inode cannot become the original lease.
+Rename may change file ctime and directory entry count, so those are captured from
+the published stable record for subsequent immutable observations. Failed or
+unsupported evidence remains UNKNOWN. These local observations do not release
+durable writer records or authorize production activation.

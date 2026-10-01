@@ -11,12 +11,15 @@ import { z } from "zod";
 import { installManagedCli } from "./runtimeDownloads.js";
 import { decodeUtf8Strict, parseJsonUtf8Strict } from "./textIntegrity.js";
 
-type RetainedCliLease = {file:string;directory:string;fileIdentity:string;directoryIdentity:string;sha256:string;failed:boolean};
+type RetainedCliLease = {file:string;directory:string;fileIdentity:string;publicationIdentity:string;directoryIdentity:string;directoryPublicationIdentity:string;sha256:string;failed:boolean};
 const retainedCliLeases=new WeakMap<()=>Promise<void>,RetainedCliLease>();
 const leaseStatIdentity=(value:import('node:fs').BigIntStats,file:boolean)=>[
   value.dev,value.ino,value.mode,value.uid,value.gid,value.nlink,
   ...(file?[value.size,value.mtimeNs,value.ctimeNs]:[])
 ].join(':');
+// Rename may change ctime; the original inode, private metadata and write history must survive publication.
+const leasePublicationIdentity=(value:import('node:fs').BigIntStats)=>[value.dev,value.ino,value.mode,value.uid,value.gid,value.nlink,value.size,value.mtimeNs].join(':');
+const leaseDirectoryPublicationIdentity=(value:import('node:fs').BigIntStats)=>[value.dev,value.ino,value.mode,value.uid,value.gid].join(':');
 function readRetainedCliLease(file:string,directory:string):Omit<RetainedCliLease,'failed'>|undefined {
   let descriptor:number|undefined;
   try {
@@ -35,7 +38,7 @@ function readRetainedCliLease(file:string,directory:string):Omit<RetainedCliLeas
       leaseStatIdentity(lstatSync(directory,{bigint:true}),false)!==leaseStatIdentity(parent,false) || realpathSync(directory)!==directory)return;
     const payload=parseJsonUtf8Strict(bytes,'CLI retained lease') as {pid?:unknown};
     if(!payload || payload.pid!==process.pid)return;
-    return {file,directory,fileIdentity:leaseStatIdentity(entry,true),directoryIdentity:leaseStatIdentity(parent,false),sha256:createHash('sha256').update(bytes).digest('hex')};
+    return {file,directory,fileIdentity:leaseStatIdentity(entry,true),publicationIdentity:leasePublicationIdentity(entry),directoryIdentity:leaseStatIdentity(parent,false),directoryPublicationIdentity:leaseDirectoryPublicationIdentity(parent),sha256:createHash('sha256').update(bytes).digest('hex')};
   }catch{return;}finally{if(descriptor!==undefined){try{closeSync(descriptor);}catch{return;}}}
 }
 /** Only an original manager-created passive record can prove retained quiescence.
@@ -370,13 +373,23 @@ export class CodexRuntimeManager {
     // Readers do not take the activation lock. Publish only complete records,
     // keeping the in-progress write outside the directory they enumerate.
     const temporary = path.join(this.root, `.lease-${path.basename(file)}.tmp`);
+    const payload=JSON.stringify({pid:process.pid,selection,startedAt:new Date().toISOString()});
+    const payloadSHA256=createHash('sha256').update(payload).digest('hex');
+    const originalDirectoryIdentity=leaseDirectoryPublicationIdentity(lstatSync(directory,{bigint:true}));
+    let originalPublicationIdentity:string|undefined;
     try {
-      await writeFile(temporary, JSON.stringify({ pid: process.pid, selection, startedAt: new Date().toISOString() }), { mode: 0o600, flag: "wx" });
+      await writeFile(temporary,payload,{mode:0o600,flag:"wx"});
+      originalPublicationIdentity=leasePublicationIdentity(lstatSync(temporary,{bigint:true}));
       await rename(temporary, file);
     } finally { await rm(temporary, { force: true }); }
-    const release=()=>rm(file,{force:true});
+    const release=()=>{
+      // This original capability can be called outside the router as well.
+      const owned=retainedCliLeases.get(release);if(owned)owned.failed=true;
+      return rm(file,{force:true});
+    };
     const retained=readRetainedCliLease(file,directory);
-    if(retained)retainedCliLeases.set(release,{...retained,failed:false});
+    if(retained && retained.sha256===payloadSHA256 && retained.publicationIdentity===originalPublicationIdentity &&
+      retained.directoryPublicationIdentity===originalDirectoryIdentity)retainedCliLeases.set(release,{...retained,failed:false});
     return release;
   }
 
