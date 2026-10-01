@@ -346,3 +346,5 @@ or complete issue #213; final human acceptance requires separate evidence.
 ### Exact loopback metadata spelling
 
 The HTTP metadata exception accepts only the configured canonical loopback host (`127.0.0.1`, `localhost`, or `[::1]`), exact numeric port, and either of the two documented well-known paths. Port 80 may be explicit or omitted. Compare the original string before URL normalization: empty credential/query/fragment markers, control characters, shortened or numeric IPv4 aliases, and dot-segment paths are rejected. Ordinary issuer, resource, JWKS and public metadata URLs still require HTTPS and reject raw control characters and empty markers before producing a response header. This does not enable plaintext authorization or JWKS requests.
+
+The metadata URL is included in an HTTP authentication challenge and must be an ASCII URI. Use an ASCII (IDNA) hostname and percent-encode non-ASCII path characters. The configured string is preserved exactly; the Bridge rejects unsupported literal characters before serving responses rather than silently changing URL identity.

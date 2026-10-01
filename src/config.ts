@@ -302,6 +302,7 @@ function loadMcpOAuthConfig(read: (name: string) => string | undefined, noAuth: 
   const metadataUrl = required("RESOURCE_METADATA_URL");
   const resourceMetadataUrl = isLoopbackOAuthMetadataUrl(metadataUrl, host, port)
     ? metadataUrl : https("RESOURCE_METADATA_URL");
+  if (/[^\u0021-\u007e]/u.test(resourceMetadataUrl)) throw new Error("OAUTH_RESOURCE_METADATA_URL must be an ASCII URL; use an ASCII hostname and percent-encoded path.");
   return { issuer: https("ISSUER"), resource: https("RESOURCE"), resourceMetadataUrl,
     jwksUri: https("JWKS_URI"), operatorSubject };
 }
