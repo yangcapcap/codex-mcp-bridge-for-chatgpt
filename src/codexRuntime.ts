@@ -378,19 +378,25 @@ export class CodexRuntimeManager {
     const payloadSHA256=createHash('sha256').update(payload).digest('hex');
     const originalDirectoryIdentity=leaseDirectoryPublicationIdentity(lstatSync(directory,{bigint:true}));
     let originalPublicationIdentity:string|undefined;
+    const handle=await open(temporary,'wx',0o600);
+    let failed=false,failure:unknown;
     try {
-      const handle=await open(temporary,'wx',0o600);
-      try {
-        // Retain the creation descriptor; a replaced pathname never becomes its owner.
-        const descriptor=handle.fd,created=fstatSync(descriptor,{bigint:true});
-        await handle.writeFile(payload);
-        const written=fstatSync(descriptor,{bigint:true});
-        if(leaseCreationIdentity(created)===leaseCreationIdentity(written) && written.isFile() &&
-          written.nlink===1n && (written.mode&0o7777n)===0o600n && written.uid===BigInt(process.getuid!()))
-          originalPublicationIdentity=leasePublicationIdentity(written);
-        await rename(temporary,file);
-      }finally{await handle.close();}
-    } finally { await rm(temporary, { force: true }); }
+      // Retain the creation descriptor; a replaced pathname never becomes its owner.
+      const descriptor=handle.fd,created=fstatSync(descriptor,{bigint:true});
+      await handle.writeFile(payload);
+      const written=fstatSync(descriptor,{bigint:true});
+      if(leaseCreationIdentity(created)===leaseCreationIdentity(written) && written.isFile() &&
+        written.nlink===1n && (written.mode&0o7777n)===0o600n && written.uid===BigInt(process.getuid!()))
+        originalPublicationIdentity=leasePublicationIdentity(written);
+      await rename(temporary,file);
+    }catch(error){failed=true;failure=error;}
+    try{await handle.close();}catch(error){
+      if(failed)throw new AggregateError([failure,error],'CLI_LEASE_PUBLICATION_AND_CLOSE_FAILED',{cause:failure});
+      throw error;
+    }
+    // Failed publication retains its private temporary evidence. A pathname at
+    // this point may belong to a replacement, or creation may never have succeeded.
+    if(failed)throw failure;
     const release=()=>{
       // This original capability can be called outside the router as well.
       const owned=retainedCliLeases.get(release);if(owned)owned.failed=true;

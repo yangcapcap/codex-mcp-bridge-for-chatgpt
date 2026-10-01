@@ -580,3 +580,19 @@ Publication tests gate the original FileHandle write rather than the retired
 pathname-write helper. Assertions still require concurrent readers to see no
 partial published record, then one complete record and no temporary pathname.
 Earlier timeout and writer-hook fixtures remain retained as qualified evidence.
+
+
+Temporary publication failures retain custody
+----------------------------------------------
+
+Publication cleanup closes only the original created file descriptor. It never
+unlinks the temporary pathname after failure or completed rename: that pathname
+may have belonged to a preexisting collision or a later replacement. Failed
+publication keeps private unpublished evidence; normal successful rename leaves
+no temporary pathname. Ordinary release behavior remains separate.
+
+A single original write, rename or close error is rethrown unchanged. When both
+publication and descriptor close fail, an AggregateError retains both original
+objects and the original publication error as its cause. No failed publication
+returns a retained lease capability. Earlier tests expecting automatic failed
+temporary deletion remain preserved as qualified predecessor evidence.
