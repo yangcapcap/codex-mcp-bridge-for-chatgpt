@@ -365,3 +365,13 @@ executable lookup. Five independent reproductions are copied root regression
 baselines. A revoked discovery Proxy rejected during Promise assimilation is a
 completed discovery failure, not proof of an admitted journal write or a pin.
 This repair still requires a new exact-head independent disposition.
+
+The rejected `aff9ef7` candidate is retained. Queue error handling now checks
+before looking up an error hook and after lookup, and invokes it intrinsically.
+Pinning during a running projection preserves its exact scope/value and counters
+and latches uncertainty; it cannot produce a quiet resource claim while the
+original callback is still executing. Non-void callback returns are unsupported
+ownership evidence and retain bounded (128) original values plus sticky UNKNOWN.
+Queue status reads the last validated primitive limits without executing option
+getters after pin. Nine root suites (116 cases) are regression evidence only;
+fresh exact-head independent review and complete runtime wiring remain pending.

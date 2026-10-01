@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Fence queue error callbacks and retain in-flight projections and validated status limits during nonforcing shutdown.","breaking":false,"migration":null}

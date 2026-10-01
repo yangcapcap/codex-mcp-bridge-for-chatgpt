@@ -32,18 +32,26 @@ export class ScopeFairQueue<T> {
   private closed = false;
   private nonforcingPinned=false;
   private nonforcingHistoryUnknown=false;
+  private running?: {scopeId: string; value: T};
+  private readonly uncertainRuns: Array<{scopeId: string; value: T}> = [];
+  private capacity: number;
+  private perScopeCapacity: number;
 
   constructor(private readonly options: ScopeFairQueueOptions<T>) {
-    if (!Number.isSafeInteger(options.capacity) || options.capacity < 1) {
+    const capacity = options.capacity;
+    const perScopeCapacity = options.perScopeCapacity;
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
       throw new Error("Fair queue capacity must be a positive integer.");
     }
     if (
-      !Number.isSafeInteger(options.perScopeCapacity) ||
-      options.perScopeCapacity < 1 ||
-      options.perScopeCapacity > options.capacity
+      !Number.isSafeInteger(perScopeCapacity) ||
+      perScopeCapacity < 1 ||
+      perScopeCapacity > capacity
     ) {
       throw new Error("Fair queue per-scope capacity must fit within total capacity.");
     }
+    this.capacity = capacity;
+    this.perScopeCapacity = perScopeCapacity;
   }
 
   enqueue(scopeId: string, value: T): boolean {
@@ -55,6 +63,8 @@ export class ScopeFairQueue<T> {
     if (!Number.isSafeInteger(capacity) || !Number.isSafeInteger(perScopeCapacity) ||
         capacity < 1 || perScopeCapacity < 1 || perScopeCapacity > capacity)
       throw new Error("FAIR_QUEUE_CAPACITY_INVALID");
+    this.capacity = capacity;
+    this.perScopeCapacity = perScopeCapacity;
     let queue = this.queues.get(scopeId);
     if (!queue) {
       queue = [];
@@ -105,7 +115,7 @@ export class ScopeFairQueue<T> {
   /** Stop projections without discarding their unconfirmed queued snapshots. */
   pinNonforcingShutdown():true {
     if(this.nonforcingPinned)return true;
-    this.nonforcingHistoryUnknown=this.closed;
+    this.nonforcingHistoryUnknown ||= this.closed || this.running !== undefined;
     this.nonforcingPinned=true;this.closed=true;
     if(this.scheduled)clearImmediate(this.scheduled);
     this.scheduled=undefined;return true;
@@ -127,8 +137,8 @@ export class ScopeFairQueue<T> {
     return {
       queued: this.queued,
       scopes: this.queues.size,
-      capacity: this.options.capacity,
-      perScopeCapacity: this.options.perScopeCapacity,
+      capacity: this.capacity,
+      perScopeCapacity: this.perScopeCapacity,
       processed: this.processed,
       dropped: this.dropped
     };
@@ -159,13 +169,26 @@ export class ScopeFairQueue<T> {
     this.queued -= 1;
     if (queue.length > 0) this.order.push(scopeId);
     else this.queues.delete(scopeId);
+    const running = {scopeId, value};
+    this.running = running;
     try {
-      Reflect.apply(run,this.options,[value]);
+      if (Reflect.apply(run,this.options,[value]) !== undefined) this.retainUncertainRun(running);
     } catch (error) {
-      this.options.onError?.(error);
+      if (this.nonforcingPinned) return;
+      const onError = this.options.onError;
+      if (this.nonforcingPinned) return;
+      if (onError && Reflect.apply(onError,this.options,[error]) !== undefined) this.retainUncertainRun(running);
     } finally {
-      this.processed += 1;
+      if (!this.nonforcingPinned) {
+        this.processed += 1;
+        this.running = undefined;
+      }
     }
+  }
+
+  private retainUncertainRun(running: {scopeId: string; value: T}): void {
+    this.nonforcingHistoryUnknown = true;
+    if (this.uncertainRuns.length < 128) this.uncertainRuns.push(running);
   }
 
   private evictFromNoisiestScope(): boolean {
