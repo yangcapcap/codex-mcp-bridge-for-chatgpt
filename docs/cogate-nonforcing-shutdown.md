@@ -590,3 +590,12 @@ state mutation, recovery or ACK. Constructor/species validation remains strict;
 unsupported Promise shapes stay unconfirmed without delegated getters or traps.
 The valid-native rejection path preserves the exact original reason without an
 unhandled event. This does not certify arbitrary malformed Promise producers.
+
+
+### Original authority across asynchronous recovery
+
+Original Job receipt, authorization boundary, immutable admission fields, and worker binding descriptors are retained in a private registry-owned WeakMap. A producer continuation cannot acquire a new binding by changing the observable Job or by forwarding a matching assignment afterward. Only the original native worker-assignment operation can advance the retained binding after validating the prior authority and copying its bounded DATA-only payload.
+
+Progress and assignment callbacks compare their original Job envelope before and after payload inspection. Descriptor traps that rewrite authority remain unconfirmed; their raw payload and producer settlement are retained, with no terminal SQL or execution acknowledgement. Common terminal capture, observer inventory, ACK and nonforcing observation recheck private original authority throughout the asynchronous producer lifetime. Normal asynchronous progress/assignment and permitted thread metadata updates remain supported. Pin retains original late payloads and outcomes without starting mutation or cleanup.
+
+The initial 03d independent regression had six reproducible failures and two normal controls. The successor adds eight immutable/binding mutation cases; its 50-suite local regression passed 928 assertions. These local results do not grant writer release, global descendant proof, whole-runtime approval or production activation. The earlier observer-return regression initially lost its secondary authority observation through an early inventory exception; the implementation now retains both observations before rejecting, without weakening that test.
