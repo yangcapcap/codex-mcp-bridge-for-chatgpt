@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Freeze original private runtime proxy edges and retain late observations and accounting; require fresh owned-process evidence before ordinary close after nonforcing pin.",
+  "breaking": false,
+  "migration": null
+}

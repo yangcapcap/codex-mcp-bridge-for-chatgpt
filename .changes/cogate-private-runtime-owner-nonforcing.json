@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add owner-bound private runtime nonforcing resource shutdown with actual process exit and retained durable writer evidence; unresolved CLI contexts remain fail-closed.",
+  "breaking": false,
+  "migration": null
+}

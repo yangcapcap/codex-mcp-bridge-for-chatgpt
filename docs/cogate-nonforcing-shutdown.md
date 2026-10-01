@@ -556,3 +556,52 @@ thenables. The original captured unsubscribe runs in its own registered fence:
 a reentrant observation sees the active callback, and unsupported raw returns
 and errors remain UNKNOWN after repeated pins. This contract never permits an
 asynchronous value to serve as a synchronous mutation acknowledgement.
+
+## Private runtime owner resource protocol (pending independent review)
+
+The parent creates private controller and generation IDs before spawning the
+state owner and requires their exact binding in protocol-v3 readiness and all
+resource shutdown receipts. Explicit nonforcing close permanently seals parent
+RPC and child operational admission, pins telemetry/read/execution/frontends
+before awaiting their resource closes, and only closes the operational SQLite
+resource after every registered actor and callback confirms quiescence. Positive
+resource receipts also require actual original child exit; pending startup,
+unsupported callback outcomes, missing resources and changed identities retain
+`UNKNOWN`. Parent late messages, abandoned RPCs and original callback values stay
+retained without late state writes or default-force escalation. Default ordinary
+recovery remains available before an explicit nonforcing pin.
+
+This resource close leaves durable writer retirement rows unchanged. It does not
+approve activation or retirement. CLI context acquisition or an existing CLI
+usage lease remains an explicit `UNKNOWN` gate: no lease is released on the
+nonforcing path without a separate reviewed ownership contract. Idle HTTP/stdin
+fixtures and ordinary recovery regressions cannot establish that contract.
+This component also inherits an independently rejected registry and ingress
+predecessor; their successors require separate review and integration before any
+whole-runtime acceptance claim.
+
+Parent proxy continuation evidence
+-----------------------------------
+
+The private runtime parent retains each original proxy/classification edge and
+request-ID capture before dispatch. Pin unpipes and pauses incoming bodies and
+outgoing response sources with captured native stream operations; classification
+timers are cancelled without releasing slots or bytes. Late response, error,
+finish, timeout and classification callbacks retain the raw observation and
+original accounting instead of completing an ordinary response or disposing its
+capture. Active edges stay UNKNOWN. Ordinary close after pin requires a fresh
+original-owner observation and the lower owner close-after-pin check; a cached
+initial EXIT cannot override sticky PID uncertainty. No edge or process receipt
+retires a database writer.
+
+Proxy reentry before new delegation
+------------------------------------
+
+Parent proxy property reads and method calls register their original operation
+before a callback can pin, and stop the caller synchronously after pin. Captured
+methods retain the original receiver and failure evidence. Response error
+observation uses the captured native EventEmitter operation before headers or
+pipes can reenter shutdown, so a late error keeps the original response and
+request accounting. Classification cleanup keeps its edge through rejection or
+replacement dispatch; a failed transfer cannot discard the original capture.
+These are resource-observation controls and never grant database writer release.

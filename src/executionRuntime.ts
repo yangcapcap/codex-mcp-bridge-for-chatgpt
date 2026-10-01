@@ -1,3 +1,4 @@
+import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownResult} from "./shutdown.js";
 import { executionEndpoint } from "./executionTransport.js";
 import { CodexService } from "./codexService.js";
 import type { CodexUpstream } from "./upstream.js";
@@ -106,7 +107,23 @@ export function createExecutionRuntime(
     const window = account?.windows.find(window => window.limitId === "codex" && window.windowDurationMins === 10080);
     return account && window ? { ...window, observedAt: account.observedAt } : null;
   };
-  const close = router.close.bind(router);
-  router.close = async () => { await close();await release?.(); };
+  const close = router.close.bind(router),closeNonforcing=router.closeNonforcing.bind(router),observe=router.observeNonforcingExit.bind(router);
+  let nonforcingClose:Promise<ShutdownResult>|undefined,leaseUnconfirmed=false;
+  const currentNonforcingClose=()=>nonforcingClose;
+  router.closeNonforcing=policy=>{
+    const supplied=snapshotShutdownPolicy(policy);if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
+    if(nonforcingClose)return nonforcingClose;
+    let finish!:(value:ShutdownResult)=>void;nonforcingClose=new Promise(resolve=>finish=resolve);
+    constructionPinned=true;leaseUnconfirmed=Boolean(selected || release);
+    const resource=closeNonforcing({...supplied,allowSigkillEscalation:false});
+    void boundedShutdown(()=>resource,supplied.graceMs*2+6000).then(result=>finish(combineShutdown([result,leaseUnconfirmed?shutdownResult('uncertain'):shutdownResult('exited')])));
+    return nonforcingClose;
+  };
+  router.observeNonforcingExit=async()=>combineShutdown([await observe(),leaseUnconfirmed?shutdownResult('uncertain'):shutdownResult('exited')]);
+  router.close = async () => {
+    if(nonforcingClose){if(!(await nonforcingClose).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
+    await close();const pinnedClose=currentNonforcingClose();if(pinnedClose){if(!(await pinnedClose).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
+    await release?.();
+  };
   return router;
 }
