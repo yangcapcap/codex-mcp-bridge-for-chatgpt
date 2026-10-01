@@ -309,3 +309,19 @@ late registry mutation callbacks. Ordinary-close history and uncertain maintenan
 commands stay UNKNOWN. The resource APIs are internal and are not native/MCP
 methods. Production state/runtime composition and policy propagation are still
 pending; this component alone does not authorize a shutdown or database close.
+Lazy direct delegation captures each actionable backend method before a final
+admission check. A getter that reentrantly installs the nonforcing fence cannot
+invoke its returned method or clear retained resume protections afterward. This
+also covers direct tool/catalog/detach delegation and factory-time protection
+lookups. The new repair retains the rejected predecessor and requires fresh
+independent review.
+
+Each retained-protection flush also checks admission before lookup and after the
+callback, including the final item. A callback that installs the fence cannot
+start a later callback or clear the retained IDs, even in a single-item flush.
+
+Lazy continuations check admission immediately after awaiting an instance, before
+starting an admission guard, after awaiting that guard, and after method lookup.
+An ordinary close also rechecks its captured close method before invocation, so
+lookup-time pinning cannot resume force recovery. These checks preserve prior
+rejected evidence and require a fresh independent review.

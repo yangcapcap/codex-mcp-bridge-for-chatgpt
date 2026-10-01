@@ -30,11 +30,21 @@ export class LazyCodexUpstream implements CodexUpstream {
   ownsRetainedResult(...args: Args<"ownsRetainedResult">): boolean {
     return this.instance?.ownsRetainedResult?.(...args) === true;
   }
-  async detachExecution() { this.assertOpen();await this.starting?.catch(() => {});this.assertOpen(); await this.instance?.detachExecution?.(); }
+  async detachExecution() {
+    this.assertOpen();await this.starting?.catch(() => {});this.assertOpen();
+    const instance=this.instance,method=instance?.detachExecution;this.assertOpen();
+    if(method)await Reflect.apply(method,instance,[]);
+  }
   capabilities(): BackendCapabilities { return this.instance?.capabilities?.(this.kind) || this.features; }
   async prepareExecution(...args: Args<"prepareExecution">) { return (await this.method("prepareExecution"))(...args); }
-  listTools() { this.assertOpen();return this.instance?.listTools() || Promise.resolve({ backendKind: this.kind, initialized: false, capabilities: this.features }); }
-  async callTool(...args: Args<"callTool">) { const instance = await this.get(); await this.guard?.();this.assertOpen(); return instance.callTool(...args); }
+  listTools() {
+    this.assertOpen();const instance=this.instance,method=instance?.listTools;this.assertOpen();
+    return method ? Reflect.apply(method,instance,[]) : Promise.resolve({backendKind:this.kind,initialized:false,capabilities:this.features});
+  }
+  async callTool(...args:Args<"callTool">) {
+    const instance=await this.get();this.assertOpen();await this.guard?.();this.assertOpen();
+    const method=instance.callTool;this.assertOpen();return Reflect.apply(method,instance,args);
+  }
   async listModels(...args: Args<"listModels">) { return (await this.method("listModels"))(...args); }
   async readAccountSnapshot() { return (await this.method("readAccountSnapshot"))(); }
   async readAuthenticationPolicy() { return (await this.method("readAuthenticationPolicy"))(); }
@@ -48,11 +58,15 @@ export class LazyCodexUpstream implements CodexUpstream {
   async releaseThreadConnection(...args: Args<"releaseThreadConnection">) { return (await this.method("releaseThreadConnection"))(...args); }
   protectThreadFromImplicitResume(threadId: string): void {
     this.assertOpen();
-    if (this.instance) this.instance.protectThreadFromImplicitResume?.(threadId);
+    const instance=this.instance,method=instance?.protectThreadFromImplicitResume;this.assertOpen();
+    if(instance){if(method)Reflect.apply(method,instance,[threadId]);}
     else this.pendingResumeProtections.add(threadId);
   }
   async listBackgroundTerminals(...args: Args<"listBackgroundTerminals">) { return (await this.method("listBackgroundTerminals"))(...args); }
-  async listLoadedBackgroundTerminals(...args: Args<"listLoadedBackgroundTerminals">) { this.assertOpen();return this.instance?.listLoadedBackgroundTerminals?.(...args) ?? null; }
+  async listLoadedBackgroundTerminals(...args:Args<"listLoadedBackgroundTerminals">) {
+    this.assertOpen();const instance=this.instance,method=instance?.listLoadedBackgroundTerminals;this.assertOpen();
+    return method ? Reflect.apply(method,instance,args) : null;
+  }
   async terminateBackgroundTerminal(...args: Args<"terminateBackgroundTerminal">) { return (await this.method("terminateBackgroundTerminal"))(...args); }
   async forceTerminateWorker(...args: Args<"forceTerminateWorker">) { return (await this.method("forceTerminateWorker"))(...args); }
   async respondToInteraction(...args: Args<"respondToInteraction">) { return (await this.method("respondToInteraction"))(...args); }
@@ -68,7 +82,9 @@ export class LazyCodexUpstream implements CodexUpstream {
       try {
         await this.starting?.catch(() => undefined);
         if(this.nonforcingClose)return this.reportInitialClose();
-        await this.instance?.close();
+        const instance=this.instance,method=instance?.close;
+        if(this.nonforcingClose)return this.reportInitialClose();
+        if(method)await Reflect.apply(method,instance,[]);
       }finally{if(!this.nonforcingClose)await this.dispose?.();}
       if(this.nonforcingClose)return this.reportInitialClose();
     })();
@@ -124,8 +140,12 @@ export class LazyCodexUpstream implements CodexUpstream {
     if (!this.starting) this.starting = Promise.resolve().then(()=>{this.assertOpen();return this.factory();}).then(instance => {
       this.instance=instance;
       if(this.nonforcingClose){this.pinInstance(instance);return instance;}
-      for (const threadId of this.pendingResumeProtections) instance.protectThreadFromImplicitResume?.(threadId);
-      this.pendingResumeProtections.clear();
+      for(const threadId of this.pendingResumeProtections){
+        this.assertOpen();const method=instance.protectThreadFromImplicitResume;this.assertOpen();
+        if(method)Reflect.apply(method,instance,[threadId]);
+        this.assertOpen();
+      }
+      this.assertOpen();this.pendingResumeProtections.clear();
       this.instance = instance;
       return instance;
     })
@@ -135,9 +155,9 @@ export class LazyCodexUpstream implements CodexUpstream {
     return instance;
   }
   private async method<K extends keyof CodexUpstream>(name: K): Promise<NonNullable<CodexUpstream[K]>> {
-    const instance = await this.get();
+    const instance = await this.get();this.assertOpen();
     if (["prepareExecution", "startThread", "continueThread", "forkThread"].includes(name)) await this.guard?.();
-    const method = instance[name];
+    this.assertOpen();const method = instance[name];
     if (typeof method !== "function") throw new Error(`Codex backend ${this.kind} does not support ${name}.`);
     this.assertOpen();
     return ((...args:unknown[])=>{this.assertOpen();return Function.prototype.apply.call(method,instance,args);}) as NonNullable<CodexUpstream[K]>;
