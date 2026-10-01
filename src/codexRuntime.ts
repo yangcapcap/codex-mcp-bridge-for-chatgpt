@@ -382,11 +382,11 @@ export class CodexRuntimeManager {
     let failed=false,failure:unknown;
     try {
       // Retain the creation descriptor; a replaced pathname never becomes its owner.
-      const descriptor=handle.fd,created=fstatSync(descriptor,{bigint:true});
+      const descriptor=handle.fd,created=fstatSync(descriptor,{bigint:true}),ownerUid=process.getuid?.();
       await handle.writeFile(payload);
       const written=fstatSync(descriptor,{bigint:true});
       if(leaseCreationIdentity(created)===leaseCreationIdentity(written) && written.isFile() &&
-        written.nlink===1n && (written.mode&0o7777n)===0o600n && written.uid===BigInt(process.getuid!()))
+        written.nlink===1n && (written.mode&0o7777n)===0o600n && ownerUid!==undefined && written.uid===BigInt(ownerUid))
         originalPublicationIdentity=leasePublicationIdentity(written);
       await rename(temporary,file);
     }catch(error){failed=true;failure=error;}

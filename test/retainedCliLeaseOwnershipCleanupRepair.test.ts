@@ -21,3 +21,12 @@ test('simultaneous publication and native close failures preserve both original 
  expect(closes).toBe(1);expect(await fsp.readdir(join(f.root,'leases'))).toEqual([]);
  expect((await fsp.readdir(f.root)).filter(n=>n.startsWith('.lease-'))).toHaveLength(1);
 });
+
+test('ordinary publication without POSIX UID remains supported with unconfirmed passive proof',async()=>{
+ const f=await fixture(),original=Object.getOwnPropertyDescriptor(process,'getuid')!;
+ let release:(()=>Promise<void>)|undefined;
+ try{Object.defineProperty(process,'getuid',{...original,value:undefined});release=await f.manager.lease(selection);
+  expect(observeRetainedCliLease(release)).toBe(false);expect(await fsp.readdir(join(f.root,'leases'))).toHaveLength(1);
+ }finally{Object.defineProperty(process,'getuid',original);if(release)await release();}
+ expect(await fsp.readdir(join(f.root,'leases'))).toEqual([]);
+});
