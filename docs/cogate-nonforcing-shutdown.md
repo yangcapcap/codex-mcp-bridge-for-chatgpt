@@ -500,3 +500,15 @@ callback result data remains retained without accessor evaluation; the original
 producer result or rejection stays reserved under its admission identity.
 These component guarantees still require new independent exact-head review and
 complete runtime integration. They do not authorize deployment or reconciliation.
+
+
+The original live Job is checked across the complete terminal store boundary,
+including the configured post-commit observer. A changed owner stays retained as
+`UNKNOWN`; terminal writeback cannot silently restore it and erase the change.
+Execution ACK checks include authentication/ownership callbacks, method lookup,
+callback return and native Promise fulfillment. A void ACK return is not proof
+that the original worker binding survived. Undo callbacks preserve the admitted
+Job envelope (apart from correlated thread metadata); an ownership change stops
+terminal retry and preserves the original producer outcome. Unconfirmed or pinned
+undo capabilities remain retained and uncalled. None of these checks reverses a
+SQL commit completed before a pin or grants durable writer release.

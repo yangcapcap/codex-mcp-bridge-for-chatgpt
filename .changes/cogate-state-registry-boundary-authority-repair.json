@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retain Job ownership changes across terminal database callbacks, execution acknowledgements and rollback undo instead of silently overwriting or committing replacement bindings.",
+  "breaking": false,
+  "migration": null
+}
