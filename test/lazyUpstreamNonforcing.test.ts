@@ -82,3 +82,28 @@ test.each([1,2])("a protection callback that pins shutdown preserves every retai
  await expect(lazy.startThread({} as any)).rejects.toThrow("closed");await closing;
  expect(observed).toEqual(["first"]);expect([...(lazy as any).pendingResumeProtections]).toEqual(count===2?["first","second"]:["first"]);
 });
+
+test("a method continuation after its admission guard cannot evaluate a backend getter after pin",async()=>{
+ const pending=deferred<void>(),b=backend() as any;let block=false;
+ const guard=vi.fn(()=>block?pending.promise:undefined),getter=vi.fn(()=>vi.fn(async()=>({})));
+ const lazy=new LazyCodexUpstream("app-server",features,async()=>b,undefined,guard);await lazy.callTool({} as any);block=true;
+ Object.defineProperty(b,"startThread",{get:getter});const request=lazy.startThread({} as any).catch(error=>error);
+ await Promise.resolve();await Promise.resolve();const closing=lazy.closeNonforcing(policy);pending.resolve();
+ expect((await request).message).toContain("closed");await closing;expect(getter).not.toHaveBeenCalled();
+});
+test("an existing-instance await cannot evaluate a query getter after same-tick pin",async()=>{
+ const b=backend() as any,lazy=new LazyCodexUpstream("app-server",features,async()=>b);await lazy.callTool({} as any);
+ const getter=vi.fn(()=>vi.fn(async()=>({})));Object.defineProperty(b,"listModels",{get:getter});
+ const request=lazy.listModels("app-server").catch(error=>error);const closing=lazy.closeNonforcing(policy);
+ expect((await request).message).toContain("closed");await closing;expect(getter).not.toHaveBeenCalled();
+});
+test.each(["startThread","callTool"])("%s existing-instance await cannot begin a new admission guard after pin",async method=>{
+ const b=backend(),guard=vi.fn(async()=>{}),lazy=new LazyCodexUpstream("app-server",features,async()=>b as any,undefined,guard);
+ await lazy.callTool({} as any);guard.mockClear();const request=(lazy as any)[method]({}).catch((error:any)=>error);const closing=lazy.closeNonforcing(policy);
+ expect((await request).message).toContain("closed");await closing;expect(guard).not.toHaveBeenCalled();
+});
+test("ordinary close lookup cannot invoke returned force recovery after a reentrant pin",async()=>{
+ const b=backend() as any,lazy=new LazyCodexUpstream("app-server",features,async()=>b);await lazy.callTool({} as any);
+ const delegated=vi.fn(async()=>{});let closing:Promise<any>|undefined;Object.defineProperty(b,"close",{get(){closing=lazy.closeNonforcing(policy);return delegated;}});
+ await expect(lazy.close()).rejects.toThrow("UNCONFIRMED");expect((await closing!).outcome).toBe("uncertain");expect(delegated).not.toHaveBeenCalled();
+});

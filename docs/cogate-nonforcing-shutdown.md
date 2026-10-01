@@ -296,3 +296,9 @@ independent review.
 Each retained-protection flush also checks admission before lookup and after the
 callback, including the final item. A callback that installs the fence cannot
 start a later callback or clear the retained IDs, even in a single-item flush.
+
+Lazy continuations check admission immediately after awaiting an instance, before
+starting an admission guard, after awaiting that guard, and after method lookup.
+An ordinary close also rechecks its captured close method before invocation, so
+lookup-time pinning cannot resume force recovery. These checks preserve prior
+rejected evidence and require a fresh independent review.

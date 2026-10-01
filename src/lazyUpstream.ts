@@ -42,7 +42,7 @@ export class LazyCodexUpstream implements CodexUpstream {
     return method ? Reflect.apply(method,instance,[]) : Promise.resolve({backendKind:this.kind,initialized:false,capabilities:this.features});
   }
   async callTool(...args:Args<"callTool">) {
-    const instance=await this.get();await this.guard?.();this.assertOpen();
+    const instance=await this.get();this.assertOpen();await this.guard?.();this.assertOpen();
     const method=instance.callTool;this.assertOpen();return Reflect.apply(method,instance,args);
   }
   async listModels(...args: Args<"listModels">) { return (await this.method("listModels"))(...args); }
@@ -82,7 +82,9 @@ export class LazyCodexUpstream implements CodexUpstream {
       try {
         await this.starting?.catch(() => undefined);
         if(this.nonforcingClose)return this.reportInitialClose();
-        await this.instance?.close();
+        const instance=this.instance,method=instance?.close;
+        if(this.nonforcingClose)return this.reportInitialClose();
+        if(method)await Reflect.apply(method,instance,[]);
       }finally{if(!this.nonforcingClose)await this.dispose?.();}
       if(this.nonforcingClose)return this.reportInitialClose();
     })();
@@ -153,9 +155,9 @@ export class LazyCodexUpstream implements CodexUpstream {
     return instance;
   }
   private async method<K extends keyof CodexUpstream>(name: K): Promise<NonNullable<CodexUpstream[K]>> {
-    const instance = await this.get();
+    const instance = await this.get();this.assertOpen();
     if (["prepareExecution", "startThread", "continueThread", "forkThread"].includes(name)) await this.guard?.();
-    const method = instance[name];
+    this.assertOpen();const method = instance[name];
     if (typeof method !== "function") throw new Error(`Codex backend ${this.kind} does not support ${name}.`);
     this.assertOpen();
     return ((...args:unknown[])=>{this.assertOpen();return Function.prototype.apply.call(method,instance,args);}) as NonNullable<CodexUpstream[K]>;
