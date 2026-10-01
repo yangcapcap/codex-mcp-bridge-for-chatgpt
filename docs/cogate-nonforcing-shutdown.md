@@ -265,3 +265,9 @@ EXIT describes resource/process closure and does not certify their persistence.
 Existing ordinary diagnostic flush/recovery remains the default. This draft still
 requires actual-host verification and a new independent exact-head review and
 does not expose a production shutdown policy switch.
+The private owned-child controller retains any observed PID identity mismatch
+as sticky UNKNOWN, including after the numeric PID field is restored. This
+invalidates cached final receipts for current observations and ordinary close
+reporting while preserving the immutable original result. No fresh finalization
+or receipt request is sent once such uncertainty has been recorded. The new
+repair requires its own independent exact-head review.

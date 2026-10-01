@@ -76,3 +76,21 @@ test.each(["false","void","promise"])("a %s pin acknowledgement does not authori
  const f=fixture();f.hooks.pin.mockImplementation(()=>mode==="false"?false as never:mode==="void"?undefined as never:Promise.resolve(true) as never);
  expect((await f.owner.closeNonforcing(policy)).outcome).toBe("uncertain");expect(f.child.sent).toHaveLength(0);expect(beginOrdinaryOwnedProcessStop(f.child)).toBe(false);
 });
+
+test("an observed PID mismatch remains UNKNOWN after restoration of the cached-finalized owner",async()=>{
+ const f=fixture();const original=await f.owner.closeNonforcing(policy);expect(original.exited).toBe(true);
+ Object.assign(f.child,{pid:990103});expect((await f.owner.observeNonforcingExit()).outcome).toBe("uncertain");
+ Object.assign(f.child,{pid:990102});expect((await f.owner.observeNonforcingExit()).outcome).toBe("uncertain");
+ expect(original.exited).toBe(true);await expect(f.owner.closeAfterPin()).rejects.toThrow("UNCONFIRMED");
+});
+test("identity mismatch during fresh receipt exchange cannot be cleared by numeric PID restoration",async()=>{
+ const f=fixture();f.setResult(shutdownResult("timeout",1));const original=await f.owner.closeNonforcing(policy);
+ Object.assign(f.child,{pid:990103});expect((await f.owner.observeNonforcingExit()).outcome).toBe("uncertain");
+ Object.assign(f.child,{pid:990102});f.setResult(shutdownResult("exited"));Object.assign(f.child,{exitCode:0});const sent=f.child.sent.length;
+ expect((await f.owner.observeNonforcingExit()).outcome).toBe("uncertain");expect(f.child.sent).toHaveLength(sent);expect(original.outcome).toBe("timeout");
+});
+test("a late contradictory receipt invalidates current ordinary reporting without rewriting the initial receipt",async()=>{
+ const f=fixture();const original=await f.owner.closeNonforcing(policy);const {type,policy:originalPolicy,...binding}=f.child.sent[0];
+ f.child.emit("message",{...binding,type:"shutdown-receipt",operation:type,result:shutdownResult("uncertain")});
+ await expect(f.owner.closeAfterPin()).rejects.toThrow("UNCONFIRMED");expect(original.exited).toBe(true);
+});
