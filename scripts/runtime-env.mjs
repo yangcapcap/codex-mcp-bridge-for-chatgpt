@@ -30,13 +30,16 @@ export function mcpOAuthRequested(environment) {
 
 /** Only this Bridge's public, read-only metadata may use loopback HTTP. */
 export function isLoopbackOAuthMetadataUrl(value, host, port) {
-  const binding = host.replace(/^\[|\]$/gu, "");
-  if (!["127.0.0.1", "localhost", "::1"].includes(binding) || /[\s"\\<>]/u.test(value)) return false;
-  let url;
-  try { url = new URL(value); } catch { return false; }
-  return url.protocol === "http:" && !url.username && !url.password && !url.search && !url.hash &&
-    url.hostname.replace(/^\[|\]$/gu, "") === binding && Number(url.port || 80) === Number(port) &&
-    ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(url.pathname);
+  const binding = host === "[::1]" ? "::1" : host;
+  const number = Number(port);
+  if (!["127.0.0.1", "localhost", "::1"].includes(binding) ||
+      !Number.isSafeInteger(number) || number < 1 || number > 65_535) return false;
+  const authority = binding === "::1" ? "[::1]" : binding;
+  const origins = [`http://${authority}:${number}`, ...(number === 80 ? [`http://${authority}`] : [])];
+  // Compare the original spelling: URL parsing erases empty markers, control
+  // characters, alternate IPv4 spellings and dot segments before validation.
+  return origins.some(origin => ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]
+    .some(path => value === origin + path));
 }
 
 export function mcpOAuthEnvironment(environment) {

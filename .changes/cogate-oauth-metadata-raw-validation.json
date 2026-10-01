@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Validate original OAuth metadata URL spelling and reject controls before generating HTTP challenges.",
+  "breaking": false,
+  "migration": null
+}

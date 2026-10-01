@@ -291,7 +291,7 @@ function loadMcpOAuthConfig(read: (name: string) => string | undefined, noAuth: 
     const value = required(name);
     let url: URL;
     try { url = new URL(value); } catch { throw new Error(`OAUTH_${name} must be an absolute HTTPS URL.`); }
-    if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search || /[\s"\\<>]/u.test(value)) {
+    if (url.protocol !== "https:" || url.username || url.password || url.hash || url.search || /[\u0000-\u001f\u007f\s"\\<>?#]/u.test(value) || /^https:\/\/[^/?#]*@/iu.test(value)) {
       throw new Error(`OAUTH_${name} must be an HTTPS URL without credentials, query, fragment or unescaped whitespace.`);
     }
     // The OAuth issuer is compared exactly. Do not normalize paths or slashes.
