@@ -243,3 +243,9 @@ disconnection. Parent timers and late replies retain unconfirmed request evidenc
 and cannot resume force recovery. It still needs actual-host validation and a
 new independent review. State/telemetry and complete runtime/launcher adaptation
 remain pending. It does not enable a production policy switch.
+The enclosing execution owner refreshes a pool TIMEOUT after the pool's concurrent
+transport/tree close has settled. The lower pool receipt is retained unchanged;
+the owner uses a fresh bounded read-only pool observation for its own receipt.
+This avoids reporting an early live-worker snapshot after actual owned-worker
+exit. It preserves initial UNKNOWN and still reports a surviving detached child.
+Finalization and controller actual owned-exit checks remain mandatory.

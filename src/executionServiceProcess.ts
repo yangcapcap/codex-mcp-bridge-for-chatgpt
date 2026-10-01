@@ -1,7 +1,7 @@
 import { currentExecutionIdentity } from "./executionIdentity.js";
 import { ExecutionJournal, type ExecutionJournalStatus } from "./executionJournal.js";
 import {WorkerTreeShutdownSupervisor} from "./workerTreeShutdownSupervisor.js";
-import {ExecutionShutdownOwner} from "./executionShutdownOwner.js";
+import {ExecutionShutdownOwner,observeResourcesAfterClose} from "./executionShutdownOwner.js";
 import {snapshotExecutionShutdownRequest,snapshotExecutionShutdownReceipt,type ExecutionShutdownRequest} from "./executionShutdownProtocol.js";
 import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
 import {performance} from "node:perf_hooks";
@@ -1440,7 +1440,7 @@ async function runChild(configuration: ChildConfiguration): Promise<void> {
       poolReceipt=pool.closeNonforcing(policy);return true;
     },
     async close(){
-      const result=await poolReceipt!;
+      const result=await observeResourcesAfterClose(await poolReceipt!,()=>pool.observeNonforcingExit());
       return workersResult(result,await workerObserver.observeNonforcingExit());
     },
     async observe(){
