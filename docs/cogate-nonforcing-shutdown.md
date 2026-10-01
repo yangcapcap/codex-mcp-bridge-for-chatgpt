@@ -325,3 +325,9 @@ starting an admission guard, after awaiting that guard, and after method lookup.
 An ordinary close also rechecks its captured close method before invocation, so
 lookup-time pinning cannot resume force recovery. These checks preserve prior
 rejected evidence and require a fresh independent review.
+
+Connection and recovery sweep handles are registered before any configurable
+callback or method lookup can reenter shutdown. A callback cannot observe EXIT
+while its original work is still running; later quiet observations do not alter
+that initial observation. The final candidate includes independent regressions
+for this synchronous registration race.

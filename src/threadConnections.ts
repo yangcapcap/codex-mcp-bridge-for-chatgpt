@@ -269,10 +269,19 @@ export class ThreadConnectionController {
 
   sweep(): Promise<void> {
     if (this.closed) return Promise.resolve();
-    return this.pending ||= this.runSweep().catch(error => {
+    if (this.pending) return this.pending;
+    let resolve!: () => void;
+    const pending = new Promise<void>(done => {resolve = done;});
+    this.pending = pending;
+    // Publish the original work handle before callbacks can reenter the fence.
+    void this.runSweep().catch(error => {
       if (this.nonforcingPinned) this.nonforcingUnknown = true;
       this.lastError = error instanceof Error ? error.message : String(error);
-    }).finally(() => { this.pending = undefined; });
+    }).finally(() => {
+      if (this.pending === pending) this.pending = undefined;
+      resolve();
+    });
+    return pending;
   }
 
   private eligible(record: ThreadConnectionRecord): boolean {

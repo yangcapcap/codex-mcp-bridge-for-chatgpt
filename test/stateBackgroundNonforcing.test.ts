@@ -83,6 +83,17 @@ describe("state background nonforcing fences",()=>{
     owner=new StateMaintenanceScheduler({execute:async()=>({changed:1})} as unknown as OperationalStateService,options);
     await owner.sweep("events");expect(callback).not.toHaveBeenCalled();expect(owner.observeNonforcingExit().outcome).toBe("uncertain");
   });
+  it("seals recovery work before a discovery callback can pin and observe",async()=>{
+    const state=new BridgeStateStore({file:":memory:"});let owner!:AutomaticRecoveryController;let during:string|undefined;
+    owner=new AutomaticRecoveryController(state.automaticRecovery,{candidates:()=>{owner.pinNonforcingShutdown();during=owner.observeNonforcingExit().outcome;return [];},attempt:async()=>({resolved:false,reason:"unused"})});
+    try{await owner.sweep();expect(during).toBe("timeout");expect(owner.observeNonforcingExit().exited).toBe(true);}finally{await owner.close();state.close();}
+  });
+  it("seals connection work before a release-method getter can pin and observe",async()=>{
+    const state=new BridgeStateStore({file:":memory:"});let owner!:ThreadConnectionController;let during:string|undefined;const release=vi.fn();
+    state.threadConnections.register({threadId:"getter-thread",scopeId:"scope-a",persistence:"persistent"});state.threadConnections.requestHandoff("getter-thread");
+    owner=new ThreadConnectionController(state.threadConnections,{get releaseThreadConnection(){owner.pinNonforcingShutdown();during=owner.observeNonforcingExit().outcome;return release;}} as unknown as CodexUpstream);
+    try{await owner.sweep();expect(during).toBe("timeout");expect(release).not.toHaveBeenCalled();expect(owner.observeNonforcingExit().exited).toBe(true);}finally{await owner.close();state.close();}
+  });
   it("reports ordinary-close history as unknown across repeated pins for every controller",async()=>{
     const state=new BridgeStateStore({file:":memory:"});
     const recovery=new AutomaticRecoveryController(state.automaticRecovery,{candidates:()=>[],attempt:async()=>({resolved:false,reason:"unused"})});
