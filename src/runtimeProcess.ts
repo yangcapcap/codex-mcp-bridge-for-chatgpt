@@ -464,6 +464,64 @@ export class IsolatedRuntimeController {
     try{return this.proxyEffect(()=>Reflect.apply(method,owner,args)) as T;}
     catch(error){this.nonforcingUnknown=true;this.retainedNonforcingMessages.push({owner,key,method,args,error});throw error;}
   }
+  private rejectedProxyRequests=0;
+  private retainProxyFailure(error:unknown):void {
+    this.nonforcingUnknown=true;this.retainedNonforcingMessages.push(error);
+  }
+  private proxyWriteJson(response:import('node:http').ServerResponse,status:number,value:unknown):void {
+    const body=this.proxyEffect(()=>JSON.stringify(value));
+    this.proxyEffect(()=>{response.statusCode=status;});
+    this.proxyCall(response,'setHeader',['content-type','application/json; charset=utf-8']);
+    this.proxyCall(response,'setHeader',['content-length',Buffer.byteLength(body)]);
+    this.proxyCall(response,'end',[body]);
+  }
+  private proxyUnavailable(response:import('node:http').ServerResponse,readiness:BridgeReadinessSnapshot,
+    outcome:ProxyRequestOutcome,failure:ProxyFailureContext={},requestId?:string|number):void {
+    if(this.proxyRead(response,'headersSent') || this.proxyRead(response,'destroyed'))return;
+    const reason=failure.reason||readiness.reason,limitations=failure.limitations||readiness.limitations;
+    this.proxyCall(response,'setHeader',['retry-after','1']);
+    const details={ok:false,code:'RUNTIME_RESPONSE_UNCONFIRMED',reason,limitations,retryable:true,outcome,
+      runtimeReadiness:{ready:readiness.ready,reason:readiness.reason,limitations:readiness.limitations},
+      ...(readiness.stateService?{stateService:readiness.stateService}:{})};
+    this.proxyWriteJson(response,503,requestId===undefined?details:{jsonrpc:'2.0',id:requestId,
+      error:{code:-32000,message:'Bridge runtime temporarily unavailable',data:details}});
+  }
+  private proxyMcpUnavailable(incoming:import('node:http').IncomingMessage,outgoing:import('node:http').ServerResponse,
+    readiness:BridgeReadinessSnapshot,outcome:ProxyRequestOutcome,failure:ProxyFailureContext={}):void {
+    if(this.proxyRead(incoming,'method')!=='POST'){this.proxyUnavailable(outgoing,readiness,outcome,failure);return;}
+    const capture=new McpRequestIdCapture();let finished=false,timer:NodeJS.Timeout|undefined;
+    const edge={incoming,outgoing,capture,freeze:()=>{if(timer)clearTimeout(timer);}};
+    this.proxyEdges.add(edge);this.rejectedProxyRequests++;
+    const finish=()=>{
+      if(this.retainProxyContinuation() || finished)return;
+      finished=true;
+      try {
+        if(timer)clearTimeout(timer);
+        this.proxyCall(incoming,'off',['data',onData]);
+        this.proxyCall(incoming,'off',['end',onEnd]);
+        this.proxyCall(incoming,'off',['close',onClose]);
+        const id=this.proxyCall<string|number|undefined>(capture,'id',[]);
+        this.proxyCall(capture,'dispose',[]);
+        this.proxyUnavailable(outgoing,readiness,outcome,failure,id);
+        if(this.retainProxyContinuation())return;
+        this.proxyEdges.delete(edge);this.rejectedProxyRequests--;
+      }catch(error){this.retainProxyFailure(error);}
+    };
+    const onData=(chunk:Buffer|string)=>{
+      if(this.retainProxyContinuation(chunk))return;
+      try{if(!this.proxyCall(capture,'append',[chunk]))finish();}catch(error){this.retainProxyFailure(error);}
+    };
+    const onEnd=()=>{
+      if(this.retainProxyContinuation())return;
+      try{this.proxyCall(capture,'complete',[]);finish();}catch(error){this.retainProxyFailure(error);}
+    };
+    const onClose=()=>finish();
+    timer=setTimeout(finish,MCP_REJECTION_BODY_WAIT_MS);timer.unref();
+    this.proxyCall(incoming,'on',['data',onData]);
+    this.proxyCall(incoming,'once',['end',onEnd]);
+    this.proxyCall(incoming,'once',['close',onClose]);
+    this.proxyCall(incoming,'resume',[]);
+  }
   private activeProxyRequests = 0;
   private activeProxyBytes = 0;
   private closed = false;
@@ -687,16 +745,16 @@ export class IsolatedRuntimeController {
 }): void {
     try {
         if (this.nonforcingPinned) {
-            writeJson(outgoing, 503, { error: 'RUNTIME_NONFORCING_PINNED' });
+            this.proxyWriteJson(outgoing, 503, { error: 'RUNTIME_NONFORCING_PINNED' });
             return;
         }
         if (this.port === undefined || !this.child?.connected) {
             if (bufferedRequest) {
                 this.activeProxyRequests -= 1;
-                writeUnavailable(outgoing, this.readiness(), "not-observed", {}, bufferedRequest.capture.id());
+                this.proxyUnavailable(outgoing, this.readiness(), "not-observed", {}, bufferedRequest.capture.id());
             }
             else
-                writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
+                this.proxyMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
             return;
         }
         const declaredLength = this.proxyEffect(()=>requestContentLength(this.proxyRead(incoming, "headers")));
@@ -704,7 +762,7 @@ export class IsolatedRuntimeController {
             bufferedRequest?.capture.dispose();
             if (bufferedRequest)
                 this.activeProxyRequests -= 1;
-            writeJson(outgoing, 413, {
+            this.proxyWriteJson(outgoing, 413, {
                 ok: false,
                 code: "RUNTIME_REQUEST_TOO_LARGE",
                 reason: "request-bytes"
@@ -713,7 +771,7 @@ export class IsolatedRuntimeController {
         }
         if (!bufferedRequest && declaredLength !== undefined &&
             this.activeProxyBytes + declaredLength > MAX_PROXY_BYTES_IN_FLIGHT) {
-            writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", {
+            this.proxyMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", {
                 reason: "state-capacity", limitations: ["state-capacity"]
             });
             return;
@@ -740,7 +798,7 @@ export class IsolatedRuntimeController {
                 });
             }
             else {
-                writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
+                this.proxyMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
             }
             return;
         }
@@ -752,10 +810,10 @@ export class IsolatedRuntimeController {
             const failure = { reason: "state-capacity" as const, limitations: ["state-capacity"] };
             if (bufferedRequest) {
                 this.activeProxyRequests -= 1;
-                writeUnavailable(outgoing, this.readiness(), "not-observed", failure, bufferedRequest.capture.id());
+                this.proxyUnavailable(outgoing, this.readiness(), "not-observed", failure, bufferedRequest.capture.id());
             }
             else
-                writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", failure);
+                this.proxyMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", failure);
             return;
         }
         const port = this.port;
@@ -799,14 +857,14 @@ export class IsolatedRuntimeController {
                 this.proxyCall(proxied, "destroy", [new Error(reason === "request-bytes" ? "RUNTIME_REQUEST_TOO_LARGE" : "RUNTIME_CAPACITY")]);
                 if (!responseStarted && !this.proxyRead(outgoing, "headersSent")) {
                     if (reason === "request-bytes") {
-                        writeJson(outgoing, 413, {
+                        this.proxyWriteJson(outgoing, 413, {
                             ok: false,
                             code: "RUNTIME_REQUEST_TOO_LARGE",
                             reason
                         });
                     }
                     else {
-                        writeUnavailable(outgoing, this.readiness(), "not-observed", {
+                        this.proxyUnavailable(outgoing, this.readiness(), "not-observed", {
                             reason: "state-capacity",
                             limitations: ["state-capacity"]
                         }, this.proxyCall(requestIdCapture, "id", []));
@@ -888,7 +946,7 @@ export class IsolatedRuntimeController {
                         return;
                     this.proxyCall(proxied, "destroy", [new Error("RUNTIME_RESPONSE_UNCONFIRMED")]);
                     if (!responseStarted && !this.proxyRead(outgoing, "headersSent")) {
-                        writeUnavailable(outgoing, this.readiness(), requestOutcome, {}, this.proxyCall(requestIdCapture, "id", []));
+                        this.proxyUnavailable(outgoing, this.readiness(), requestOutcome, {}, this.proxyCall(requestIdCapture, "id", []));
                     }
                     else if (!this.proxyRead(outgoing, "destroyed")) {
                         this.proxyCall(outgoing, "destroy", []);
@@ -905,7 +963,7 @@ export class IsolatedRuntimeController {
                     if (this.retainProxyContinuation(error))
                         return;
                     if (!this.proxyRead(outgoing, "headersSent")) {
-                        writeUnavailable(outgoing, this.readiness(), requestOutcome, {
+                        this.proxyUnavailable(outgoing, this.readiness(), requestOutcome, {
                             reason: "state-recovering",
                             limitations: ["state-response-unconfirmed"]
                         }, this.proxyCall(requestIdCapture, "id", []));
@@ -1042,17 +1100,19 @@ export class IsolatedRuntimeController {
         const cleanup = () => {
             try {
                 if (this.retainProxyContinuation())
-                    return;
+                    return false;
                 if (timer)
                     clearTimeout(timer);
                 this.proxyCall(incoming, "off", ["data", onData]);
                 this.proxyCall(incoming, "off", ["end", onEnd]);
                 this.proxyCall(incoming, "off", ["close", onClose]);
                 this.proxyCall(outgoing, "off", ["close", onClose]);
+                return true;
             }
             catch (error) {
                 this.nonforcingUnknown = true;
                 this.retainedNonforcingMessages.push(error);
+                return false;
             }
         };
         const reject = (reason: "state-capacity" | "request-bytes" = "state-capacity") => {
@@ -1062,7 +1122,7 @@ export class IsolatedRuntimeController {
                 if (settled)
                     return;
                 settled = true;
-                cleanup();
+                if(!cleanup())return;
                 if(this.retainProxyContinuation())return;
                 releaseBytes();
                 if(this.retainProxyContinuation())return;
@@ -1070,10 +1130,10 @@ export class IsolatedRuntimeController {
                 const id = this.proxyCall(capture, "id", []);
                 this.proxyCall(capture, "dispose", []);
                 if (reason === "request-bytes") {
-                    writeJson(outgoing, 413, { ok: false, code: "RUNTIME_REQUEST_TOO_LARGE", reason });
+                    this.proxyWriteJson(outgoing, 413, { ok: false, code: "RUNTIME_REQUEST_TOO_LARGE", reason });
                 }
                 else {
-                    writeUnavailable(outgoing, this.readiness(), "not-observed", {
+                    this.proxyUnavailable(outgoing, this.readiness(), "not-observed", {
                         reason: "state-capacity", limitations: ["state-capacity"]
                     }, id);
                 }
@@ -1130,7 +1190,7 @@ export class IsolatedRuntimeController {
                     return;
                 }
                 settled = true;
-                cleanup();
+                if(!cleanup())return;
                 if(this.retainProxyContinuation())return;
                 releaseBytes();
                 if(this.retainProxyContinuation())return;
@@ -1225,7 +1285,7 @@ export class IsolatedRuntimeController {
   }
 
   private get outstanding(): number {
-    return this.pending.size + this.abandoned.size + this.activeProxyRequests;
+    return this.pending.size + this.abandoned.size + this.activeProxyRequests + this.rejectedProxyRequests;
   }
 
   private rpcObservationTimeoutMs(): number {
