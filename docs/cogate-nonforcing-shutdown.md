@@ -563,3 +563,20 @@ Rename may change file ctime and directory entry count, so those are captured fr
 the published stable record for subsequent immutable observations. Failed or
 unsupported evidence remains UNKNOWN. These local observations do not release
 durable writer records or authorize production activation.
+
+
+Creation descriptor and final passive observation
+------------------------------------------------
+
+The publisher holds the exact exclusively created temporary file descriptor
+through its original native FileHandle write and rename. The creation identity
+must survive the write; final publication metadata comes from that held descriptor,
+so replacing its pathname before a snapshot cannot acquire original authority.
+Passive lease observation rechecks sticky release-start history before returning
+a positive result. Controlled builtin callback probes are local characterization,
+not claims of a reachable production trigger.
+
+Publication tests gate the original FileHandle write rather than the retired
+pathname-write helper. Assertions still require concurrent readers to see no
+partial published record, then one complete record and no temporary pathname.
+Earlier timeout and writer-hook fixtures remain retained as qualified evidence.

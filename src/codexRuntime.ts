@@ -1,7 +1,7 @@
 import { CLI_INSTALL_VALIDATION_ID, verifyCliConnection } from "./runtimeCompatibility.js";
 import { inspectCliProtocol, type CliProtocolSupport } from "./cliProtocol.js";
 import { accessSync, constants, readFileSync, realpathSync, statSync, lstatSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
-import { access, chmod, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, open, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -18,6 +18,7 @@ const leaseStatIdentity=(value:import('node:fs').BigIntStats,file:boolean)=>[
   ...(file?[value.size,value.mtimeNs,value.ctimeNs]:[])
 ].join(':');
 // Rename may change ctime; the original inode, private metadata and write history must survive publication.
+const leaseCreationIdentity=(value:import('node:fs').BigIntStats)=>[value.dev,value.ino,value.mode,value.uid,value.gid,value.nlink].join(':');
 const leasePublicationIdentity=(value:import('node:fs').BigIntStats)=>[value.dev,value.ino,value.mode,value.uid,value.gid,value.nlink,value.size,value.mtimeNs].join(':');
 const leaseDirectoryPublicationIdentity=(value:import('node:fs').BigIntStats)=>[value.dev,value.ino,value.mode,value.uid,value.gid].join(':');
 function readRetainedCliLease(file:string,directory:string):Omit<RetainedCliLease,'failed'>|undefined {
@@ -48,7 +49,7 @@ export function observeRetainedCliLease(release:unknown):boolean {
   const owned=retainedCliLeases.get(release as ()=>Promise<void>);if(!owned || owned.failed)return false;
   const current=readRetainedCliLease(owned.file,owned.directory);
   if(!current || current.fileIdentity!==owned.fileIdentity || current.directoryIdentity!==owned.directoryIdentity || current.sha256!==owned.sha256){owned.failed=true;return false;}
-  return true;
+  return !owned.failed;
 }
 
 const executeFile = promisify(execFile);
@@ -378,9 +379,17 @@ export class CodexRuntimeManager {
     const originalDirectoryIdentity=leaseDirectoryPublicationIdentity(lstatSync(directory,{bigint:true}));
     let originalPublicationIdentity:string|undefined;
     try {
-      await writeFile(temporary,payload,{mode:0o600,flag:"wx"});
-      originalPublicationIdentity=leasePublicationIdentity(lstatSync(temporary,{bigint:true}));
-      await rename(temporary, file);
+      const handle=await open(temporary,'wx',0o600);
+      try {
+        // Retain the creation descriptor; a replaced pathname never becomes its owner.
+        const descriptor=handle.fd,created=fstatSync(descriptor,{bigint:true});
+        await handle.writeFile(payload);
+        const written=fstatSync(descriptor,{bigint:true});
+        if(leaseCreationIdentity(created)===leaseCreationIdentity(written) && written.isFile() &&
+          written.nlink===1n && (written.mode&0o7777n)===0o600n && written.uid===BigInt(process.getuid!()))
+          originalPublicationIdentity=leasePublicationIdentity(written);
+        await rename(temporary,file);
+      }finally{await handle.close();}
     } finally { await rm(temporary, { force: true }); }
     const release=()=>{
       // This original capability can be called outside the router as well.
