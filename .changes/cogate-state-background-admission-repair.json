@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Seal thread command clock continuations and snapshot recovery discovery before journal admission.","breaking":false,"migration":null}

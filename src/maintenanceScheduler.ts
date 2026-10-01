@@ -65,7 +65,11 @@ export class StateMaintenanceScheduler {
 
   start(): void {
     if (this.closed || this.timer) return;
-    this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 5_000);
+    const intervalMs = this.options.intervalMs ?? 5_000;
+    if (this.closed) return;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2_147_483_647)
+      throw new Error("STATE_BACKGROUND_INTERVAL_INVALID");
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     void this.sweep();
   }
@@ -74,11 +78,20 @@ export class StateMaintenanceScheduler {
     if (this.closed || this.pending) return;
     this.pending = true;
     const selected = slice || STATE_MAINTENANCE_SLICES[this.cursor % STATE_MAINTENANCE_SLICES.length]!;
-    const startedAt = (this.options.now || Date.now)();
-    const maxDeferMs = this.options.maxDeferMs === undefined
-      ? undefined
-      : Math.max(0, this.options.maxDeferMs);
-    if (!slice && this.options.shouldDefer?.()) {
+    const now = this.options.now || Date.now;
+    if (this.nonforcingPinned) {this.pending = false; return;}
+    const startedAt = now();
+    if (this.nonforcingPinned) {this.pending = false; return;}
+    const configuredMaxDefer = this.options.maxDeferMs;
+    if (this.nonforcingPinned) {this.pending = false; return;}
+    if (configuredMaxDefer !== undefined && (typeof configuredMaxDefer !== "number" || !Number.isFinite(configuredMaxDefer)))
+      throw new Error("STATE_BACKGROUND_DEFER_INVALID");
+    const maxDeferMs = configuredMaxDefer === undefined ? undefined : Math.max(0,configuredMaxDefer);
+    const shouldDefer = this.options.shouldDefer;
+    if (this.nonforcingPinned) {this.pending = false; return;}
+    const defer = !slice && shouldDefer && Reflect.apply(shouldDefer, this.options, []);
+    if (this.nonforcingPinned) {this.pending = false; return;}
+    if (defer) {
       this.deferredSince ??= startedAt;
       if (maxDeferMs === undefined || startedAt - this.deferredSince < maxDeferMs) {
         this.pending = false;
@@ -105,7 +118,11 @@ export class StateMaintenanceScheduler {
     let command = uncertain?.command;
     let committed = false;
     try {
-      command ||= this.options.command?.(selected) ?? defaultMaintenanceCommand(selected);
+      if (!command) {
+        const createCommand = this.options.command;
+        if (this.nonforcingPinned) return;
+        command = (createCommand ? Reflect.apply(createCommand, this.options, [selected]) : undefined) ?? defaultMaintenanceCommand(selected);
+      }
       if (this.nonforcingPinned) return;
       const execute = this.stateService.execute;
       if (this.nonforcingPinned) return;
@@ -121,13 +138,17 @@ export class StateMaintenanceScheduler {
       committed = true;
       const completed = this.options.completed;
       if (this.nonforcingPinned) return;
-      completed?.(command, result);
+      if (completed && Reflect.apply(completed, this.options, [command,result]) !== undefined) this.nonforcingUnknown = true;
       if (this.nonforcingPinned) return;
       changed = result.changed;
       if (this.nonforcingPinned) return;
       this.uncertainCommands.delete(selected);
       this.lastError = undefined;
-      if (changed > 0) this.options.changed?.();
+      if (changed > 0) {
+        const changedHook = this.options.changed;
+        if (this.nonforcingPinned) return;
+        if (changedHook && Reflect.apply(changedHook, this.options, []) !== undefined) this.nonforcingUnknown = true;
+      }
     } catch (error) {
       failed = true;
       if (this.nonforcingPinned) {
@@ -172,7 +193,7 @@ export class StateMaintenanceScheduler {
 
   pinNonforcingShutdown(): true {
     if (this.nonforcingPinned) return true;
-    this.nonforcingUnknown = this.closed;
+    this.nonforcingUnknown ||= this.closed;
     this.nonforcingPinned = true;
     if (this.pendingCommand) {
       const {slice, commandId, command} = this.pendingCommand;

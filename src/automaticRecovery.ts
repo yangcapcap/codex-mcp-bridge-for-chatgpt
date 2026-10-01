@@ -256,8 +256,14 @@ export class AutomaticRecoveryController {
 
   start(): void {
     if (this.closed || this.timer) return;
-    this.store.reconcileInterrupted(this.now());
-    this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 5_000);
+    const intervalMs = this.options.intervalMs ?? 5_000;
+    if (this.closed) return;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2_147_483_647)
+      throw new Error("STATE_BACKGROUND_INTERVAL_INVALID");
+    const observedAt = this.now();
+    if (this.nonforcingPinned) return;
+    this.store.reconcileInterrupted(observedAt);
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     this.schedule();
   }
@@ -320,8 +326,11 @@ export class AutomaticRecoveryController {
   async recoverJob(jobId: string): Promise<void> {
     await this.pending;
     if (this.nonforcingPinned) return;
-    const agentId = this.options.agentForJob?.(jobId);
+    const agentForJob = this.options.agentForJob;
     if (this.nonforcingPinned) return;
+    const agentId = agentForJob ? Reflect.apply(agentForJob, this.options, [jobId]) : undefined;
+    if (this.nonforcingPinned) return;
+    if (agentId !== undefined && typeof agentId !== "string") {this.nonforcingUnknown = true; return;}
     await this.sweep(jobId, agentId);
   }
 
@@ -336,7 +345,7 @@ export class AutomaticRecoveryController {
   /** Retain scheduled identities and durable attempts; stop future dispatch. */
   pinNonforcingShutdown(): true {
     if (this.nonforcingPinned) return true;
-    this.nonforcingUnknown = this.closed;
+    this.nonforcingUnknown ||= this.closed;
     this.nonforcingPinned = true;
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
@@ -346,21 +355,36 @@ export class AutomaticRecoveryController {
     return true;
   }
 
+  private publishChanges(): void {
+    if (this.nonforcingPinned) return;
+    const changed = this.options.changed;
+    if (this.nonforcingPinned) return;
+    if (changed && Reflect.apply(changed, this.options, []) !== undefined) this.nonforcingUnknown = true;
+  }
+
   observeNonforcingExit(): ShutdownResult {
     if (!this.nonforcingPinned || this.nonforcingUnknown) return shutdownResult("uncertain");
     return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
   }
 
   private async runSweep(jobId?: string, agentId?: string): Promise<void> {
-    if (this.options.enabled?.() === false || this.nonforcingPinned) return;
-    this.store.reconcileInterrupted(this.now());
+    const enabled = this.options.enabled;
+    if (this.nonforcingPinned) return;
+    if ((enabled && Reflect.apply(enabled, this.options, []) === false) || this.nonforcingPinned) return;
+    const observedAt = this.now();
+    if (this.nonforcingPinned) return;
+    this.store.reconcileInterrupted(observedAt);
     const budget = new BackgroundWorkSlice(RECOVERY_WORK_LIMITS);
     budget.roundTrips = 1; // bounded interrupted-attempt reconciliation
     let agents = 0, candidates = 0, dispatched = 0;
     const full = !agentId;
     try {
-      if (!agentId && this.options.pageAgents) {
-        const due = this.store.dueAgentIds(this.now());
+      const pageAgents = !agentId ? this.options.pageAgents : undefined;
+      if (this.nonforcingPinned) return;
+      if (pageAgents) {
+        const dueAt = this.now();
+        if (this.nonforcingPinned) return;
+        const due = this.store.dueAgentIds(dueAt);
         for (const id of due) {
           if (this.closed || dispatched >= 3 || !budget.take(12)) break;
           const result = await this.survey(id, jobId, 3 - dispatched, budget);
@@ -370,10 +394,17 @@ export class AutomaticRecoveryController {
           if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
         }
         if (this.nonforcingPinned) return;
-        let page = this.options.pageAgents(this.agentCursor, Math.max(1,budget.limits.maxTargets-budget.targets));
+        const pageLimit = Math.max(1,budget.limits.maxTargets-budget.targets);
+        let page = snapshotOwnArray(Reflect.apply(pageAgents, this.options, [this.agentCursor, pageLimit]),
+          () => this.nonforcingPinned, value => typeof value === "string" ? value : undefined);
+        if (this.nonforcingPinned) return;
+        if (!page) {this.nonforcingUnknown = true; return;}
         if (page.length === 0 && this.agentCursor) {
           this.agentCursor = "";
-          page = this.options.pageAgents("", Math.max(1,budget.limits.maxTargets-budget.targets));
+          page = snapshotOwnArray(Reflect.apply(pageAgents, this.options, ["", pageLimit]),
+            () => this.nonforcingPinned, value => typeof value === "string" ? value : undefined);
+          if (this.nonforcingPinned) return;
+          if (!page) {this.nonforcingUnknown = true; return;}
         }
         for (const id of page) {
           if (this.closed || dispatched >= 4 || !budget.take(12)) break;
@@ -383,6 +414,7 @@ export class AutomaticRecoveryController {
             candidates += result.candidates;
             dispatched += result.dispatched;
           }
+          if (this.nonforcingPinned) return;
           this.agentCursor = id;
           if (budget.targets % budget.limits.yieldEvery === 0) await budget.yieldIfNeeded();
         }
@@ -403,8 +435,14 @@ export class AutomaticRecoveryController {
     budget: BackgroundWorkSlice): Promise<{candidates:number;dispatched:number}> {
     const discover = this.options.candidates;
     if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
-    const available = await budget.awaitExternal(Reflect.apply(discover, this.options, [agentId]));
+    const discovered = await budget.awaitExternal(Reflect.apply(discover, this.options, [agentId]));
     if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+    // Capture only primitive own data before any candidate reaches a journal
+    // operation. Accessors are rejected without invocation; a descriptor trap
+    // that pins the owner stops further inspection and admission.
+    const available = snapshotOwnArray(discovered, () => this.nonforcingPinned, snapshotRecoveryCandidate);
+    if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+    if (!available) {this.nonforcingUnknown = true; return {candidates: 0, dispatched: 0};}
     const keys = new Set(available.map(candidate => candidate.key));
     // A production Agent has at most three current candidate kinds. Every
     // nonmatching retry is resolved in this pass, so repeated first pages
@@ -414,8 +452,11 @@ export class AutomaticRecoveryController {
     for (const record of records) {
       if (jobId && record.jobId !== jobId) continue;
       if (!keys.has(record.key)) {
-        this.store.finish(record.key,record.attempts,{resolved:false,reason:"work-changed",retryable:false},this.now());
-        this.options.changed?.();
+        const observedAt = this.now();
+        if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+        this.store.finish(record.key,record.attempts,{resolved:false,reason:"work-changed",retryable:false},observedAt);
+        if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+        this.publishChanges();
       }
     }
     const candidates = available.filter(candidate => !jobId || candidate.jobId === jobId)
@@ -425,19 +466,25 @@ export class AutomaticRecoveryController {
     let dispatched = 0;
     for (const candidate of [...after,...before]) {
       if (this.closed || dispatched >= dispatchLimit) break;
-      if (candidate.kind === "release" && !this.store.canBegin(candidate,this.now())) {
-        this.candidateCursor = candidate.key;
-        continue;
+      if (candidate.kind === "release") {
+        const releaseAt = this.now();
+        if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+        if (!this.store.canBegin(candidate,releaseAt)) {
+          this.candidateCursor = candidate.key;
+          continue;
+        }
       }
       // A shared-worker release can inspect 31 additional connections. Charge
       // that work before persisting an attempt, so a deferred release keeps
       // its retry budget and can run in a later Agent page.
       if (candidate.kind === "release" && !budget.reserve(180)) break;
       this.candidateCursor = candidate.key;
-      const attempt = this.store.begin(candidate,this.now());
+      const attemptStartedAt = this.now();
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      const attempt = this.store.begin(candidate,attemptStartedAt);
       if (!attempt) continue;
       dispatched++;
-      this.options.changed?.();
+      this.publishChanges();
       if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
       let result: AutomaticRecoveryResult;
       try {
@@ -447,11 +494,72 @@ export class AutomaticRecoveryController {
       }
       catch { result = {resolved:false,reason:"recovery-unconfirmed"}; }
       if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
-      this.store.finish(candidate.key,attempt.attempts,result,this.now());
-      this.options.changed?.();
+      const retainedResult = snapshotRecoveryResult(result);
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      if (!retainedResult) {this.nonforcingUnknown = true; return {candidates:candidates.length,dispatched};}
+      const finishedAt = this.now();
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      this.store.finish(candidate.key,attempt.attempts,retainedResult,finishedAt);
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      this.publishChanges();
       // A shared-worker release may resolve a peer. Its durable state is
       // checked by begin() on the next candidate; no global rediscovery here.
     }
     return {candidates:candidates.length,dispatched};
   }
+}
+
+/** Bounded discovery is copied without executing array slots or field getters. */
+function snapshotOwnArray<T>(value: unknown, pinned: () => boolean,
+  capture: (value: unknown, pinned: () => boolean) => T | undefined): T[] | undefined {
+  try {
+    if (pinned() || !Array.isArray(value)) return;
+    const length = Object.getOwnPropertyDescriptor(value, "length");
+    if (pinned() || !length || !Object.hasOwn(length,"value") ||
+        !Number.isSafeInteger(length.value) || length.value < 0 || length.value > 4096) return;
+    const result: T[] = [];
+    for (let index = 0; index < length.value; index++) {
+      if (pinned()) return;
+      const slot = Object.getOwnPropertyDescriptor(value, String(index));
+      if (pinned() || !slot || !Object.hasOwn(slot,"value")) return;
+      const item = capture(slot.value, pinned);
+      if (pinned() || item === undefined) return;
+      result.push(item);
+    }
+    return result;
+  } catch {return;}
+}
+
+function snapshotRecoveryCandidate(value: unknown, pinned: () => boolean): AutomaticRecoveryCandidate | undefined {
+  try {
+    if (!value || typeof value !== "object") return;
+    const result: Record<string, string> = {};
+    for (const key of ["key", "scopeId", "agentId", "kind", "jobId"]) {
+      if (pinned()) return;
+      const field = Object.getOwnPropertyDescriptor(value, key);
+      if (pinned()) return;
+      if (!field && key === "jobId") continue;
+      if (!field || !Object.hasOwn(field,"value")) return;
+      if (key === "jobId" && field.value === undefined) continue;
+      if (typeof field.value !== "string" || !field.value) return;
+      result[key] = field.value;
+    }
+    if (!["recheck", "retry-stop", "release"].includes(result.kind)) return;
+    return Object.freeze(result) as AutomaticRecoveryCandidate;
+  } catch {return;}
+}
+
+/** Receipt fields must be own data; no callback can run inside a journal write. */
+function snapshotRecoveryResult(value: AutomaticRecoveryResult): AutomaticRecoveryResult | undefined {
+  try {
+    const fields = Object.getOwnPropertyDescriptors(value);
+    const keys = ["resolved", "reason", "evidence", "retryable"];
+    if (["resolved", "reason"].some(key => !Object.hasOwn(fields,key)) ||
+        keys.some(key => Object.hasOwn(fields,key) && !Object.hasOwn(fields[key],"value"))) return;
+    const result = Object.fromEntries(keys.filter(key => Object.hasOwn(fields,key)).map(key => [key,fields[key].value]));
+    if (typeof result.resolved !== "boolean" || typeof result.reason !== "string" ||
+        result.evidence !== undefined && typeof result.evidence !== "string" ||
+        result.retryable !== undefined && typeof result.retryable !== "boolean") return;
+    return Object.freeze(result) as AutomaticRecoveryResult;
+  } catch {return;}
 }
