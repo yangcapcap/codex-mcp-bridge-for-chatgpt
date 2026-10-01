@@ -8,8 +8,9 @@ import { JOB_TERMINAL_EVENT, type EventJob, type EventSubscription } from "./mcp
 import { EventDestinationVault, sendPublicWebhook, signedHeaders, validateCallbackUrl, validateSigningSecret, type WebhookSender } from "./mcpWebhook.js";
 import { FOLLOWUP_ID_PATTERN } from "./taskFollowups.js";
 import { mcpOAuthPrincipal } from "./mcpOAuth.js";
-import {shutdownResult,type ShutdownResult} from "./shutdown.js";
+import {combineShutdown,shutdownResult,type ShutdownResult} from "./shutdown.js";
 import {snapshotNonforcingData} from "./nonforcingData.js";
+import {RuntimeOperationFence} from "./runtimeOperationFence.js";
 
 const argsSchema = z.strictObject({ jobId: z.string().uuid() });
 const deliverySchema = z.strictObject({ mode: z.literal("webhook"), url: z.string().max(4_096), secret: z.string().max(100) });
@@ -75,19 +76,22 @@ export class McpEventsController {
   private nonforcingUnknown=false;
   private ordinaryClose=false;
   private readonly retainedResponses=new Map<string,unknown>();
+  private readonly retainedErrors=new Map<string,unknown>();
+  private readonly senderFence=new RuntimeOperationFence();
 
   pinNonforcingShutdown():true {
     if(this.nonforcingPinned)return true;
     this.nonforcingPinned=true;this.nonforcingUnknown ||= this.ordinaryClose;
+    this.senderFence.pinNonforcingShutdown();
     this.stop.abort();
-    try{this.unsubscribe();}catch{this.nonforcingUnknown=true;}
+    try{this.unsubscribe();}catch(error){this.nonforcingUnknown=true;this.retainedErrors.set('unsubscribe',error);}
     if(this.timer)clearTimeout(this.timer);this.timer=undefined;
     return true;
   }
   observeNonforcingExit():ShutdownResult {
     if(!this.nonforcingPinned || this.nonforcingUnknown)return shutdownResult('uncertain');
     const active=this.verifying.size+(this.running?1:0);
-    return active ? shutdownResult('timeout',active) : shutdownResult('exited');
+    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit()]);
   }
   async closeNonforcing():Promise<ShutdownResult>{
     this.pinNonforcingShutdown();
@@ -154,18 +158,29 @@ export class McpEventsController {
         const body = JSON.stringify({ type: "verification", challenge });
         const verificationId = "msg_verification_" + randomUUID();
         try {
-          const response = await this.sender(params.delivery.url, body,
+          const response = await this.senderFence.run(()=>this.sender(params.delivery.url, body,
             signedHeaders(verificationId, id, body, [params.delivery.secret]),
-            AbortSignal.any([this.stop.signal, context.mcpReq.signal, AbortSignal.timeout(10_000)]));
-          const returned = JSON.parse(response.body).challenge;
+            AbortSignal.any([this.stop.signal, context.mcpReq.signal, AbortSignal.timeout(10_000)])));
+          this.retainedResponses.set(id,response);
+          if(this.stop.signal.aborted)throw new Error('RUNTIME_NONFORCING_PINNED');
+          const captured=snapshotNonforcingData(response,()=>this.nonforcingPinned);
+          if(!captured.ok){this.nonforcingUnknown=true;throw new Error('MCP_EVENT_RESPONSE_UNCONFIRMED');}
+          const observed=captured.value;
+          const returned = JSON.parse(observed.body).challenge;
           const expected = Buffer.from(challenge);
           const actual = typeof returned === "string" ? Buffer.from(returned) : Buffer.alloc(0);
-          if (response.status < 200 || response.status >= 300 || actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("challenge_failed");
+          if (observed.status < 200 || observed.status >= 300 || actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("challenge_failed");
         } catch (error) {
-          const reason = error instanceof Error && error.message === "timeout" ? "timeout" : "challenge_failed";
+          this.retainedErrors.set(id,error);
+          if(this.stop.signal.aborted)throw new ProtocolError(-32015,'CallbackEndpointError',{reason:'timeout'});
+          const message=error && typeof error==='object' ? Object.getOwnPropertyDescriptor(error,'message') : undefined;
+          if(this.stop.signal.aborted)throw new ProtocolError(-32015,'CallbackEndpointError',{reason:'timeout'});
+          const reason=message && Object.hasOwn(message,'value') && message.value==='timeout'?'timeout':'challenge_failed';
           throw new ProtocolError(-32015, "CallbackEndpointError", { reason });
         }
       }
+      if(this.stop.signal.aborted)throw new ProtocolError(-32015,'CallbackEndpointError',{reason:'timeout'});
+      this.retainedResponses.delete(id);
       const verifiedAt = Date.now();
       this.authorize(context); // A token can expire while the callback challenge is running.
       const expiresAt = Math.min(verifiedAt + Math.min(params.ttlMs ?? SUBSCRIPTION_TTL_MS, MAX_TTL_MS),
@@ -225,7 +240,9 @@ export class McpEventsController {
     this.timer = setTimeout(() => {
       this.timer = undefined;
       let deliveryFailed = false;
-      this.running = this.deliver().catch(() => { deliveryFailed = true; }).finally(() => {
+      this.running = Promise.resolve().then(()=>this.deliver()).catch(error => {
+        deliveryFailed = true;this.nonforcingUnknown=true;this.retainedErrors.set('delivery',error);
+      }).finally(() => {
         this.running = undefined;
         if (!this.stop.signal.aborted) {
           try {
@@ -253,20 +270,26 @@ export class McpEventsController {
     if(this.stop.signal.aborted)return;
     const ledger = this.jobs.admissionStateStore.mcpEvents;
     ledger.maintain();
-    for (const { jobId, id } of ledger.list()) {
+    if(this.stop.signal.aborted)return;
+    const records=ledger.list();
+    if(this.stop.signal.aborted)return;
+    for (const { jobId, id } of records) {
       if (this.stop.signal.aborted) break;
       // Another subscription's network await may have allowed this grant to
       // expire, renew or unsubscribe. The list supplies identities only.
       const record = ledger.get(jobId, id);
+      if(this.stop.signal.aborted)break;
       if (!record || record.disabled || record.expiresAt <= Date.now() || record.delivery !== "pending" || record.nextAttemptAt > Date.now()) continue;
       if (!record.event) continue;
       if (record.attempts >= MAX_ATTEMPTS) { ledger.save({ ...record, delivery: "failed" }, record.revision); continue; }
       try { this.requireJob(record.jobId, record.scopeId, record.principal); if (record.principal !== this.principal) throw this.denied(); }
       catch (error) {
+        if(this.stop.signal.aborted){this.retainedErrors.set(record.id,error);break;}
         // An unavailable state read is not evidence of revoked access.
         if (!(error instanceof ProtocolError)) throw error;
         ledger.save({ ...record, revision: record.revision + 1, disabled: "revoked" }, record.revision); continue;
       }
+      if(this.stop.signal.aborted)break;
       let response;
       // Persist before opening keys or sending, including failed signing attempts.
       record.attempts += 1;
@@ -276,10 +299,14 @@ export class McpEventsController {
         const body = JSON.stringify(record.event);
         const secrets = [destination.secret];
         if (destination.previousSecret && (destination.rotateUntil || 0) > Date.now()) secrets.push(destination.previousSecret);
-        response = await this.sender(destination.url, body,
+        response = await this.senderFence.run(()=>this.sender(destination.url, body,
           signedHeaders(record.event.eventId, record.id, body, secrets),
-          AbortSignal.any([this.stop.signal, AbortSignal.timeout(10_000)]));
-      } catch { response = { status: 0 }; }
+          AbortSignal.any([this.stop.signal, AbortSignal.timeout(10_000)])));
+      } catch (error) {
+        this.retainedErrors.set(record.id,error);
+        if(this.stop.signal.aborted){this.retainedResponses.set(record.id,error);break;}
+        response = { status: 0 };
+      }
       this.retainedResponses.set(record.id,response);
       if (this.stop.signal.aborted) break;
       const captured=snapshotNonforcingData(response,()=>this.nonforcingPinned);

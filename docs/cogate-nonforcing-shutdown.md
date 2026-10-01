@@ -495,3 +495,16 @@ preserved. Later host tests have a separate exclusive lease and spawn audit.
 This candidate composes a reviewed SQLite component with a registry predecessor
 that requires repairs; ingress component checks cannot approve that predecessor,
 private owner IPC, writer release, operator activation, or the full release.
+
+Fresh HTTP and stdio observations also require their owned SQLite connection to
+be closed. After a delayed admitted callback settles, a fresh observation may
+finish the resource-only close already requested by explicit nonforcing shutdown.
+The original timeout receipt stays immutable, and shared stores remain owned by
+their caller. Resource closure never changes durable writer retirement rows.
+Events register the delivery operation before its first ledger callback, retain
+original ledger and sender errors, and check the permanent pin before inspecting
+a verification response. Sender calls use the same strict native-Promise fence:
+unsupported Promise constructor/then accessors remain retained and `UNKNOWN`.
+Copied regression assertions for delayed owned-store closure require actual
+native connection closure before a new `EXIT`; the old candidate's original
+false-EXIT reproducer and rejection evidence remain retained separately.

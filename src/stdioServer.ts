@@ -128,8 +128,11 @@ export function createStdioBridgeRuntime(
   };
   const observe=():ShutdownResult=>{
     if(!requestFence.isPinned || nonforcingUnknown)return shutdownResult('uncertain');
-    return combineShutdown([requestFence.observeNonforcingExit(),jobs.observeNonforcingExit(),server.observeNonforcingExit(),
+    const observed=combineShutdown([requestFence.observeNonforcingExit(),jobs.observeNonforcingExit(),server.observeNonforcingExit(),
       resourcesClosed && strictInput.destroyed && !server.isConnected()?shutdownResult('exited'):shutdownResult('timeout',1)]);
+    if(!ownsStateStore)return observed;
+    const database=observed.exited && resourcesClosed && nonforcingClose ? stateStore.closeNonforcing() : stateStore.observeNonforcingExit();
+    return combineShutdown([observed,database]);
   };
   return {
     applicationService: server.applicationService,

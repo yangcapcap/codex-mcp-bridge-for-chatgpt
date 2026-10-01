@@ -505,7 +505,12 @@ export function createHttpServer(
     if(!requestFence.isPinned || nonforcingUnknown)return shutdownResult('uncertain');
     const live=[...mcpServers].filter(server=>server.isConnected()).length+sockets.size;
     const frontends=nonforcingClosed && !httpServer.listening && live===0 ? shutdownResult('exited') : shutdownResult('timeout',Math.max(1,live));
-    return combineShutdown([frontends,requestFence.observeNonforcingExit(),jobs.observeNonforcingExit(),events?.observeNonforcingExit() ?? shutdownResult('exited')]);
+    const observed=combineShutdown([frontends,requestFence.observeNonforcingExit(),jobs.observeNonforcingExit(),events?.observeNonforcingExit() ?? shutdownResult('exited')]);
+    if(!ownsStateStore)return observed;
+    // Fresh observation can finish the already requested resource-only close
+    // once the exact admitted callbacks have settled. Never infer DB exit.
+    const database=observed.exited && nonforcingClosed && nonforcingClose ? stateStore.closeNonforcing() : stateStore.observeNonforcingExit();
+    return combineShutdown([observed,database]);
   };
   httpServer.closeNonforcing=policy=>{
     const supplied=snapshotShutdownPolicy(policy);
