@@ -163,3 +163,8 @@ owner/generation disagreement, reused numeric roots and callback association
 faults retain uncertainty. At most 4096 historical associations are retained;
 exceeding that bound keeps UNKNOWN while preserving the registry evidence.
 These callbacks do not authenticate parent IPC or enable full nonforcing close.
+
+The eligible pinned-tree map is captured before inspecting caller descriptors.
+A Proxy trap that registers another tree or first installs the pin cannot make
+that new evidence eligible for the observation already in progress. Original
+retained tree objects still supply serialized lifetime/history observations.

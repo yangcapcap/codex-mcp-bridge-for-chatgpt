@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Freeze pinned worker tree eligibility before selector descriptor callbacks can reenter registration or pinning, retaining invocation-boundary uncertainty.",
+  "breaking": false,
+  "migration": null
+}

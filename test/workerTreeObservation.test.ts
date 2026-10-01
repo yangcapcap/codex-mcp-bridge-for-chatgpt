@@ -9,6 +9,16 @@ function fixture(){
  return {registry,setRows:(value:typeof rows)=>{rows=value;}};
 }
 describe.skipIf(process.platform==="win32")("scoped retained worker tree observations",()=>{
+ test.each(["remember","pin"])("a reentrant selector cannot %s a newly eligible tree after invocation",async action=>{
+  const registry=new SupervisedProcessTreeRegistry(async()=>[]);
+  if(action==="remember")registry.pinNonforcingShutdown();else{registry.remember(first,true);registry.markExited(first);}
+  const input=new Proxy({...first},{ownKeys(target){
+   if(action==="remember"){registry.remember(first,true);registry.markExited(first);}else registry.pinNonforcingShutdown();
+   return Reflect.ownKeys(target);
+  }});
+  expect((await registry.observeNonforcingTreeExit(input)).outcome).toBe("uncertain");
+  expect((await registry.observeNonforcingTreeExit(first)).exited).toBe(true);
+ });
  test("separate workers report their own survivors without copying away registry history",async()=>{
   const f=fixture();await f.registry.register(first);await f.registry.register(second);f.registry.pinNonforcingShutdown();
   expect((await f.registry.observeNonforcingTreeExit(first)).survivors).toBe(2);
