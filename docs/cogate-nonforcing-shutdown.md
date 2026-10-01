@@ -409,3 +409,19 @@ This registry component does not close the state database, retire a durable writ
 or approve the complete runtime. The full runtime owner must additionally fence
 in-flight application RPCs and frontends before closing resources and authenticating
 its generation-bound shutdown receipts. Production policy remains unchanged.
+
+
+## Pending owned SQLite authority fence
+
+Every state connection and cached statement/transaction/iterator handle passes
+through an internal fence. After a synchronous pin, no new native operation is
+admitted; an existing transaction crossing that boundary rolls back rather than
+committing. Already active native or asynchronous work and prior ordinary close
+history produce sticky `UNKNOWN`. Live iterators prevent closure until their
+existing cleanup returns. Native close is attempted at most once; failure remains
+`UNKNOWN`. Ordinary transaction variants preserve their caller receiver.
+
+Resource-only nonforcing close leaves `bridge_instances` stopped/retirement fields
+unchanged. The enclosing owner must establish independent actor/frontend/RPC
+quiescence before requesting it. A database resource receipt alone does not retire
+a durable writer or approve production activation. Runtime composition is pending.
