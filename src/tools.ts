@@ -2745,24 +2745,39 @@ export class CodexJobRegistry {
       this.registryCallbacksInFlight++;
       let returned:unknown;
       try {
+        let envelope=this.terminalJobData(job,jobId);
         const recover=upstream.recoverExecution;
-        if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainNonforcingObservation(jobId,'recovery-lookup',recover);continue;}
+        if(this.nonforcingPinned || !this.stableBoundaryJob(job,envelope,'recovery-lookup-authority')){
+          this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+          this.retainNonforcingObservation(jobId,'recovery-lookup',recover);continue;
+        }
         if(!recover)continue;
         const boundary=this.authBoundary?.();
-        if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainNonforcingObservation(jobId,'recovery-auth-boundary',boundary);continue;}
+        if(this.nonforcingPinned || !this.stableBoundaryJob(job,envelope,'recovery-auth-authority')){this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);this.retainNonforcingObservation(jobId,'recovery-auth-boundary',boundary);continue;}
         if(this.authBoundary && job.authBoundary!==boundary)continue;
         if(job.status==='terminating')job.status='termination-failed';
-        this.terminalJobData(job,jobId);
+        envelope=this.terminalJobData(job,jobId);
         const originalPromise=Object.getOwnPropertyDescriptor(job,'promise')!;
-        returned=Reflect.apply(recover,upstream,[jobId,
-          (progress:CodexProgress)=>this.recordProgress(job,progress),
-          (assignment:UpstreamWorkerAssignment)=>{
-            const captured=this.recordWorkerAssignment(job,assignment);
-            if(captured && !this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job))record(job,captured.threadId,captured);
-          }]);
-        if(this.nonforcingPinned || !this.indexedJobOwnersConfirmed() || this.unconfirmedJobCallbacks.has(job)){
+        let invoking=true;
+        const ownedCallback=(kind:string,value:unknown,operation:()=>void)=>{
+          if(invoking && !this.nonforcingPinned && !this.stableBoundaryJob(job,envelope,'recovery-'+kind+'-entry')){
+            this.retainNonforcingObservation(jobId,'recovery-'+kind,value);return;
+          }
+          operation();
+          if(invoking && !this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job))envelope=this.terminalJobData(job,jobId);
+        };
+        try {
+          returned=Reflect.apply(recover,upstream,[jobId,
+            (progress:CodexProgress)=>ownedCallback('progress',progress,()=>this.recordProgress(job,progress)),
+            (assignment:UpstreamWorkerAssignment)=>ownedCallback('assignment',assignment,()=>{
+              const captured=this.recordWorkerAssignment(job,assignment);
+              if(captured && !this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job))record(job,captured.threadId,captured);
+            })]);
+        }finally{invoking=false;}
+        if(this.nonforcingPinned || !this.indexedJobOwnersConfirmed() || this.unconfirmedJobCallbacks.has(job) ||
+          !this.stableBoundaryJob(job,envelope,'recovery-return-authority')){
           this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
-          this.retainNonforcingObservation(jobId,'recovery-return',returned);continue;
+          this.retainRecoveryReturn(jobId,returned);continue;
         }
         if(!this.safeAcknowledgementPromise(returned)){
           this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
@@ -2791,6 +2806,16 @@ export class CodexJobRegistry {
       }finally{this.registryCallbacksInFlight--;}
 
     }
+  }
+
+  private retainRecoveryReturn(jobId:string,value:unknown):void {
+    this.retainNonforcingObservation(jobId,'recovery-return',value);
+    // Passive capture only: never assimilate unsupported constructor/species shapes.
+    if(!this.safeAcknowledgementPromise(value,true))return;
+    Reflect.apply(ackPromiseThen,value,[
+      (result:unknown)=>this.retainNonforcingObservation(jobId,'recovery-native-fulfilled',result),
+      (error:unknown)=>this.retainNonforcingObservation(jobId,'recovery-native-rejected',error)
+    ]);
   }
 
   private acknowledgeSettledExecution(job: CodexJob): void {
@@ -2845,17 +2870,17 @@ export class CodexJobRegistry {
     }
   }
 
-  private safeAcknowledgementPromise(value:unknown):boolean {
+  private safeAcknowledgementPromise(value:unknown, observeAfterPin=false):boolean {
     try {
       if(!value || typeof value!=='object' || utilTypes.isProxy(value) || !utilTypes.isPromise(value))return false;
       const own=Object.getOwnPropertyDescriptor(value,'constructor');
-      if(this.nonforcingPinned || own)return false;
+      if((this.nonforcingPinned && !observeAfterPin) || own)return false;
       const prototype=Object.getPrototypeOf(value);
-      if(this.nonforcingPinned || prototype!==ackPromisePrototype)return false;
+      if((this.nonforcingPinned && !observeAfterPin) || prototype!==ackPromisePrototype)return false;
       const constructor=Object.getOwnPropertyDescriptor(ackPromisePrototype,'constructor');
-      if(this.nonforcingPinned || constructor?.value!==ackPromiseConstructor || !Object.hasOwn(constructor,'value'))return false;
+      if((this.nonforcingPinned && !observeAfterPin) || constructor?.value!==ackPromiseConstructor || !Object.hasOwn(constructor,'value'))return false;
       const species=Object.getOwnPropertyDescriptor(ackPromiseConstructor,Symbol.species);
-      return !this.nonforcingPinned && !!species && species.get===ackPromiseSpecies && species.set===undefined && !Object.hasOwn(species,'value');
+      return (!this.nonforcingPinned || observeAfterPin) && !!species && species.get===ackPromiseSpecies && species.set===undefined && !Object.hasOwn(species,'value');
     }catch{return false;}
   }
 

@@ -572,3 +572,21 @@ Validated native returns use captured native Promise operations and an unchanged
 own data descriptor; original getters/setters never receive a post-pin call.
 Raw recovery errors remain retained and are rethrown unchanged. These checks do
 not retire durable writer evidence or grant whole-runtime acceptance.
+
+
+Recovery authority envelopes and passive native rejection capture
+----------------------------------------------------------------
+
+Recovery compares the complete original Job envelope across method lookup,
+authentication and original invocation. Synchronous native progress and assignment
+callbacks may advance that envelope only after their entry still matches; direct
+rewrites cannot be adopted by a later callback. Late normal callbacks keep the
+existing validated lifecycle behavior. Changed receipt or worker authority remains
+UNKNOWN and never produces terminal persistence or ACK.
+
+After pin, a retained valid native Promise may receive only captured intrinsic
+fulfillment/rejection handlers that retain raw observations. Those handlers do no
+state mutation, recovery or ACK. Constructor/species validation remains strict;
+unsupported Promise shapes stay unconfirmed without delegated getters or traps.
+The valid-native rejection path preserves the exact original reason without an
+unhandled event. This does not certify arbitrary malformed Promise producers.
