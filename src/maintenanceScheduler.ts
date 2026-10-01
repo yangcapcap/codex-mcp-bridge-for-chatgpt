@@ -89,7 +89,7 @@ export class StateMaintenanceScheduler {
     const maxDeferMs = configuredMaxDefer === undefined ? undefined : Math.max(0,configuredMaxDefer);
     const shouldDefer = this.options.shouldDefer;
     if (this.nonforcingPinned) {this.pending = false; return;}
-    const defer = !slice && shouldDefer?.call(this.options);
+    const defer = !slice && shouldDefer && Reflect.apply(shouldDefer, this.options, []);
     if (this.nonforcingPinned) {this.pending = false; return;}
     if (defer) {
       this.deferredSince ??= startedAt;
@@ -121,7 +121,7 @@ export class StateMaintenanceScheduler {
       if (!command) {
         const createCommand = this.options.command;
         if (this.nonforcingPinned) return;
-        command = createCommand?.call(this.options,selected) ?? defaultMaintenanceCommand(selected);
+        command = (createCommand ? Reflect.apply(createCommand, this.options, [selected]) : undefined) ?? defaultMaintenanceCommand(selected);
       }
       if (this.nonforcingPinned) return;
       const execute = this.stateService.execute;
@@ -138,7 +138,7 @@ export class StateMaintenanceScheduler {
       committed = true;
       const completed = this.options.completed;
       if (this.nonforcingPinned) return;
-      if (completed?.call(this.options,command,result) !== undefined) this.nonforcingUnknown = true;
+      if (completed && Reflect.apply(completed, this.options, [command,result]) !== undefined) this.nonforcingUnknown = true;
       if (this.nonforcingPinned) return;
       changed = result.changed;
       if (this.nonforcingPinned) return;
@@ -147,7 +147,7 @@ export class StateMaintenanceScheduler {
       if (changed > 0) {
         const changedHook = this.options.changed;
         if (this.nonforcingPinned) return;
-        if (changedHook?.call(this.options) !== undefined) this.nonforcingUnknown = true;
+        if (changedHook && Reflect.apply(changedHook, this.options, []) !== undefined) this.nonforcingUnknown = true;
       }
     } catch (error) {
       failed = true;

@@ -248,7 +248,7 @@ export class ThreadConnectionController {
       if (this.nonforcingPinned) return;
       const protect = this.upstream.protectThreadFromImplicitResume;
       if (this.nonforcingPinned) return;
-      if (protect?.call(this.upstream, threadId) !== undefined) this.nonforcingUnknown = true;
+      if (protect && Reflect.apply(protect, this.upstream, [threadId]) !== undefined) this.nonforcingUnknown = true;
     }
     if (this.nonforcingPinned) return;
     this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
@@ -414,7 +414,7 @@ export class ThreadConnectionController {
     if (this.nonforcingPinned) return;
     const changed = this.options.changed;
     if (this.nonforcingPinned) return;
-    if (changed?.call(this.options) !== undefined) this.nonforcingUnknown = true;
+    if (changed && Reflect.apply(changed, this.options, []) !== undefined) this.nonforcingUnknown = true;
   }
 
   observeNonforcingExit(): ShutdownResult {

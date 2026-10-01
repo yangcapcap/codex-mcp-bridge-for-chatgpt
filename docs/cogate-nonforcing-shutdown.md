@@ -356,3 +356,12 @@ journal untouched and retain uncertainty. These checks also cover page slots and
 release eligibility clocks. Only validated primitive snapshots reach journal
 writes. Root regression results are component evidence; fresh independent review
 and full state/runtime composition remain required.
+
+The rejected `6a5c3a6` admission candidate remains immutable. Its successor uses
+`Reflect.apply` for every captured connection, recovery and maintenance callback;
+it does not look up a callable's configurable `call` property after checking the
+fence. This retains the receiver and arguments while eliminating that second
+executable lookup. Five independent reproductions are copied root regression
+baselines. A revoked discovery Proxy rejected during Promise assimilation is a
+completed discovery failure, not proof of an admitted journal write or a pin.
+This repair still requires a new exact-head independent disposition.

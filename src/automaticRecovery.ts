@@ -328,7 +328,7 @@ export class AutomaticRecoveryController {
     if (this.nonforcingPinned) return;
     const agentForJob = this.options.agentForJob;
     if (this.nonforcingPinned) return;
-    const agentId = agentForJob?.call(this.options, jobId);
+    const agentId = agentForJob ? Reflect.apply(agentForJob, this.options, [jobId]) : undefined;
     if (this.nonforcingPinned) return;
     if (agentId !== undefined && typeof agentId !== "string") {this.nonforcingUnknown = true; return;}
     await this.sweep(jobId, agentId);
@@ -359,7 +359,7 @@ export class AutomaticRecoveryController {
     if (this.nonforcingPinned) return;
     const changed = this.options.changed;
     if (this.nonforcingPinned) return;
-    if (changed?.call(this.options) !== undefined) this.nonforcingUnknown = true;
+    if (changed && Reflect.apply(changed, this.options, []) !== undefined) this.nonforcingUnknown = true;
   }
 
   observeNonforcingExit(): ShutdownResult {
@@ -370,7 +370,7 @@ export class AutomaticRecoveryController {
   private async runSweep(jobId?: string, agentId?: string): Promise<void> {
     const enabled = this.options.enabled;
     if (this.nonforcingPinned) return;
-    if (enabled?.call(this.options) === false || this.nonforcingPinned) return;
+    if ((enabled && Reflect.apply(enabled, this.options, []) === false) || this.nonforcingPinned) return;
     const observedAt = this.now();
     if (this.nonforcingPinned) return;
     this.store.reconcileInterrupted(observedAt);
@@ -395,13 +395,13 @@ export class AutomaticRecoveryController {
         }
         if (this.nonforcingPinned) return;
         const pageLimit = Math.max(1,budget.limits.maxTargets-budget.targets);
-        let page = snapshotOwnArray(pageAgents.call(this.options, this.agentCursor, pageLimit),
+        let page = snapshotOwnArray(Reflect.apply(pageAgents, this.options, [this.agentCursor, pageLimit]),
           () => this.nonforcingPinned, value => typeof value === "string" ? value : undefined);
         if (this.nonforcingPinned) return;
         if (!page) {this.nonforcingUnknown = true; return;}
         if (page.length === 0 && this.agentCursor) {
           this.agentCursor = "";
-          page = snapshotOwnArray(pageAgents.call(this.options, "", pageLimit),
+          page = snapshotOwnArray(Reflect.apply(pageAgents, this.options, ["", pageLimit]),
             () => this.nonforcingPinned, value => typeof value === "string" ? value : undefined);
           if (this.nonforcingPinned) return;
           if (!page) {this.nonforcingUnknown = true; return;}
