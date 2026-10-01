@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retain raw rollback outcomes and unused undo capabilities, and reject Job authority changes made by application, registry or waiter observers before execution acknowledgement.",
+  "breaking": false,
+  "migration": null
+}

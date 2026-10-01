@@ -512,3 +512,15 @@ Job envelope (apart from correlated thread metadata); an ownership change stops
 terminal retry and preserves the original producer outcome. Unconfirmed or pinned
 undo capabilities remain retained and uncalled. None of these checks reverses a
 SQL commit completed before a pin or grants durable writer release.
+
+Observer authority and rollback evidence
+----------------------------------------
+
+Application, registry and waiter observers run with a registered in-flight
+boundary. Their before/after Job envelopes and index identities must agree;
+changed ownership remains UNKNOWN and cannot produce an execution ACK. The
+initial placeholder promise is registered before startup persistence publishes
+its first notification, then replaced only by the original execution promise.
+Unsupported rollback return values are retained before validating callback
+ownership. A failed rollback preflight retains the original uncalled undo
+capability. No callback result or notification constitutes writer retirement.

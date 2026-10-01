@@ -2475,14 +2475,40 @@ export class CodexJobRegistry {
     return () => { this.changeListeners.delete(listener); };
   }
 
+  /** Observers may inspect Jobs, but cannot acquire or replace their authority. */
+  private invokeJobObserver(listener:()=>unknown,kind:string):void {
+    this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
+    const owners=new Map(this.jobs);
+    const before=new Map<CodexJob,CodexJob>();
+    try {
+      for(const [id,job] of owners) {
+        if(this.unconfirmedJobCallbacks.has(job))continue;
+        before.set(job,this.terminalJobData(job,id));
+      }
+      const result=Reflect.apply(listener,undefined,[]);
+      // Preserve unsupported raw returns even if ownership validation fails.
+      if(result!==undefined){this.nonforcingUnknown=true;this.retainNonforcingObservation(kind,'listener-result',result);}
+      if(this.nonforcingPinned)return;
+      let stable=true;
+      for(const [id,job] of owners) {
+        if(this.jobs.get(id)!==job) {
+          this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+          this.retainNonforcingObservation(id,'observer-index-owner',{job,replacement:this.jobs.get(id)});stable=false;
+        }
+        const captured=before.get(job);
+        if(captured&&!this.stableBoundaryJob(job,captured,'observer-job-authority'))stable=false;
+      }
+      for(const [id,job] of this.jobs)if(!owners.has(id)) {
+        this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+        this.retainNonforcingObservation(id,'observer-added-owner',job);stable=false;
+      }
+      if(!stable)throw new Error('STATE_OBSERVER_JOB_AUTHORITY_UNCONFIRMED');
+    }catch(error){this.nonforcingUnknown=true;this.retainNonforcingObservation(kind,'listener-error',error);throw error;}
+    finally{this.registryCallbacksInFlight--;}
+  }
   /** Internal application listener boundary; no MCP/native exposure. */
   publishApplicationChange(listener:()=>unknown):void {
-    this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
-    try {
-      const result=Reflect.apply(listener,undefined,[]);
-      if(result!==undefined){this.nonforcingUnknown=true;this.retainNonforcingObservation('application-listener','listener-result',result);}
-    }catch(error){this.nonforcingUnknown=true;this.retainNonforcingObservation('application-listener','listener-error',error);throw error;}
-    finally{this.registryCallbacksInFlight--;}
+    this.invokeJobObserver(listener,'application-listener');
   }
   /** Register first, then retain a returned cleanup capability if pin reenters. */
   registerApplicationSubscription(register:()=>unknown):(()=>void)|undefined {
@@ -2948,6 +2974,7 @@ export class CodexJobRegistry {
   private setIndexedJob(job: CodexJob): void {
     if (!this.ownedJobIds.has(job)) this.ownedJobIds.set(job,job.jobId);
     if (!this.ownedJobPrototypes.has(job)) this.ownedJobPrototypes.set(job,Object.getPrototypeOf(job));
+    if (!this.ownedJobPromises.has(job)) this.ownJobPromise(job);
     this.jobs.set(this.ownedJobId(job), job);
     const previousAgent = this.indexedJobAgent.get(job.jobId);
     if (previousAgent && previousAgent !== job.agentId) {
@@ -3850,16 +3877,19 @@ export class CodexJobRegistry {
   private invokeTerminalUndo(job:CodexJob,undo:((()=>void)|undefined),jobId:string):void {
     if(!undo)return;
     if(this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)){this.retainNonforcingObservation(jobId,'terminal-undo',undo);return;}
-    const before=this.terminalJobData(job,jobId);
     this.registryCallbacksInFlight++;
+    let invoked=false;
     try {
+      const before=this.terminalJobData(job,jobId);
+      invoked=true;
       const result=Reflect.apply(undo,undefined,[]);
-      if(!this.nonforcingPinned)this.validateCallbackJobOwnership(job,before);
       if(result!==undefined) {
         this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
         this.retainNonforcingObservation(jobId,'terminal-undo-result',result);
       }
+      if(!this.nonforcingPinned)this.validateCallbackJobOwnership(job,before);
     }catch(error){
+      if(!invoked)this.retainNonforcingObservation(jobId,'terminal-undo',undo);
       this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
       this.retainNonforcingObservation(jobId,'terminal-undo-error',error);
     }finally{this.registryCallbacksInFlight--;}
@@ -4931,12 +4961,12 @@ export class CodexJobRegistry {
     this.publishRegistryChanges(effectiveReason,current?.agentId);
     for (const listener of [...(this.waiters.get(jobId) || [])]) {
       if (this.nonforcingPinned) return;
-      listener(effectiveReason);
+      this.invokeJobObserver(()=>Reflect.apply(listener,undefined,[effectiveReason]),'job-waiter');
     }
     if (effectiveReason === "terminal") {
       for (const listener of [...(this.terminalWaiters.get(jobId) || [])]) {
         if (this.nonforcingPinned) return;
-        listener();
+        this.invokeJobObserver(()=>Reflect.apply(listener,undefined,[]),'terminal-waiter');
       }
       if (this.nonforcingPinned) return;
       if (this.observedRunningCount() === 0) {
@@ -4950,25 +4980,14 @@ export class CodexJobRegistry {
     this.publishRegistryChanges(undefined,agentId);
     for (const listener of [...(this.scopeWaiters.get(scopeId) || [])]) {
       if (this.nonforcingPinned) return;
-      listener();
+      this.invokeJobObserver(()=>Reflect.apply(listener,undefined,[]),'scope-waiter');
     }
   }
 
   private publishRegistryChanges(reason?: CodexJobWakeReason, agentId?: string): void {
     for (const listener of this.changeListeners) {
       if (this.nonforcingPinned) return;
-      this.registryCallbacksInFlight++;
-      try {
-        const result = Reflect.apply(listener,undefined,[reason,agentId]);
-        if (result !== undefined) {
-          this.nonforcingUnknown = true;
-          this.retainNonforcingObservation("listener","listener-result",result);
-        }
-      } catch (error) {
-        this.nonforcingUnknown = true;
-        this.retainNonforcingObservation("listener","listener-error",error);
-        throw error;
-      } finally {this.registryCallbacksInFlight--;}
+      this.invokeJobObserver(()=>Reflect.apply(listener,undefined,[reason,agentId]),'registry-listener');
     }
   }
 
