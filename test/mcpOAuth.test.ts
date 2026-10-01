@@ -74,10 +74,20 @@ afterEach(async () => {
 });
 async function close(server: Server) { await new Promise<void>(r => server.close(() => r())); }
 
-async function start(options: { root?: string; sender?: WebhookSender; bearer?: boolean } = {}) {
+async function start(options: { root?: string; sender?: WebhookSender; bearer?: boolean; localMetadata?: boolean } = {}) {
   const root = options.root || await mkdtemp(path.join(tmpdir(), "bridge-oauth-"));
   const state = new BridgeStateStore({ file: path.join(root, "state.sqlite") });
-  const config = loadConfig({ ...(options.bearer ? {} : oauthEnv), CODEX_MCP_BRIDGE_TOKEN: sealingKey, CODEX_MCP_BRIDGE_EVENTS_ENABLED: "1",
+  let metadataPort = 0;
+  if (options.localMetadata) {
+    const reservation = createServer();
+    await new Promise<void>(r => reservation.listen(0, "127.0.0.1", r));
+    metadataPort = (reservation.address() as { port: number }).port;
+    await close(reservation);
+  }
+  const config = loadConfig({ ...(options.bearer ? {} : oauthEnv),
+    ...(options.localMetadata ? { CODEX_MCP_BRIDGE_PORT: String(metadataPort),
+      CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL: `http://127.0.0.1:${metadataPort}/.well-known/oauth-protected-resource/mcp` } : {}),
+    CODEX_MCP_BRIDGE_TOKEN: sealingKey, CODEX_MCP_BRIDGE_EVENTS_ENABLED: "1",
     CODEX_MCP_BRIDGE_ROOTS: root, CODEX_MCP_BRIDGE_STATE_DATABASE_FILE: path.join(root, "state.sqlite") });
   const settings = new UserSettingsStore(config, { stateStore: state });
   if (!options.root) {
@@ -108,7 +118,7 @@ async function start(options: { root?: string; sender?: WebhookSender; bearer?: 
     return { status: 200, body: JSON.stringify(parsed.type === "verification" ? { challenge: parsed.challenge } : {}) };
   });
   const server = createHttpServer(config, upstream, catalog, { stateStore: state, eventWebhookSender: sender, oauthJwksFetch: jwksFetch });
-  await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+  await new Promise<void>(r => server.listen(metadataPort, "127.0.0.1", r));
   const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const f = { root, state, config, settings, upstream, server, provider, baseUrl, deliveries, jwksFetch,
     keyRequests: () => keyRequests, publish: (value: typeof published) => { published = value; },
@@ -149,6 +159,52 @@ async function completed(f: Fixture, jobId: string, token: string) {
 }
 
 describe("MCP OAuth configuration and HTTP discovery", () => {
+  it("allows HTTP metadata only at the exact loopback Bridge binding and known metadata paths", () => {
+    for (const [host, authority] of [["127.0.0.1", "127.0.0.1"], ["localhost", "localhost"], ["::1", "[::1]"]]) {
+      for (const suffix of ["", "/mcp"]) {
+        const url = `http://${authority}:8765/.well-known/oauth-protected-resource${suffix}`;
+        expect(loadConfig({ ...oauthEnv, CODEX_MCP_BRIDGE_HOST: host,
+          CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL: url }).oauth?.resourceMetadataUrl).toBe(url);
+      }
+    }
+    for (const url of [
+      "http://127.0.0.1:8766/.well-known/oauth-protected-resource/mcp",
+      "http://localhost:8765/.well-known/oauth-protected-resource/mcp",
+      "http://127.0.0.2:8765/.well-known/oauth-protected-resource/mcp",
+      "http://192.168.1.1:8765/.well-known/oauth-protected-resource/mcp",
+      "http://public.example:8765/.well-known/oauth-protected-resource/mcp",
+      "http://127.0.0.1:8765/mcp", "http://127.0.0.1:8765/api/settings",
+      "http://127.0.0.1:8765/.well-known/oauth-protected-resource/%6dcp",
+      "http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp?next=/mcp",
+      "http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp#fragment",
+      "http://user:secret@127.0.0.1:8765/.well-known/oauth-protected-resource/mcp",
+      "http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp\n"
+    ]) expect(() => loadConfig({ ...oauthEnv, CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL: url })).toThrow("HTTPS");
+    const local = "http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp";
+    expect(() => loadConfig({ ...oauthEnv, CODEX_MCP_BRIDGE_HOST: "0.0.0.0",
+      CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL: local })).toThrow("HTTPS");
+    for (const suffix of ["ISSUER", "RESOURCE", "JWKS_URI"]) {
+      expect(() => loadConfig({ ...oauthEnv, [`CODEX_MCP_BRIDGE_OAUTH_${suffix}`]: local })).toThrow("HTTPS");
+    }
+  });
+
+  it("advertises its local metadata source to the Tunnel while preserving authentication and Origin checks", async () => {
+    const f = await start({ localMetadata: true });
+    expect(f.config.oauth!.resourceMetadataUrl).toBe(`${f.baseUrl}/.well-known/oauth-protected-resource/mcp`);
+    const response = await fetch(f.baseUrl + "/mcp");
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain(`resource_metadata="${f.config.oauth!.resourceMetadataUrl}"`);
+    const metadata = await fetch(f.config.oauth!.resourceMetadataUrl);
+    expect(metadata.status).toBe(200);
+    expect(await metadata.json()).toMatchObject({ resource: oauthEnv.CODEX_MCP_BRIDGE_OAUTH_RESOURCE,
+      authorization_servers: [oauthEnv.CODEX_MCP_BRIDGE_OAUTH_ISSUER] });
+    expect((await fetch(f.config.oauth!.resourceMetadataUrl, { headers: { origin: "https://foreign.example" } })).status).toBe(403);
+    expect((await rpc(f, "events/list")).response.status).toBe(401);
+    expect((await rpc(f, "events/list", {}, await accessToken({ sub: "another-operator" }))).response.status).toBe(401);
+    expect((await rpc(f, "events/list", {}, await accessToken())).response.status).toBe(200);
+    expect(f.state.listJobs()).toHaveLength(0); expect(f.upstream.calls).toBe(0);
+  });
+
   it("requires the complete explicit profile and rejects No Auth rather than downgrading", () => {
     expect(loadConfig(oauthEnv).oauth?.issuer).toBe(oauthEnv.CODEX_MCP_BRIDGE_OAUTH_ISSUER);
     expect(() => loadConfig({ CODEX_MCP_BRIDGE_OAUTH_ISSUER: oauthEnv.CODEX_MCP_BRIDGE_OAUTH_ISSUER })).toThrow("OAUTH_OPERATOR_SUBJECT");

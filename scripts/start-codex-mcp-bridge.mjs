@@ -14,6 +14,7 @@ import {
   codexProcessEnvironment,
   mcpOAuthRequested,
   mcpOAuthEnvironment,
+  isLoopbackOAuthMetadataUrl,
   CODEX_CHILD_ENV_KEYS,
   loadRuntimeEnvFile,
   resolveRuntimeEnvFile,
@@ -408,7 +409,11 @@ async function startSecureTunnel({ apiKey, tunnelId }) {
     "--control-plane.max-inflight",
     controlPlaneInflight,
     "--log.level",
-    logLevel
+    logLevel,
+    ...(mcpOAuthRequested(process.env) && isLoopbackOAuthMetadataUrl(
+      process.env.CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL ?? process.env.CODEX_GPT_BRIDGE_OAUTH_RESOURCE_METADATA_URL ?? "",
+      host, port
+    ) ? ["--harpoon.allow-plaintext-http=true"] : [])
   ], { env: childEnvironment });
   tunnelState = { ...tunnelState, processRunning: true };
   publishRuntimeStatus();

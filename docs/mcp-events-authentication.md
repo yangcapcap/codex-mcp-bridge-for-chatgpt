@@ -8,13 +8,17 @@ identity provider issues access tokens; the bridge verifies them and binds a
 stable operator principal to Jobs, subscriptions and approved followups.
 
 The bridge now implements an opt-in HTTP access-JWT adapter and authenticated
-Tunnel launcher path, with isolated synthetic acceptance. As of 2026-10-01,
-no Bridge-specific OAuth issuer or access grant has been configured. An isolated
-OpenAI open-source registration/sign-in succeeded, but provider configuration
-for the Bridge resource and actual ChatGPT acceptance remain pending. An opt-in
+Tunnel launcher path, with isolated synthetic acceptance. On 2026-10-01, the
+operator approved a temporary HTTPS authorization-only edge and a dedicated
+test Tunnel/ChatGPT connector. Actual ChatGPT OAuth discovery and connector
+creation succeeded through the product launcher after correcting its private
+metadata source. No composed OpenAI/Bridge access grant or real A/B execution
+has completed: Safari login is waiting for the operator to unlock the Mac.
+The [live discovery audit](audits/2026-10-01-issue-213-tunnel-oauth-discovery.md)
+records the original failure, fix and observed boundary. An opt-in
 [local OpenAI/Bridge authorization prototype](mcp-events-openai-authorization.md)
-now implements the separate token issuer with isolated HTTP integration tests;
-no public HTTPS host has been selected or deployed. Issue #213 stays open. The default
+now implements the separate token issuer with isolated HTTP integration tests.
+No permanent public HTTPS hosting has been selected. Issue #213 stays open. The default
 launcher still uses No Auth, and Events on that connection are denied. Existing
 static-bearer tests and the new JWT/JWKS fixture tests are bridge evidence,
 not evidence of a real ChatGPT login or conversation resume.
@@ -37,7 +41,8 @@ the HTTPS login and token service; for example,
 [Auth0 Universal Login](https://auth0.com/docs/authenticate/login/auth0-universal-login)
 hosts its login pages on the provider's authorization server. Self-hosting an
 identity provider would instead require operating that public HTTPS service.
-Neither hosting option has been selected or provisioned.
+The approved trial uses a temporary Cloudflare Quick Tunnel for only the
+separate local authorization service; it is not a permanent hosting decision.
 
 The [Auth0 setup runbook](mcp-events-auth0.md) provides a concrete managed
 provider candidate, including resource compatibility, operator permissions,
@@ -171,15 +176,19 @@ working configuration:
 CODEX_MCP_BRIDGE_NO_AUTH=0
 CODEX_MCP_BRIDGE_OAUTH_ISSUER=<exact-provider-issuer>
 CODEX_MCP_BRIDGE_OAUTH_RESOURCE=<canonical-https-mcp-resource>
-CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL=<actual-https-metadata-url>
+CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL=http://127.0.0.1:8876/.well-known/oauth-protected-resource/mcp
 CODEX_MCP_BRIDGE_OAUTH_JWKS_URI=<provider-https-jwks-uri>
 CODEX_MCP_BRIDGE_OAUTH_OPERATOR_SUBJECT=<verified-provider-subject>
 CODEX_MCP_BRIDGE_EVENTS_ENABLED=1
 CODEX_MCP_BRIDGE_TOKEN=<stable-installation-secret-of-at-least-32-bytes>
 ```
 
-Do not normalize the issuer or subject. URLs must use HTTPS without credentials,
-query, fragment or unescaped whitespace. Obtain the subject through the
+Do not normalize the issuer or subject. The issuer, resource and JWKS must use
+HTTPS without credentials, query, fragment or unescaped whitespace. Only the
+protected-resource metadata URL may use HTTP: it must match the Bridge's exact
+loopback binding and port and one of the two metadata paths below. The example
+uses the HTTP launcher's default port; change it together with `--port`.
+Public HTTPS metadata remains supported. Obtain the subject through the
 provider's authenticated operator account, not ChatGPT request metadata.
 `CODEX_MCP_BRIDGE_TOKEN` is the stable callback-encryption secret in OAuth mode;
 submitting it to `/mcp` does not authenticate. Retain it separately for backups,
@@ -197,8 +206,23 @@ The native app has no new provider-configuration form in this change.
 The bridge serves metadata at both
 `/.well-known/oauth-protected-resource` and
 `/.well-known/oauth-protected-resource/mcp`, retaining Host/Origin checks.
-Capture how the actual Tunnel publishes or forwards these paths before filling
-the external metadata URL. Only `server/discover` and `tools/list` are public
+For a private HTTP Tunnel, advertise this same-origin loopback metadata source
+in the Bearer challenge. The launcher then enables
+`--harpoon.allow-plaintext-http=true` for this validated configuration only.
+With tunnel-client 0.0.14, private metadata is discovered and classified for
+Harpoon routing; off-origin public metadata alone does not register a private
+OAuth metadata target. A healthy tunnel or successful doctor probe therefore
+does not establish ChatGPT OAuth discovery. Verify the actual connection UI.
+Do not forward Harpoon's internal control MCP requests to the Bridge or weaken
+private-host registration restrictions. See the official
+[Tunnel connectors](https://github.com/openai/tunnel-client/blob/v0.0.14/docs/connectors.md)
+and [configuration](https://github.com/openai/tunnel-client/blob/v0.0.14/docs/configuration.md).
+
+Copy the resource identifier that ChatGPT actually displays after discovery;
+it may be the canonical Tunnel endpoint. Configure that exact value as the
+provider audience and Bridge resource, rather than substituting the local
+source URL or inventing a public resource path. The authorization service
+remains separately reachable over public HTTPS. Only `server/discover` and `tools/list` are public
 without a token. Each tool advertises OAuth `securitySchemes` at the HTTP
 descriptor and in `_meta`; unauthenticated tool calls return linking metadata
 without running a handler. Other protected requests return a `401` Bearer

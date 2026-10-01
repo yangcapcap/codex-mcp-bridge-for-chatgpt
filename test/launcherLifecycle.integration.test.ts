@@ -18,7 +18,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const launcherPath = path.join(repositoryRoot, "scripts", "start-codex-mcp-bridge.mjs");
 
 describe("managed launcher lifecycle", () => {
-  it("starts authenticated HTTP without downgrading and rebuilds the profile when OAuth identity changes", async () => {
+  it.each(["https", "loopback"])("starts authenticated HTTP with %s metadata and rebuilds the profile when OAuth identity changes", async metadataMode => {
     const root = mkdtempSync(path.join(tmpdir(), "codex-launcher-oauth-"));
     const envFile = path.join(root, "config", ".env");
     const profileFile = path.join(root, "profile.yaml");
@@ -30,13 +30,20 @@ describe("managed launcher lifecycle", () => {
     };
     const initializationLog = path.join(root, "init.log");
     const controlPlaneReadyFile = path.join(root, "ready");
+    const portServer = createServer();
+    await new Promise<void>(r => portServer.listen(0, "127.0.0.1", r));
+    const port = (portServer.address() as { port: number }).port;
+    await new Promise<void>(r => portServer.close(() => r()));
+    const metadataUrl = metadataMode === "loopback"
+      ? `http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`
+      : "https://bridge.fixture.example/.well-known/oauth-protected-resource/mcp";
     mkdirSync(path.dirname(envFile), { recursive: true, mode: 0o700 });
     const writeEnvironment = (subject: string) => writeFileSync(envFile, [
       "CONTROL_PLANE_API_KEY=sk-launcher-test-1234567890123456",
       "CONTROL_PLANE_TUNNEL_ID=tunnel_llllllllllllllllllllllllllllllll",
       "CODEX_MCP_BRIDGE_OAUTH_ISSUER=https://id.fixture.example/tenant/",
       "CODEX_MCP_BRIDGE_OAUTH_RESOURCE=https://bridge.fixture.example/mcp",
-      "CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL=https://bridge.fixture.example/.well-known/oauth-protected-resource/mcp",
+      `CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL=${metadataUrl}`,
       "CODEX_MCP_BRIDGE_OAUTH_JWKS_URI=https://id.fixture.example/keys",
       `CODEX_MCP_BRIDGE_OAUTH_OPERATOR_SUBJECT=${subject}`,
       "CODEX_MCP_BRIDGE_TOKEN=installation-sealing-secret-is-not-an-access-token",
@@ -49,10 +56,6 @@ describe("managed launcher lifecycle", () => {
     writeExecutable(paths.fakeCodex, "process.exit(2);");
     writeExecutable(paths.fakeTunnel, fakeTunnelSource({ profileFile, initializationLog, controlPlaneReadyFile,
       shutdownLog: path.join(root, "shutdown.log"), codexEnvironmentLog: path.join(root, "environment.json") }));
-    const portServer = createServer();
-    await new Promise<void>(r => portServer.listen(0, "127.0.0.1", r));
-    const port = (portServer.address() as { port: number }).port;
-    await new Promise<void>(r => portServer.close(() => r()));
     const checkWhileConnected = async () => {
       const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`);
       expect(metadata.status).toBe(200);
@@ -60,9 +63,11 @@ describe("managed launcher lifecycle", () => {
       const denied = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: "probe", method: "events/list", params: {} }) });
       expect(denied.status).toBe(401);
-      expect(denied.headers.get("www-authenticate")).toContain("oauth-protected-resource/mcp");
+      expect(denied.headers.get("www-authenticate")).toContain(metadataUrl);
     };
     await runLauncher({ ...paths, port, checkWhileConnected });
+    const runArguments = JSON.parse(readFileSync(path.join(root, "environment.json.tunnel-run-args.json"), "utf8"));
+    expect(runArguments.includes("--harpoon.allow-plaintext-http=true")).toBe(metadataMode === "loopback");
     expect(readFileSync(profileFile, "utf8")).toContain("sample: sample_mcp_with_dcr");
     const firstIdentity = JSON.parse(readFileSync(paths.profileMetadataFile, "utf8")).identity;
     expect(firstIdentity.authentication).toMatch(/^[a-f0-9]{64}$/);
@@ -282,6 +287,7 @@ if (args[0] === "health") {
   }
 }
 if (args[0] === "run") {
+  writeFileSync(${JSON.stringify(paths.codexEnvironmentLog + ".tunnel-run-args.json")}, JSON.stringify(args));
   const healthFile = option("--health.url-file");
   const pidFile = option("--pid.file");
   writeFileSync(healthFile, "http://127.0.0.1:43123\\n", { mode: 0o600 });

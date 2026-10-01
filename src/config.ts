@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { validateModelPolicy, type ModelChoice } from "./modelPolicy.js";
 import { PRODUCT_INFO } from "./productInfo.js";
 import { parseJsonTextStrict } from "./textIntegrity.js";
-import { mcpOAuthRequested } from "../scripts/runtime-env.mjs";
+import { isLoopbackOAuthMetadataUrl, mcpOAuthRequested } from "../scripts/runtime-env.mjs";
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type ApprovalPolicy = "untrusted" | "on-request" | "never";
@@ -87,7 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   const port = parsePort(read("PORT") || "8765");
   const token = normalizeOptional(read("TOKEN"));
   const noAuth = parseBool(read("NO_AUTH"));
-  const oauth = mcpOAuthRequested(env) ? loadMcpOAuthConfig(read, noAuth) : undefined;
+  const oauth = mcpOAuthRequested(env) ? loadMcpOAuthConfig(read, noAuth, host, port) : undefined;
   const allowedHosts = parseAllowedHosts(read("ALLOWED_HOSTS"));
   const allowedOrigins = parseAllowedHosts(read("ALLOWED_ORIGINS"));
   const defaultBackend = parseBackendKind(read("DEFAULT_BACKEND") || "app-server");
@@ -280,7 +280,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   };
 }
 
-function loadMcpOAuthConfig(read: (name: string) => string | undefined, noAuth: boolean): McpOAuthConfig {
+function loadMcpOAuthConfig(read: (name: string) => string | undefined, noAuth: boolean, host: string, port: number): McpOAuthConfig {
   if (noAuth) throw new Error("MCP OAuth cannot be combined with CODEX_MCP_BRIDGE_NO_AUTH=1, including stdio.");
   const required = (name: string) => {
     const value = read(`OAUTH_${name}`);
@@ -299,7 +299,10 @@ function loadMcpOAuthConfig(read: (name: string) => string | undefined, noAuth: 
   };
   const operatorSubject = required("OPERATOR_SUBJECT");
   if (operatorSubject.length > 1_024 || /[\u0000-\u001f\u007f]/u.test(operatorSubject)) throw new Error("OAUTH_OPERATOR_SUBJECT must be a bounded provider-issued subject.");
-  return { issuer: https("ISSUER"), resource: https("RESOURCE"), resourceMetadataUrl: https("RESOURCE_METADATA_URL"),
+  const metadataUrl = required("RESOURCE_METADATA_URL");
+  const resourceMetadataUrl = isLoopbackOAuthMetadataUrl(metadataUrl, host, port)
+    ? metadataUrl : https("RESOURCE_METADATA_URL");
+  return { issuer: https("ISSUER"), resource: https("RESOURCE"), resourceMetadataUrl,
     jwksUri: https("JWKS_URI"), operatorSubject };
 }
 

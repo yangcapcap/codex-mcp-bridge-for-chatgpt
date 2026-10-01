@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Restore authenticated ChatGPT Tunnel discovery through the Bridge's own loopback OAuth metadata route.",
+  "breaking": false,
+  "migration": null
+}

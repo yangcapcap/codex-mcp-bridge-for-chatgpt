@@ -4,8 +4,12 @@
 
 On 2026-10-01, the operator selected **local implementation and isolated
 verification**, with no public HTTPS domain/server. This opt-in prototype
-implements the missing Bridge token issuer. It is not deployed, selected by the
-default launcher, connected to the installed app or accepted by actual ChatGPT.
+implements the missing Bridge token issuer. The operator subsequently approved
+a temporary authorization-only HTTPS trial and a separate ChatGPT connector.
+Actual ChatGPT OAuth discovery and connector creation now succeed through the
+product launcher; composed login awaits a manual Mac unlock for Safari. No
+Bridge grant, actual Events resume or A/B execution has completed. The service
+is not selected by the default launcher or connected to the installed app.
 [Issue #213](https://github.com/menaje/codex-mcp-bridge-for-chatgpt/issues/213)
 remains open. The [successful OpenAI registration trial](mcp-events-authentication.md#openai-sign-in-trial)
 is evidence of identity sign-in, not this composed connector flow.
@@ -168,8 +172,12 @@ When an approved HTTPS deployment is available, configure the existing
 [Bridge OAuth adapter](mcp-events-authentication.md#configure-the-opt-in-adapter)
 with the service's exact issuer, `issuer + "/oauth/jwks"`, canonical resource
 and subject `bridge-operator-<operatorIdentityHash>`. Capture the actual
-protected-resource metadata URL through Tunnel. Keep the installation sealing
-key stable and use a new authenticated A for acceptance; existing No Auth Jobs
+resource and callback from ChatGPT's successful OAuth discovery. For the
+private HTTP Tunnel, advertise the Bridge's own loopback protected-resource
+metadata route; the [adapter configuration](mcp-events-authentication.md#configure-the-opt-in-adapter)
+describes the exact host/port boundary and conditional Harpoon flag. The public
+authorization issuer is separate from this private metadata source. Keep the
+installation sealing key stable and use a new authenticated A for acceptance; existing No Auth Jobs
 do not acquire OAuth ownership. Expose only the authorization listener's routes
 at the approved HTTPS edge, preserving Host, cookies and POST Origin. The
 OpenAI callback listener and MCP server remain private.
@@ -178,6 +186,8 @@ OpenAI callback listener and MCP server remain private.
 
 The [implementation audit](audits/2026-10-01-issue-213-openai-authorization.md)
 records locally executed checks, retry history and the compiled CLI smoke check.
+The [live discovery audit](audits/2026-10-01-issue-213-tunnel-oauth-discovery.md)
+records the subsequent approved HTTPS/Tunnel trial and current login boundary.
 
 The isolated tests use a local HTTP OpenAI/JWKS fixture, real authorization
 handlers, actual Bridge HTTP MCP dispatch and a temporary SQLite database.

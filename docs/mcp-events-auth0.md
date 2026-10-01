@@ -64,8 +64,8 @@ This setup uses Auth0's hosted login; its sample MCP application, Token Vault,
 On-Behalf-Of exchange and a separately deployed application are unnecessary
 for the bridge's existing JWT verifier.
 
-1. Capture the intended ChatGPT workspace/Tunnel, canonical HTTPS MCP resource,
-   external protected-resource metadata URL and exact callback from the actual
+1. Capture the intended ChatGPT workspace/Tunnel, canonical HTTPS MCP resource
+   and exact callback from the actual
    connection setup. These deployment-specific values remain pending. Do not
    copy the localhost resource in a provider sample or construct a Tunnel URL.
 2. In **Settings > Advanced**, enable **Resource Parameter Compatibility
@@ -126,7 +126,7 @@ Record the actual values privately:
 | `CODEX_MCP_BRIDGE_OAUTH_ISSUER` | Exact discovery issuer |
 | `CODEX_MCP_BRIDGE_OAUTH_JWKS_URI` | Discovery's HTTPS signing-key endpoint |
 | `CODEX_MCP_BRIDGE_OAUTH_RESOURCE` | Same canonical HTTPS value as the Auth0 API Identifier and ChatGPT `resource` |
-| `CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL` | Metadata URL verified through the intended Tunnel connection |
+| `CODEX_MCP_BRIDGE_OAUTH_RESOURCE_METADATA_URL` | Bridge's exact loopback metadata source for the private HTTP Tunnel; see the [binding requirements](mcp-events-authentication.md#configure-the-opt-in-adapter) |
 | `CODEX_MCP_BRIDGE_OAUTH_OPERATOR_SUBJECT` | Operator's verified access-token subject |
 
 Use `NO_AUTH=0` and `EVENTS_ENABLED=1` with the full Bridge prefix. Keep a stable

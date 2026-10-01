@@ -28,6 +28,17 @@ export function mcpOAuthRequested(environment) {
   ));
 }
 
+/** Only this Bridge's public, read-only metadata may use loopback HTTP. */
+export function isLoopbackOAuthMetadataUrl(value, host, port) {
+  const binding = host.replace(/^\[|\]$/gu, "");
+  if (!["127.0.0.1", "localhost", "::1"].includes(binding) || /[\s"\\<>]/u.test(value)) return false;
+  let url;
+  try { url = new URL(value); } catch { return false; }
+  return url.protocol === "http:" && !url.username && !url.password && !url.search && !url.hash &&
+    url.hostname.replace(/^\[|\]$/gu, "") === binding && Number(url.port || 80) === Number(port) &&
+    ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"].includes(url.pathname);
+}
+
 export function mcpOAuthEnvironment(environment) {
   const selected = {};
   for (const prefix of ["CODEX_MCP_BRIDGE_", "CODEX_GPT_BRIDGE_"]) {
