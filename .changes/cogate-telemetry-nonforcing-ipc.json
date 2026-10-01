@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Adapt the private telemetry child to generation-bound nonforcing receipts with actual owned exit and retained unconfirmed diagnostic delivery evidence.",
+  "breaking": false,
+  "migration": null
+}

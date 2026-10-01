@@ -251,6 +251,21 @@ and cannot resume force recovery. It still needs actual-host validation and a
 new independent review. State/telemetry and complete runtime/launcher adaptation
 remain pending. It does not enable a production policy switch.
 
+### Pending telemetry private IPC adaptation
+
+The telemetry controller captures a private spawn UUID and the child generation
+advertised at startup. Explicit nonforcing close pins the original owned child,
+stops new telemetry admission, restart, drop retry and force continuations, and
+retains queue, in-flight delivery IDs, drop counters and byte accounting. Late
+ordinary ACK and send-error callbacks cannot erase this unconfirmed evidence.
+The owner closes its own SQLite connection before a strict resource receipt;
+fresh observation checks retained closure state without retrying resource close.
+A closure error remains UNKNOWN. Receipt write/finalization and actual original
+owned-child exit are required before EXIT. Unsent diagnostics stay unconfirmed;
+EXIT describes resource/process closure and does not certify their persistence.
+Existing ordinary diagnostic flush/recovery remains the default. This draft still
+requires actual-host verification and a new independent exact-head review and
+does not expose a production shutdown policy switch.
 The private owned-child controller retains any observed PID identity mismatch
 as sticky UNKNOWN, including after the numeric PID field is restored. This
 invalidates cached final receipts for current observations and ordinary close
