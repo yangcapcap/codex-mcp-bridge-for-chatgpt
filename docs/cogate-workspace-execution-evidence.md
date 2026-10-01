@@ -6,6 +6,10 @@ component. It imports no old SDK, pool, CLI, native adapter or state database.
 The original `ManagedExecution` regression assertions are retained, and its
 mutable state/helpers use ECMAScript private fields.
 
+Turn status, item status and items-view enums require their original string
+type. Coercible arrays/objects are rejected, including a command whose array
+status would otherwise evade the completed-command zero-exit-code check.
+
 The execution owner must establish a binding from the admitted Workspace, Job,
 Activity, Agent, scope, current execution-envelope reference and actual worker
 assignment. This component receives serialized, strictly parsed JSON events with

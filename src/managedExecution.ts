@@ -55,8 +55,8 @@ export class ManagedExecution {
     if (this.#sealed) this.block();
     this.#sealed = true;
     if (this.#approvals.size) this.block();
-    if (!["completed", "failed", "interrupted"].includes(String(turn.status)) ||
-        (turn.itemsView !== undefined && !["full", "summary"].includes(String(turn.itemsView))) || !Array.isArray(turn.items)) this.block();
+    if (typeof turn.status !== "string" || !["completed", "failed", "interrupted"].includes(turn.status) ||
+        (turn.itemsView !== undefined && (typeof turn.itemsView !== "string" || !["full", "summary"].includes(turn.itemsView))) || !Array.isArray(turn.items)) this.block();
     const terminal = new Map<string, Item>();
     for (const value of Array.isArray(turn.items) ? turn.items : []) {
       if (!item(value) || terminal.has(value.id)) { this.block(); continue; }
@@ -106,10 +106,10 @@ export class ManagedExecution {
     if (value.type === "commandExecution") {
       if (this.#declined(value)) return true;
       return typeof value.command === "string" && typeof value.cwd === "string" &&
-        ["completed", "failed"].includes(String(value.status)) && Number.isInteger(value.exitCode) &&
+        typeof value.status === "string" && ["completed", "failed"].includes(value.status) && Number.isInteger(value.exitCode) &&
         (value.status !== "completed" || value.exitCode === 0);
     }
-    if (value.type === "fileChange") return ["completed", "failed", "declined"].includes(String(value.status));
+    if (value.type === "fileChange") return typeof value.status === "string" && ["completed", "failed", "declined"].includes(value.status);
     // 0.153.3 functionCallOutput has no execution status. It cannot establish
     // completion of code-mode cells or deferred tools. Unsupported output-only
     // execution retains the lease; V1 keeps the native shell host enabled with code_mode/code_mode_only off.
