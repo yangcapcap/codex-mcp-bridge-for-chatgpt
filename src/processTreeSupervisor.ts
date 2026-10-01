@@ -267,6 +267,9 @@ export class SupervisedProcessTreeRegistry {
   /** Exact already retained tree only. This is local process evidence, not an
    * owner/generation receipt or proof that all other workers have exited. */
   observeNonforcingTreeExit(identity: JsonRpcProcessIdentity, timeoutMs = 6000): Promise<ShutdownResult> {
+    // Freeze eligibility before descriptor/proxy traps can reenter registration
+    // or install a fence. The tree objects remain the original retained ledger.
+    const eligible=this.nonforcingEvidence ? new Map(this.nonforcingEvidence) : undefined;
     let retained:SupervisedProcessTree|undefined;
     try {
       if(identity && typeof identity==="object") {
@@ -276,7 +279,7 @@ export class SupervisedProcessTreeRegistry {
           const root:JsonRpcProcessIdentity={pid:d.pid.value as number,
             processGroupId:d.processGroupId.value as number|null};
           validateRootIdentity(root);
-          retained=this.nonforcingEvidence?.get(supervisedProcessKey(root));
+          retained=eligible?.get(supervisedProcessKey(root));
         }
       }
     } catch { /* Malformed correlation grants no absence proof. */ }

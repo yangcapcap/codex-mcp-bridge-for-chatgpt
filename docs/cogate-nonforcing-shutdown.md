@@ -151,3 +151,8 @@ force-history uncertainty, partial ledgers and birth observations. The result
 counts only that tree's observed survivors; it does not prove all other workers
 exited or bind a worker generation. An execution supervisor still needs trusted
 spawn-time association and a separate all-tree check before whole-owner exit.
+
+The eligible pinned-tree map is captured before inspecting caller descriptors.
+A Proxy trap that registers another tree or first installs the pin cannot make
+that new evidence eligible for the observation already in progress. Original
+retained tree objects still supply serialized lifetime/history observations.
