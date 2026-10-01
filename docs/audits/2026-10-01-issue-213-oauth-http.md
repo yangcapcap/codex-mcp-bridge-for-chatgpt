@@ -82,3 +82,10 @@ The installed app, operational database, authentication and Tunnel settings
 were not changed.
 Actual ChatGPT login, event delivery, conversation resume, GPT result review,
 upper Chat model/Pro behavior and B execution remain unverified.
+
+## Subsequent correction
+
+Review of `0eafc8f` found stale delivery/renewal writes and JWKS outages being
+reported as invalid login. The original test result above did not cover these
+conditions. Their reproduction, correction and later validation are recorded
+in the [delivery/JWKS regression audit](2026-10-01-issue-213-delivery-races.md).

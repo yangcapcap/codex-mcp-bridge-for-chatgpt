@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Document managed Auth0 setup choices for the private MCP Events acceptance trial.",
+  "breaking": false,
+  "migration": null
+}

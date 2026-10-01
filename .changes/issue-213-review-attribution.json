@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Correct ChatGPT review attribution and prioritize the predefined OAuth login trial.",
+  "breaking": false,
+  "migration": null
+}

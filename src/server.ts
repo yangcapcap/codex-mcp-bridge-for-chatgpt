@@ -576,7 +576,14 @@ async function handleHttpRequest(
     return;
   }
   if (!validateHost(req, res) || !validateOrigin(req, res)) return;
-  const oauthAuth = oauthVerifier ? await oauthVerifier.authenticate(req.headers.authorization) : undefined;
+  const oauthResult = oauthVerifier ? await oauthVerifier.authenticate(req.headers.authorization) : undefined;
+  if (oauthResult?.status === "unavailable") {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("retry-after", "5");
+    writeJson(res, 503, { error: "authentication_unavailable", retryable: true });
+    return;
+  }
+  const oauthAuth = oauthResult?.status === "authenticated" ? oauthResult.authInfo : undefined;
   if (!oauthVerifier && !isAuthorized(req.headers.authorization, config)) {
     writeJson(res, 401, { error: "unauthorized" });
     return;

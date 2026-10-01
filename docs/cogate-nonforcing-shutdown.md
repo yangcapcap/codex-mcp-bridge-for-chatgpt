@@ -146,29 +146,6 @@ reconstruct an escaped descendant that was never captured, so it does not clear
 this UNKNOWN. Transport prohibition still pins immediately; no wait for the
 registration callback can defer or reopen ordinary force recovery.
 
-Scoped tree observation copies an exact PID/original-group selector before any
-queue yield and requires that tree to already exist in the pinned ledger. A
-missing selector, later registration or malformed data cannot approve absence.
-It reads that retained tree in the same serialized registry, preserving active
-force-history uncertainty, partial ledgers and birth observations. The result
-counts only that tree's observed survivors; it does not prove all other workers
-exited or bind a worker generation. An execution supervisor still needs trusted
-spawn-time association and a separate all-tree check before whole-owner exit.
-
-The local worker supervisor never adopts a caller-supplied shutdown binding as
-spawn evidence. It requires an exact previously registered binding with a
-completed birth observation, shares the original registry fence, and returns
-only that worker tree's correlated receipt. Pending/failed/late registrations,
-owner/generation disagreement, reused numeric roots and callback association
-faults retain uncertainty. At most 4096 historical associations are retained;
-exceeding that bound keeps UNKNOWN while preserving the registry evidence.
-These callbacks do not authenticate parent IPC or enable full nonforcing close.
-
-The eligible pinned-tree map is captured before inspecting caller descriptors.
-A Proxy trap that registers another tree or first installs the pin cannot make
-that new evidence eligible for the observation already in progress. Original
-retained tree objects still supply serialized lifetime/history observations.
-
 The retained execution peer has a synchronous local nonforcing fence. It freezes
 an already authenticated owner generation/PID and controller ID, drops unsent
 ordinary requests with explicit delivery errors, prevents new owner launches and
@@ -191,6 +168,29 @@ the queue. Caller mutation, accessors and `toJSON` cannot change the transmitted
 representation after acceptance. An ordinary serialization that reentrantly
 installs the nonforcing fence is rejected before enqueueing. Prior serialized
 ordinary shutdown history remains unknown even after actual owned-child exit.
+
+Scoped tree observation copies an exact PID/original-group selector before any
+queue yield and requires that tree to already exist in the pinned ledger. A
+missing selector, later registration or malformed data cannot approve absence.
+It reads that retained tree in the same serialized registry, preserving active
+force-history uncertainty, partial ledgers and birth observations. The result
+counts only that tree's observed survivors; it does not prove all other workers
+exited or bind a worker generation. An execution supervisor still needs trusted
+spawn-time association and a separate all-tree check before whole-owner exit.
+
+The local worker supervisor never adopts a caller-supplied shutdown binding as
+spawn evidence. It requires an exact previously registered binding with a
+completed birth observation, shares the original registry fence, and returns
+only that worker tree's correlated receipt. Pending/failed/late registrations,
+owner/generation disagreement, reused numeric roots and callback association
+faults retain uncertainty. At most 4096 historical associations are retained;
+exceeding that bound keeps UNKNOWN while preserving the registry evidence.
+These callbacks do not authenticate parent IPC or enable full nonforcing close.
+
+The eligible pinned-tree map is captured before inspecting caller descriptors.
+A Proxy trap that registers another tree or first installs the pin cannot make
+that new evidence eligible for the observation already in progress. Original
+retained tree objects still supply serialized lifetime/history observations.
 
 ### Authenticated execution-owner shutdown IPC
 
@@ -223,6 +223,13 @@ new independent exact-head review before integration and final acceptance. The
 local tests cover correlation, real owned exit, retained writer evidence, prior
 force history, serialization reentrancy and an observed detached descendant.
 
+The enclosing execution owner refreshes a pool TIMEOUT after the pool's concurrent
+transport/tree close has settled. The lower pool receipt is retained unchanged;
+the owner uses a fresh bounded read-only pool observation for its own receipt.
+This avoids reporting an early live-worker snapshot after actual owned-worker
+exit. It preserves initial UNKNOWN and still reports a surviving detached child.
+Finalization and controller actual owned-exit checks remain mandatory.
+
 ### Pending private Node IPC child controller
 
 `OwnedProcessShutdown` is a reusable controller for a directly spawned, retained
@@ -243,12 +250,6 @@ disconnection. Parent timers and late replies retain unconfirmed request evidenc
 and cannot resume force recovery. It still needs actual-host validation and a
 new independent review. State/telemetry and complete runtime/launcher adaptation
 remain pending. It does not enable a production policy switch.
-The enclosing execution owner refreshes a pool TIMEOUT after the pool's concurrent
-transport/tree close has settled. The lower pool receipt is retained unchanged;
-the owner uses a fresh bounded read-only pool observation for its own receipt.
-This avoids reporting an early live-worker snapshot after actual owned-worker
-exit. It preserves initial UNKNOWN and still reports a surviving detached child.
-Finalization and controller actual owned-exit checks remain mandatory.
 
 ### Pending telemetry private IPC adaptation
 

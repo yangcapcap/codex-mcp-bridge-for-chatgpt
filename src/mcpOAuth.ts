@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
+import { createRemoteJWKSet, customFetch, errors, jwtVerify } from "jose";
 import type { ServerContext } from "@modelcontextprotocol/server";
 import type { McpOAuthConfig } from "./config.js";
 
@@ -7,6 +7,12 @@ export const MCP_OAUTH_SCOPES = ["bridge"];
 const MAX_TOKEN_BYTES = 16_384;
 const MAX_JWKS_BYTES = 128 * 1_024;
 export type McpAuthInfo = NonNullable<NonNullable<ServerContext["http"]>["authInfo"]>;
+export type McpOAuthAuthentication =
+  | { status: "authenticated"; authInfo: McpAuthInfo }
+  | { status: "invalid" }
+  | { status: "unavailable" };
+
+class VerificationUnavailable extends Error {}
 
 export function mcpOAuthPrincipal(config: McpOAuthConfig): string {
   return "bridge-oauth-" + createHash("sha256").update(JSON.stringify([
@@ -23,7 +29,7 @@ export function oauthRequiredResult(config: McpOAuthConfig) {
     _meta: { "mcp/www_authenticate": [oauthChallenge(config)] } };
 }
 
-/** One shared verifier/cache per HTTP runtime. Tokens and signing keys never enter SQLite. */
+/** One shared verifier/cache per HTTP runtime. OAuth tokens and JWT keys never enter SQLite. */
 export class McpOAuthVerifier {
   private readonly keys;
   constructor(private readonly config: McpOAuthConfig, fetchJwks: typeof fetch = fetch) {
@@ -52,25 +58,34 @@ export class McpOAuthVerifier {
     });
   }
 
-  async authenticate(header: string | undefined): Promise<McpAuthInfo | undefined> {
-    if (!header || header.length > MAX_TOKEN_BYTES || !/^Bearer [A-Za-z0-9._-]+$/u.test(header)) return undefined;
+  async authenticate(header: string | undefined): Promise<McpOAuthAuthentication> {
+    if (!header || header.length > MAX_TOKEN_BYTES || !/^Bearer [A-Za-z0-9._-]+$/u.test(header)) return { status: "invalid" };
     const token = header.slice(7);
     try {
-      const { payload } = await jwtVerify(token, this.keys, {
+      const { payload } = await jwtVerify(token, async (header, jws) => {
+        try { return await this.keys(header, jws); }
+        catch (error) {
+          // A usable key set can reject an unknown key. Keep JOSE's multiple-key
+          // iteration intact. Fetch, parsing and trusted-key failures instead
+          // mean verification could not finish, not that login was invalid.
+          if (error instanceof errors.JWKSNoMatchingKey || error instanceof errors.JWKSMultipleMatchingKeys) throw error;
+          throw new VerificationUnavailable();
+        }
+      }, {
         issuer: this.config.issuer, audience: this.config.resource, subject: this.config.operatorSubject,
         algorithms: ["RS256", "PS256", "ES256", "EdDSA"], requiredClaims: ["exp", "sub", "scope"]
       });
       if (!Number.isSafeInteger(payload.exp) || payload.exp! <= Date.now() / 1_000 || payload.exp! > 8.64e12 ||
-        payload.token_use === "id" || typeof payload.scope !== "string") return undefined;
+        payload.token_use === "id" || typeof payload.scope !== "string") return { status: "invalid" };
       const scopes = payload.scope.split(/\s+/u).filter(Boolean);
-      if (!MCP_OAUTH_SCOPES.every(scope => scopes.includes(scope))) return undefined;
+      if (!MCP_OAUTH_SCOPES.every(scope => scopes.includes(scope))) return { status: "invalid" };
       const client = payload.client_id || payload.azp;
-      return { token, clientId: typeof client === "string" ? client : "oauth-client", scopes,
+      return { status: "authenticated", authInfo: { token, clientId: typeof client === "string" ? client : "oauth-client", scopes,
         expiresAt: payload.exp, resource: new URL(this.config.resource),
-        extra: { bridgeMcpPrincipal: mcpOAuthPrincipal(this.config) } };
-    } catch {
+        extra: { bridgeMcpPrincipal: mcpOAuthPrincipal(this.config) } } };
+    } catch (error) {
       // Do not reveal claims, token bytes, URLs, key material or verifier diagnostics.
-      return undefined;
+      return { status: error instanceof VerificationUnavailable ? "unavailable" : "invalid" };
     }
   }
 }

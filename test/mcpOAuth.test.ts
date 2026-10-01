@@ -89,9 +89,12 @@ async function start(options: { root?: string; sender?: WebhookSender; bearer?: 
   const deliveries: any[] = [];
   let keyRequests = 0;
   let published = [publicKeys[0]];
+  let providerUnavailable: false | "http" | "network" = false;
   const provider = createServer((req, res) => {
     keyRequests++;
     res.setHeader("content-type", "application/json");
+    if (providerUnavailable === "network") { req.socket.destroy(); return; }
+    if (providerUnavailable === "http") { res.statusCode = 503; res.end("private provider diagnostics"); return; }
     res.end(JSON.stringify({ keys: published }));
   });
   await new Promise<void>(r => provider.listen(0, "127.0.0.1", r));
@@ -108,7 +111,8 @@ async function start(options: { root?: string; sender?: WebhookSender; bearer?: 
   await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
   const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const f = { root, state, config, settings, upstream, server, provider, baseUrl, deliveries, jwksFetch,
-    keyRequests: () => keyRequests, publish: (value: typeof published) => { published = value; } };
+    keyRequests: () => keyRequests, publish: (value: typeof published) => { published = value; },
+    providerUnavailable: (value: typeof providerUnavailable) => { providerUnavailable = value; } };
   fixtures.push(f); return f;
 }
 
@@ -336,16 +340,57 @@ describe("verified access tokens and exact owned Events", () => {
     f.publish([publicKeys[1]]);
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
     const second = await verifier.authenticate(`Bearer ${await accessToken({}, true, { jku: "http://127.0.0.1/private", x5u: "https://attacker.example/key" })}`);
-    expect(first?.extra?.bridgeMcpPrincipal).toBe(second?.extra?.bridgeMcpPrincipal);
-    expect(second).toBeDefined(); expect(f.keyRequests()).toBe(2);
+    expect(first.status).toBe("authenticated"); expect(second.status).toBe("authenticated");
+    if (first.status !== "authenticated" || second.status !== "authenticated") throw new Error("Expected verified tokens.");
+    expect(first.authInfo.extra?.bridgeMcpPrincipal).toBe(second.authInfo.extra?.bridgeMcpPrincipal);
+    expect(f.keyRequests()).toBe(2);
+  });
+
+  it.each(["http", "network"] as const)("distinguishes a JWKS %s outage from invalid tokens and recovers without relinking or changing Jobs", async mode => {
+    const f = await start(); const token = await accessToken();
+    const a = await task(f, token, { approvedFollowups: [{ prompt: "Read fixture B" }] });
+    await completed(f, a.jobId, token);
+    const jobs = f.state.listJobs();
+    const receipts = f.state.listMeta("task_followup_v1/", 256);
+    expect(receipts).toHaveLength(1);
+    const fetched = f.keyRequests();
+    f.providerUnavailable(mode);
+    expect((await rpc(f, "events/list", {}, token)).response.status).toBe(200);
+    expect(f.keyRequests()).toBe(fetched); // Fresh cached keys still verify locally.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 301_000);
+    for (const [method, params] of [["events/list", {}], ["tools/call", {
+      name: "codex_status", arguments: { query: { kind: "job", id: a.jobId } }
+    }]] as const) {
+      const unavailable = await rpc(f, method, params, token);
+      expect(unavailable.response.status).toBe(503);
+      expect(unavailable.response.headers.get("retry-after")).toBe("5");
+      expect(unavailable.response.headers.get("www-authenticate")).toBeNull();
+      expect(unavailable.body).toEqual({ error: "authentication_unavailable", retryable: true });
+      expect(JSON.stringify(unavailable.body)).not.toMatch(/invalid_token|mcp\/www_authenticate|private provider diagnostics/);
+      expect(JSON.stringify(unavailable.body)).not.toContain(token);
+    }
+    expect(f.state.listJobs()).toEqual(jobs);
+    expect(f.state.listMeta("task_followup_v1/", 256)).toEqual(receipts);
+    expect(f.upstream.calls).toBe(1);
+    f.providerUnavailable(false);
+    const recovered = await rpc(f, "tools/call", { name: "codex_status", arguments: { query: { kind: "job", id: a.jobId } } }, token);
+    expect(recovered.response.status).toBe(200); expect(recovered.body.result.isError).not.toBe(true);
+    expect(recovered.body.result.structuredContent.items[0].approvedFollowups).toEqual(a.approvedFollowups);
+    const expired = await rpc(f, "events/list", {}, await accessToken({ exp: 1 }));
+    expect(expired.response.status).toBe(401);
+    expect(expired.response.headers.get("www-authenticate")).toContain('error="invalid_token"');
+    expect(f.upstream.calls).toBe(1);
   });
 
   it("fails closed for redirected, oversized or unavailable JWKS", async () => {
     const f = await start(); const token = await accessToken();
     for (const body of [new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private" } }),
-      new Response("x".repeat(129 * 1_024)), new Response("offline", { status: 503 })]) {
+      new Response("x".repeat(129 * 1_024)), new Response("offline", { status: 503 }),
+      new Response("not JSON"), new Response(JSON.stringify({ keys: "malformed" }))]) {
       const fetcher: typeof fetch = async (_url, options) => { expect(options?.redirect).toBe("manual"); return body; };
-      expect(await new McpOAuthVerifier(f.config.oauth!, fetcher).authenticate(`Bearer ${token}`)).toBeUndefined();
+      expect(await new McpOAuthVerifier(f.config.oauth!, fetcher).authenticate(`Bearer ${token}`)).toEqual({ status: "unavailable" });
     }
+    const timeout: typeof fetch = async () => { throw new DOMException("private timeout diagnostic", "TimeoutError"); };
+    expect(await new McpOAuthVerifier(f.config.oauth!, timeout).authenticate(`Bearer ${token}`)).toEqual({ status: "unavailable" });
   });
 });

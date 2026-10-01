@@ -35,6 +35,12 @@ hosts its login pages on the provider's authorization server. Self-hosting an
 identity provider would instead require operating that public HTTPS service.
 Neither hosting option has been selected or provisioned.
 
+The [Auth0 setup runbook](mcp-events-auth0.md) provides a concrete managed
+provider candidate, including resource compatibility, operator permissions,
+client registration choices and the tenant-plan limitation on CIMD private-key
+authentication. It is a configuration plan, not a provisioned account or proof
+of ChatGPT interoperability. Provider choice remains an operator decision.
+
 This OAuth route introduces an external authentication dependency beyond the
 existing local bridge and outbound Tunnel. It remains optional: the current
 No Auth connection and local execution continue without provider configuration.
@@ -148,6 +154,15 @@ descriptor and in `_meta`; unauthenticated tool calls return linking metadata
 without running a handler. Other protected requests return a `401` Bearer
 challenge. A token must be verified before result, card or Events access.
 
+If a required JWKS lookup fails, verification remains unavailable: HTTP returns
+`503`, `Retry-After: 5` and `{ "error": "authentication_unavailable", "retryable": true }`.
+It does not emit an `invalid_token` challenge or account-linking metadata.
+Fresh cached keys can still verify requests locally. A retry after provider
+recovery can verify the same token; no re-login, new Job or receipt is inferred.
+An invalid signature/claim, expired token or unknown key in a usable JWKS still
+uses the existing authentication-error/linking path. Fetch/parser diagnostics
+and token bytes are never included in the response.
+
 ## Bridge implementation boundaries
 
 The implementation applies these bounded changes to the existing architecture:
@@ -177,6 +192,10 @@ The implementation applies these bounded changes to the existing architecture:
    challenge. Renewal by the same verified user preserves the logical
    subscription and followup identities. Expiry or revocation stops delivery without cancelling Codex,
    rerunning a Job or releasing the retained result early.
+   Delivery re-reads each exact grant before sending and after the response;
+   revision-checked journal writes prevent an older delivery snapshot from
+   undoing a renewal or unsubscribe. Renewal preserves delivery progress
+   committed while its callback challenge was awaiting a response.
 5. The opt-in HTTP launcher/profile path preserves OAuth configuration and
    never downgrades to No Auth. OAuth settings and the installation sealing
    secret are stripped from Codex and Tunnel child environments; only the
@@ -241,3 +260,8 @@ Provider configuration and actual host acceptance remain pending. The
 [design investigation](audits/2026-10-01-issue-213-auth-connection.md) and
 [implementation audit](audits/2026-10-01-issue-213-oauth-http.md) separate
 source/synthetic evidence from installed-product acceptance.
+The [delivery and JWKS regression audit](audits/2026-10-01-issue-213-delivery-races.md)
+records the subsequent race/error-classification corrections.
+ChatGPT subsequently judged those two corrections acceptable through static
+review at the user's request. This assessment did not independently rerun tests
+or complete issue #213; final human acceptance requires separate evidence.

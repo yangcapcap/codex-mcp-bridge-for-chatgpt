@@ -68,6 +68,15 @@ for that identity and key. Replacement keys are verified, encrypted and used
 together with the previous key during a five-minute rotation window. A late
 verification cannot undo a concurrent unsubscribe.
 
+The delivery list supplies subscription identities only. Each send re-reads the
+exact current grant, checks its disabled/expiry/delivery state, and records the
+attempt only if its revision still matches in the existing writer transaction.
+The response is checked against the current grant again before saving. Renewal
+merges the latest event, attempts, ACK, retry deadline and recovery protection
+after callback verification. A webhook already in flight can finish after an
+unsubscribe or renewal; its old response cannot overwrite the changed grant,
+and an unsubscribed grant cannot authorize a later send.
+
 All verification and delivery requests require HTTPS on the standard port,
 public DNS answers, a connection pinned to a validated address, and normal TLS
 hostname verification. Private, local, reserved, mapped and transition addresses

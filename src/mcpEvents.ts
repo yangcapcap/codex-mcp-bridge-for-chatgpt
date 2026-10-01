@@ -98,7 +98,9 @@ export class McpEventsController {
         const record = ledger.get(params.arguments.jobId, id);
         if (!record) return;
         if (record.scopeId !== scopeId || record.principal !== principal) throw this.denied();
-        ledger.save({ ...record, revision: record.revision + 1, disabled: "unsubscribed" });
+        if (!ledger.save({ ...record, revision: record.revision + 1, disabled: "unsubscribed" }, record.revision)) {
+          throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
+        }
       });
       return {};
     });
@@ -150,15 +152,18 @@ export class McpEventsController {
         const job = this.requireJob(params.arguments.jobId, scopeId, principal);
         if (context.mcpReq.signal.aborted || this.stop.signal.aborted) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "timeout" });
         const rotating = destination && destination.secret !== params.delivery.secret;
-        ledger.save({
-          ...old,
-          id, jobId: job.jobId, scopeId, principal, verifiedAt, expiresAt, revision: (old?.revision || 0) + 1,
+        // Delivery can advance without changing the grant revision while the
+        // challenge awaits. Preserve its event, ACK, attempts and retry state.
+        const saved = ledger.save({
+          ...current,
+          id, jobId: job.jobId, scopeId, principal, verifiedAt, expiresAt, revision: (current?.revision || 0) + 1,
           disabled: undefined,
           destination: this.vault!.seal(id, { url: params.delivery.url, secret: params.delivery.secret,
             ...(rotating ? { previousSecret: destination!.secret, rotateUntil: verifiedAt + ROTATION_MS }
               : destination?.rotateUntil && destination.rotateUntil > verifiedAt ? { previousSecret: destination.previousSecret, rotateUntil: destination.rotateUntil } : {}) }),
-          delivery: old?.delivery || "waiting", attempts: old?.attempts || 0, nextAttemptAt: old?.nextAttemptAt || 0
-        });
+          delivery: current?.delivery || "waiting", attempts: current?.attempts || 0, nextAttemptAt: current?.nextAttemptAt || 0
+        }, current?.revision ?? 0);
+        if (!saved) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
         ledger.enqueue(job);
       });
       this.wake();
@@ -221,21 +226,24 @@ export class McpEventsController {
   private async deliver(): Promise<void> {
     const ledger = this.jobs.admissionStateStore.mcpEvents;
     ledger.maintain();
-    for (const record of ledger.list()) {
+    for (const { jobId, id } of ledger.list()) {
       if (this.stop.signal.aborted) break;
-      if (record.disabled || record.expiresAt <= Date.now() || record.delivery === "acknowledged" || record.delivery === "failed" || record.nextAttemptAt > Date.now()) continue;
+      // Another subscription's network await may have allowed this grant to
+      // expire, renew or unsubscribe. The list supplies identities only.
+      const record = ledger.get(jobId, id);
+      if (!record || record.disabled || record.expiresAt <= Date.now() || record.delivery !== "pending" || record.nextAttemptAt > Date.now()) continue;
       if (!record.event) continue;
-      if (record.attempts >= MAX_ATTEMPTS) { ledger.save({ ...record, delivery: "failed" }); continue; }
+      if (record.attempts >= MAX_ATTEMPTS) { ledger.save({ ...record, delivery: "failed" }, record.revision); continue; }
       try { this.requireJob(record.jobId, record.scopeId, record.principal); if (record.principal !== this.principal) throw this.denied(); }
       catch (error) {
         // An unavailable state read is not evidence of revoked access.
         if (!(error instanceof ProtocolError)) throw error;
-        ledger.save({ ...record, revision: record.revision + 1, disabled: "revoked" }); continue;
+        ledger.save({ ...record, revision: record.revision + 1, disabled: "revoked" }, record.revision); continue;
       }
       let response;
       // Persist before opening keys or sending, including failed signing attempts.
       record.attempts += 1;
-      ledger.save(record);
+      if (!ledger.save(record, record.revision)) continue;
       try {
         const destination = this.vault!.open(record.id, record.destination);
         const body = JSON.stringify(record.event);
@@ -247,17 +255,18 @@ export class McpEventsController {
       } catch { response = { status: 0 }; }
       if (this.stop.signal.aborted) break;
       const current = ledger.get(record.jobId, record.id);
-      if (!current || current.revision !== record.revision || current.disabled) continue;
+      if (!current || current.revision !== record.revision || current.disabled || current.expiresAt <= Date.now() ||
+          current.delivery !== "pending" || current.event?.eventId !== record.event.eventId) continue;
       const status = response.status;
       const acknowledged = status >= 200 && status < 300;
       const transient = status === 0 || status === 408 || status === 425 || status === 429 || status >= 500;
-      const failed = !acknowledged && (!transient || record.attempts >= MAX_ATTEMPTS);
-      ledger.save({ ...current, attempts: record.attempts, lastStatus: status,
+      const failed = !acknowledged && (!transient || current.attempts >= MAX_ATTEMPTS);
+      ledger.save({ ...current, lastStatus: status,
         delivery: acknowledged ? "acknowledged" : failed ? "failed" : "pending",
-        ...(status === 410 ? { disabled: "gone" as const } : {}),
+        ...(status === 410 ? { disabled: "gone" as const, revision: current.revision + 1 } : {}),
         ...(acknowledged ? { acknowledgedAt: Date.now() } : {}),
-        nextAttemptAt: Date.now() + Math.min(60_000, 1_000 * 2 ** record.attempts)
-      });
+        nextAttemptAt: Date.now() + Math.min(60_000, 1_000 * 2 ** current.attempts)
+      }, current.revision);
     }
   }
 
