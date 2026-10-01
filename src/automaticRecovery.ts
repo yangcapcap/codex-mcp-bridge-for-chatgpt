@@ -257,7 +257,9 @@ export class AutomaticRecoveryController {
   start(): void {
     if (this.closed || this.timer) return;
     this.store.reconcileInterrupted(this.now());
-    this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 5_000);
+    const intervalMs = this.options.intervalMs ?? 5_000;
+    if (this.closed) return;
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     this.schedule();
   }
@@ -336,7 +338,7 @@ export class AutomaticRecoveryController {
   /** Retain scheduled identities and durable attempts; stop future dispatch. */
   pinNonforcingShutdown(): true {
     if (this.nonforcingPinned) return true;
-    this.nonforcingUnknown = this.closed;
+    this.nonforcingUnknown ||= this.closed;
     this.nonforcingPinned = true;
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
@@ -414,7 +416,10 @@ export class AutomaticRecoveryController {
     for (const record of records) {
       if (jobId && record.jobId !== jobId) continue;
       if (!keys.has(record.key)) {
-        this.store.finish(record.key,record.attempts,{resolved:false,reason:"work-changed",retryable:false},this.now());
+        const observedAt = this.now();
+        if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
+        this.store.finish(record.key,record.attempts,{resolved:false,reason:"work-changed",retryable:false},observedAt);
+        if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
         this.options.changed?.();
       }
     }
@@ -434,7 +439,9 @@ export class AutomaticRecoveryController {
       // its retry budget and can run in a later Agent page.
       if (candidate.kind === "release" && !budget.reserve(180)) break;
       this.candidateCursor = candidate.key;
-      const attempt = this.store.begin(candidate,this.now());
+      const attemptStartedAt = this.now();
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      const attempt = this.store.begin(candidate,attemptStartedAt);
       if (!attempt) continue;
       dispatched++;
       this.options.changed?.();
@@ -447,11 +454,34 @@ export class AutomaticRecoveryController {
       }
       catch { result = {resolved:false,reason:"recovery-unconfirmed"}; }
       if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
-      this.store.finish(candidate.key,attempt.attempts,result,this.now());
-      this.options.changed?.();
+      const retainedResult = snapshotRecoveryResult(result);
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      if (!retainedResult) {this.nonforcingUnknown = true; return {candidates:candidates.length,dispatched};}
+      const finishedAt = this.now();
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      this.store.finish(candidate.key,attempt.attempts,retainedResult,finishedAt);
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      const changed = this.options.changed;
+      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
+      changed?.();
       // A shared-worker release may resolve a peer. Its durable state is
       // checked by begin() on the next candidate; no global rediscovery here.
     }
     return {candidates:candidates.length,dispatched};
   }
+}
+
+/** Receipt fields must be own data; no callback can run inside a journal write. */
+function snapshotRecoveryResult(value: AutomaticRecoveryResult): AutomaticRecoveryResult | undefined {
+  try {
+    const fields = Object.getOwnPropertyDescriptors(value);
+    const keys = ["resolved", "reason", "evidence", "retryable"];
+    if (["resolved", "reason"].some(key => !Object.hasOwn(fields,key)) ||
+        keys.some(key => Object.hasOwn(fields,key) && !Object.hasOwn(fields[key],"value"))) return;
+    const result = Object.fromEntries(keys.filter(key => Object.hasOwn(fields,key)).map(key => [key,fields[key].value]));
+    if (typeof result.resolved !== "boolean" || typeof result.reason !== "string" ||
+        result.evidence !== undefined && typeof result.evidence !== "string" ||
+        result.retryable !== undefined && typeof result.retryable !== "boolean") return;
+    return Object.freeze(result) as AutomaticRecoveryResult;
+  } catch {return;}
 }

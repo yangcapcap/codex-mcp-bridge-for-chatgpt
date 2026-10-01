@@ -331,3 +331,15 @@ callback or method lookup can reenter shutdown. A callback cannot observe EXIT
 while its original work is still running; later quiet observations do not alter
 that initial observation. The final candidate includes independent regressions
 for this synchronous registration race.
+
+## Pending state background reentry repair
+
+The rejected `abb21de` component is retained as evidence. Its successor snapshots
+recovery and connection result fields as validated own data properties before a
+journal write. Accessor or malformed receipts retain the original unconfirmed
+row and sticky uncertainty, rather than execute code inside a transaction or
+publish release evidence. Clock callbacks are checked before each write. Timer
+intervals and queue limits are read before admission, with a final fence check
+before installing a timer or changing retained queues. The retained independent
+regressions are copied implementation baselines; a new exact-head review remains
+required, and complete state/runtime propagation is still pending.

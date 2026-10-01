@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Validate state background receipts as data and recheck shutdown fences before journal writes, timer installation and queue admission.","breaking":false,"migration":null}

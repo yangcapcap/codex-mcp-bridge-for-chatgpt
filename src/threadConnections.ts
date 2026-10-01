@@ -247,7 +247,9 @@ export class ThreadConnectionController {
       protect?.call(this.upstream, threadId);
     }
     if (this.nonforcingPinned) return;
-    this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 30_000);
+    const intervalMs = this.options.intervalMs ?? 30_000;
+    if (this.closed) return;
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     void this.sweep();
   }
@@ -336,14 +338,18 @@ export class ThreadConnectionController {
       if (this.nonforcingPinned) return;
       if (reason) {
         if (current.phase !== "blocked" || current.reason !== reason) {
-          this.store.update(current.threadId, { phase: "blocked", reason }, this.now());
+          const updatedAt = this.now();
+          if (this.nonforcingPinned) return;
+          this.store.update(current.threadId, { phase: "blocked", reason }, updatedAt);
           this.options.changed?.();
         }
         continue;
       }
       if (!this.eligible(current)) continue;
       if (this.nonforcingPinned) return;
-      const releasing = this.store.update(current.threadId, { phase: "releasing" }, this.now(), current.revision);
+      const releaseStartedAt = this.now();
+      if (this.nonforcingPinned) return;
+      const releasing = this.store.update(current.threadId, { phase: "releasing" }, releaseStartedAt, current.revision);
       if (!releasing) continue;
       const canRelease = (threadId: string) => {
         if (this.closed) return false;
@@ -358,11 +364,22 @@ export class ThreadConnectionController {
         result = await budget.awaitExternal(Reflect.apply(release, this.upstream, [current.threadId, { eligibleThreadIds, canRelease, previousWorkerPid: current.workerPid }]));
       } catch { result = { phase: "blocked", reason: "release-unconfirmed" }; }
       if (this.closed) return;
+      const retainedResult = snapshotThreadReleaseResult(result);
+      if (this.nonforcingPinned) return;
+      if (!retainedResult) {this.nonforcingUnknown = true; return;}
+      result = retainedResult;
       // An acknowledgement alone never becomes proof of unload or relinquished writing.
       if (result.phase === "released" && !result.evidence) result = { phase: "blocked", reason: "release-unconfirmed" };
-      this.store.update(current.threadId, result, this.now(), releasing.revision);
+      const releasedAt = this.now();
+      if (this.nonforcingPinned) return;
+      this.store.update(current.threadId, result, releasedAt, releasing.revision);
       if (result.evidence) for (const threadId of result.releasedThreadIds || []) {
-        if (threadId !== current.threadId && canRelease(threadId)) this.store.update(threadId, { phase: "released", evidence: result.evidence }, this.now());
+        if (this.nonforcingPinned) return;
+        if (threadId !== current.threadId && canRelease(threadId)) {
+          const peerReleasedAt = this.now();
+          if (this.nonforcingPinned) return;
+          this.store.update(threadId, { phase: "released", evidence: result.evidence }, peerReleasedAt);
+        }
       }
       this.options.changed?.();
     }
@@ -379,7 +396,7 @@ export class ThreadConnectionController {
   /** Internal writer fence; it never publishes connection-release evidence. */
   pinNonforcingShutdown(): true {
     if (this.nonforcingPinned) return true;
-    this.nonforcingUnknown = this.closed;
+    this.nonforcingUnknown ||= this.closed;
     this.nonforcingPinned = true;
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
@@ -391,4 +408,30 @@ export class ThreadConnectionController {
     if (!this.nonforcingPinned || this.nonforcingUnknown) return shutdownResult("uncertain");
     return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
   }
+}
+
+function snapshotThreadReleaseResult(value: ThreadReleaseResult): ThreadReleaseResult | undefined {
+  try {
+    const fields = Object.getOwnPropertyDescriptors(value);
+    const keys = ["phase", "reason", "evidence", "releasedThreadIds"];
+    if (!Object.hasOwn(fields,"phase") || keys.some(key => Object.hasOwn(fields,key) && !Object.hasOwn(fields[key],"value"))) return;
+    const result = Object.fromEntries(keys.filter(key => Object.hasOwn(fields,key)).map(key => [key,fields[key].value]));
+    if (!["blocked","unsubscribed","released"].includes(result.phase) ||
+        result.reason !== undefined && typeof result.reason !== "string" ||
+        result.evidence !== undefined && !["thread-unloaded","worker-exited"].includes(result.evidence)) return;
+    if (result.releasedThreadIds !== undefined) {
+      if (!Array.isArray(result.releasedThreadIds)) return;
+      const slots = Object.getOwnPropertyDescriptors(result.releasedThreadIds) as Record<string,PropertyDescriptor>;
+      const length = slots.length?.value;
+      if (!Number.isSafeInteger(length) || length < 0 || length > 128 || Reflect.ownKeys(slots).length !== length + 1) return;
+      const ids: string[] = [];
+      for (let index=0; index<length; index++) {
+        const slot = slots[String(index)];
+        if (!slot || !Object.hasOwn(slot,"value") || typeof slot.value !== "string") return;
+        ids.push(slot.value);
+      }
+      result.releasedThreadIds = Object.freeze(ids);
+    }
+    return Object.freeze(result) as ThreadReleaseResult;
+  } catch {return;}
 }

@@ -65,7 +65,9 @@ export class StateMaintenanceScheduler {
 
   start(): void {
     if (this.closed || this.timer) return;
-    this.timer = setInterval(() => { void this.sweep(); }, this.options.intervalMs ?? 5_000);
+    const intervalMs = this.options.intervalMs ?? 5_000;
+    if (this.closed) return;
+    this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     void this.sweep();
   }

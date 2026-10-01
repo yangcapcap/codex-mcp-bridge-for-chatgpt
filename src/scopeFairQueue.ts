@@ -48,17 +48,21 @@ export class ScopeFairQueue<T> {
 
   enqueue(scopeId: string, value: T): boolean {
     if (this.closed) return false;
+    const perScopeCapacity = this.options.perScopeCapacity;
+    if (this.closed) return false;
+    const capacity = this.options.capacity;
+    if (this.closed) return false;
     let queue = this.queues.get(scopeId);
     if (!queue) {
       queue = [];
       this.queues.set(scopeId, queue);
       this.order.push(scopeId);
     }
-    if (queue.length >= this.options.perScopeCapacity) {
+    if (queue.length >= perScopeCapacity) {
       queue.shift();
       this.queued -= 1;
       this.dropped += 1;
-    } else if (this.queued >= this.options.capacity && !this.evictFromNoisiestScope()) {
+    } else if (this.queued >= capacity && !this.evictFromNoisiestScope()) {
       this.dropped += 1;
       if (queue.length === 0) this.removeEmptyScope(scopeId);
       return false;
