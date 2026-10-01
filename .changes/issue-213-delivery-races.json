@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Preserve current MCP Events grants and delivery progress across webhook races, and distinguish OAuth JWKS outages from invalid login.",
+  "breaking": false,
+  "migration": null
+}

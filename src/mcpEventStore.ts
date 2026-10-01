@@ -76,13 +76,23 @@ export class McpEventStore {
     return raw === undefined ? undefined : parseJsonTextStrict(raw, "MCP event subscription") as EventSubscription;
   }
 
-  save(record: EventSubscription): void {
-    const existing = this.get(record.jobId, record.id);
-    if (!existing && (this.list().length >= MAX_EVENT_SUBSCRIPTIONS ||
-        this.list(record.jobId).length >= MAX_JOB_EVENT_SUBSCRIPTIONS)) {
-      throw new Error("EVENT_SUBSCRIPTION_CAPACITY: Subscription capacity is full.");
-    }
-    this.state.setMeta(this.key(record.jobId, record.id), JSON.stringify(record));
+  /** Compare the grant revision inside the existing writer transaction. Zero
+   * means creation only. Delivery updates retain the grant revision; callers
+   * must merge them from a fresh exact read, never a list/verification snapshot. */
+  save(record: EventSubscription, expectedRevision: number): boolean {
+    return this.state.transaction(() => {
+      const existing = this.get(record.jobId, record.id);
+      if (expectedRevision === 0 ? existing !== undefined : existing?.revision !== expectedRevision) return false;
+      if (record.revision < 1 || (record.revision !== expectedRevision && record.revision !== expectedRevision + 1)) {
+        throw new Error("EVENT_SUBSCRIPTION_REVISION: Grant revision cannot move backwards or skip a revision.");
+      }
+      if (!existing && (this.list().length >= MAX_EVENT_SUBSCRIPTIONS ||
+          this.list(record.jobId).length >= MAX_JOB_EVENT_SUBSCRIPTIONS)) {
+        throw new Error("EVENT_SUBSCRIPTION_CAPACITY: Subscription capacity is full.");
+      }
+      this.state.setMeta(this.key(record.jobId, record.id), JSON.stringify(record));
+      return true;
+    });
   }
 
   /** Called inside the exact Job terminal transaction, and during late subscribe.
@@ -111,7 +121,7 @@ export class McpEventStore {
       record.delivery = "pending";
       record.nextAttemptAt = 0;
       record.recoverUntil = Math.max(record.expiresAt, Date.now() + EVENT_RESULT_RECOVERY_MS);
-      this.save(record);
+      if (!this.save(record, record.revision)) throw new Error("EVENT_SUBSCRIPTION_CHANGED: Terminal delivery intent was not saved.");
     }
   }
 

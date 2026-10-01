@@ -232,6 +232,132 @@ describe("MCP Events exact-Job lifecycle", () => {
     expect(f.state.mcpEvents.list()).toHaveLength(0);
   });
 
+  it("preserves unsubscribe while another webhook is in flight", async () => {
+    let releaseSend!: () => void; let began!: (url: string) => void;
+    const gate = new Promise<void>(resolve => { releaseSend = resolve; });
+    const begin = new Promise<string>(resolve => { began = resolve; });
+    const sent: string[] = [];
+    const upstream = new Upstream(); const releaseJob = upstream.hold();
+    const f = await start(async (url, raw) => {
+      const body = JSON.parse(raw);
+      if (body.type === "verification") return { status: 200, body: JSON.stringify({ challenge: body.challenge }) };
+      sent.push(url);
+      if (sent.length === 1) { began(url); await gate; }
+      return { status: 200, body: "" };
+    }, false, undefined, upstream);
+    try {
+      const a = await task(f);
+      for (const suffix of ["one", "two"]) {
+        expect((await rpc(f, "events/subscribe", subscription(a.jobId, {
+          delivery: { mode: "webhook", url: `https://receiver.example.com/${suffix}`, secret }
+        }))).error).toBeUndefined();
+      }
+      const vault = new EventDestinationVault(token);
+      const records = f.state.mcpEvents.list(a.jobId);
+      releaseJob();
+      const firstUrl = await begin;
+      const second = records.find(record => vault.open(record.id, record.destination).url !== firstUrl)!;
+      const secondUrl = vault.open(second.id, second.destination).url;
+      expect((await rpc(f, "events/unsubscribe", {
+        name: JOB_TERMINAL_EVENT, arguments: { jobId: a.jobId }, delivery: { mode: "webhook", url: secondUrl }
+      })).error).toBeUndefined();
+      const stopped = f.state.mcpEvents.get(a.jobId, second.id)!;
+      expect(stopped).toMatchObject({ revision: second.revision + 1, disabled: "unsubscribed", attempts: 0 });
+      expect(f.state.mcpEvents.save({ ...second, attempts: 1 }, second.revision)).toBe(false);
+      expect(f.state.mcpEvents.get(a.jobId, second.id)).toEqual(stopped);
+      releaseSend();
+      await vi.waitFor(() => expect(f.state.mcpEvents.list(a.jobId).find(record => record.id !== second.id)?.delivery).toBe("acknowledged"));
+      expect(f.state.mcpEvents.get(a.jobId, second.id)).toEqual(stopped);
+      expect(sent).toEqual([firstUrl]);
+      await completed(f, a.jobId); expect(upstream.calls).toBe(1);
+    } finally { releaseJob(); releaseSend(); }
+  });
+
+  it("preserves renewed expiry and signing keys while another webhook is in flight", async () => {
+    let releaseSend!: () => void; let began!: (url: string) => void;
+    const gate = new Promise<void>(resolve => { releaseSend = resolve; });
+    const begin = new Promise<string>(resolve => { began = resolve; });
+    const next = "whsec_" + randomBytes(32).toString("base64");
+    const sent: Array<{ url: string; raw: string; headers: Record<string, string> }> = [];
+    const upstream = new Upstream(); const releaseJob = upstream.hold();
+    const f = await start(async (url, raw, headers) => {
+      const body = JSON.parse(raw);
+      if (body.type === "verification") return { status: 200, body: JSON.stringify({ challenge: body.challenge }) };
+      sent.push({ url, raw, headers });
+      if (sent.length === 1) { began(url); await gate; }
+      return { status: 200, body: "" };
+    }, false, undefined, upstream);
+    try {
+      const a = await task(f);
+      for (const suffix of ["one", "two"]) {
+        expect((await rpc(f, "events/subscribe", subscription(a.jobId, {
+          ttlMs: 60_000, delivery: { mode: "webhook", url: `https://receiver.example.com/${suffix}`, secret }
+        }))).error).toBeUndefined();
+      }
+      const vault = new EventDestinationVault(token);
+      const records = f.state.mcpEvents.list(a.jobId);
+      releaseJob();
+      const firstUrl = await begin;
+      const second = records.find(record => vault.open(record.id, record.destination).url !== firstUrl)!;
+      const secondUrl = vault.open(second.id, second.destination).url;
+      const refreshed = await rpc(f, "events/subscribe", subscription(a.jobId, {
+        ttlMs: 120_000, delivery: { mode: "webhook", url: secondUrl, secret: next }
+      }));
+      expect(refreshed.result.id).toBe(second.id);
+      const renewed = f.state.mcpEvents.get(a.jobId, second.id)!;
+      expect(renewed.revision).toBe(second.revision + 1);
+      expect(renewed.expiresAt).toBeGreaterThan(second.expiresAt);
+      releaseSend();
+      await vi.waitFor(() => expect(f.state.mcpEvents.get(a.jobId, second.id)?.delivery).toBe("acknowledged"));
+      const delivered = f.state.mcpEvents.get(a.jobId, second.id)!;
+      expect(delivered).toMatchObject({ revision: renewed.revision, expiresAt: renewed.expiresAt,
+        destination: renewed.destination, attempts: 1, lastStatus: 200 });
+      const callback = sent.find(item => item.url === secondUrl)!;
+      expect(new Webhook(next).verify(callback.raw, callback.headers)).toBeTruthy();
+      expect(new Webhook(secret).verify(callback.raw, callback.headers)).toBeTruthy();
+      expect(sent).toHaveLength(2); await completed(f, a.jobId); expect(upstream.calls).toBe(1);
+    } finally { releaseJob(); releaseSend(); }
+  });
+
+  it("preserves delivery progress during subscription verification", async () => {
+    let releaseSend!: () => void; let releaseVerify!: () => void;
+    let sendBegan!: () => void; let verifyBegan!: () => void;
+    const sendGate = new Promise<void>(resolve => { releaseSend = resolve; });
+    const verifyGate = new Promise<void>(resolve => { releaseVerify = resolve; });
+    const sending = new Promise<void>(resolve => { sendBegan = resolve; });
+    const verifying = new Promise<void>(resolve => { verifyBegan = resolve; });
+    let verificationCount = 0; let deliveryCount = 0;
+    const f = await start(async (_url, raw) => {
+      const body = JSON.parse(raw);
+      if (body.type === "verification") {
+        if (++verificationCount === 2) { verifyBegan(); await verifyGate; }
+        return { status: 200, body: JSON.stringify({ challenge: body.challenge }) };
+      }
+      if (++deliveryCount === 1) { sendBegan(); await sendGate; }
+      return { status: 200, body: "" };
+    });
+    try {
+      const a = await task(f); await completed(f, a.jobId);
+      const first = await rpc(f, "events/subscribe", subscription(a.jobId));
+      await sending;
+      const refreshed = rpc(f, "events/subscribe", subscription(a.jobId, {
+        delivery: { mode: "webhook", url: "https://receiver.example.com/mcp-events/test",
+          secret: "whsec_" + randomBytes(32).toString("base64") }
+      }));
+      await verifying; releaseSend();
+      await vi.waitFor(() => expect(f.state.mcpEvents.get(a.jobId, first.result.id)?.delivery).toBe("acknowledged"));
+      const acknowledged = f.state.mcpEvents.get(a.jobId, first.result.id)!;
+      releaseVerify(); expect((await refreshed).error).toBeUndefined();
+      await rpc(f, "events/list");
+      const renewed = f.state.mcpEvents.get(a.jobId, first.result.id)!;
+      expect(renewed).toMatchObject({ revision: acknowledged.revision + 1, delivery: "acknowledged",
+        event: acknowledged.event, attempts: acknowledged.attempts, lastStatus: acknowledged.lastStatus,
+        acknowledgedAt: acknowledged.acknowledgedAt, nextAttemptAt: acknowledged.nextAttemptAt,
+        recoverUntil: acknowledged.recoverUntil });
+      expect(deliveryCount).toBe(1); expect(f.upstream.calls).toBe(1);
+    } finally { releaseSend(); releaseVerify(); }
+  });
+
   it("refreshes a finite lifetime and signs with both verified keys during rotation", async () => {
     const next = "whsec_" + randomBytes(32).toString("base64");
     const sent: Array<{ body: any; headers: Record<string, string>; raw: string }> = [];
@@ -252,7 +378,7 @@ describe("MCP Events exact-Job lifecycle", () => {
     expect(vault.open(record.id, record.destination).previousSecret).toBe(secret);
     // Exercise the next delivery with the replacement secret; the identity and
     // event ID remain unchanged when a send response was lost.
-    record.delivery = "pending"; record.nextAttemptAt = 0; f.state.mcpEvents.save(record);
+    record.delivery = "pending"; record.nextAttemptAt = 0; f.state.mcpEvents.save(record, record.revision);
     await rpc(f, "events/subscribe", subscription(a.jobId, { delivery: { mode: "webhook", url: "https://receiver.example.com/mcp-events/test", secret: next } }));
     await vi.waitFor(() => expect(sent.filter(item => item.body.eventId).some(item => item.headers["webhook-signature"].split(" ").length === 2)).toBe(true));
     const dual = sent.filter(item => item.body.eventId).find(item => item.headers["webhook-signature"].split(" ").length === 2)!;
@@ -269,7 +395,7 @@ describe("MCP Events exact-Job lifecycle", () => {
     const sub = await rpc(f, "events/subscribe", subscription(a.jobId));
     await vi.waitFor(() => expect(f.state.mcpEvents.get(a.jobId, sub.result.id)?.attempts).toBe(1));
     const record = f.state.mcpEvents.get(a.jobId, sub.result.id)!;
-    record.attempts = 8; record.nextAttemptAt = 0; f.state.mcpEvents.save(record);
+    record.attempts = 8; record.nextAttemptAt = 0; f.state.mcpEvents.save(record, record.revision);
     await rpc(f, "events/subscribe", subscription(a.jobId));
     await vi.waitFor(() => expect(f.state.mcpEvents.get(a.jobId, sub.result.id)?.delivery).toBe("failed"));
     expect(f.upstream.calls).toBe(1);
@@ -330,12 +456,13 @@ describe("MCP Events exact-Job lifecycle", () => {
       const record = f.state.mcpEvents.get(a.jobId, sub.result.id)!;
       expect(record.delivery).toBe(status === 500 ? "pending" : "failed");
       if (status === 500) {
-        record.nextAttemptAt = 0; f.state.mcpEvents.save(record);
+        record.nextAttemptAt = 0; f.state.mcpEvents.save(record, record.revision);
         await rpc(f, "events/subscribe", subscription(a.jobId));
         await vi.waitFor(() => expect(ids).toHaveLength(2));
         expect(ids[0]).toBe(ids[1]);
       }
-      record.expiresAt = Date.now() - 1; f.state.mcpEvents.save(record);
+      const current = f.state.mcpEvents.get(a.jobId, sub.result.id)!;
+      current.expiresAt = Date.now() - 1; f.state.mcpEvents.save(current, current.revision);
       expect((f.state.listJobs()[0] as any).status).toBe("completed");
     }
   });
@@ -353,7 +480,7 @@ describe("MCP Events exact-Job lifecycle", () => {
     fixtures.splice(fixtures.indexOf(f), 1);
     const reopened = new BridgeStateStore({ file: path.join(f.root, "state.sqlite") });
     const pending = reopened.mcpEvents.get(a.jobId, sub.result.id)!;
-    pending.nextAttemptAt = 0; reopened.mcpEvents.save(pending);
+    pending.nextAttemptAt = 0; reopened.mcpEvents.save(pending, pending.revision);
     const restarted = await start(undefined, false, { root: f.root, state: reopened });
     await vi.waitFor(() => expect(restarted.deliveries.find(item => item.body.eventId)?.body.eventId).toBe(id));
     expect(restarted.upstream.calls).toBe(0);
