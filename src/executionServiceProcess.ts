@@ -1,6 +1,10 @@
 import { currentExecutionIdentity } from "./executionIdentity.js";
 import { ExecutionJournal, type ExecutionJournalStatus } from "./executionJournal.js";
 import {WorkerTreeShutdownSupervisor} from "./workerTreeShutdownSupervisor.js";
+import {ExecutionShutdownOwner,observeResourcesAfterClose} from "./executionShutdownOwner.js";
+import {snapshotExecutionShutdownRequest,snapshotExecutionShutdownReceipt,type ExecutionShutdownRequest} from "./executionShutdownProtocol.js";
+import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
+import {performance} from "node:perf_hooks";
 import { ExecutionPeer, executionEndpoint, listenExecutionOwner, readExecutionRecord,
   writeExecutionRecord, clearExitedExecutionOwner, type ExecutionEndpoint } from "./executionTransport.js";
 import { randomUUID } from "node:crypto";
@@ -45,7 +49,7 @@ import {
 
 const CHILD_FLAG = "--codex-execution-child";
 const PROTOCOL = "bridge-codex-execution" as const;
-const PROTOCOL_VERSION = 6 as const;
+const PROTOCOL_VERSION = 7 as const;
 const HEARTBEAT_MS = 250;
 const HEARTBEAT_STALE_MS = 2_000;
 const STARTUP_TIMEOUT_MS = 20_000;
@@ -413,6 +417,16 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
   private restartTimer?: NodeJS.Timeout;
   private workerCleanupTimer?: NodeJS.Timeout;
   private closePromise?: Promise<void>;
+  private nonforcingClose?:Promise<ShutdownResult>;
+  private nonforcingSettled=false;
+  private nonforcingHistoryUncertain=false;
+  private nonforcingChild?:ExecutionPeer;
+  private nonforcingRequest?:Extract<ExecutionShutdownRequest,{type:"close-nonforcing"}>;
+  private finalWorkerReceipt?:ShutdownResult;
+  private ordinaryCloseWait?:()=>void;
+  private readonly shutdownReceived=new Map<string,ShutdownResult>();
+  private readonly shutdownIssued=new Map<string,ExecutionShutdownRequest>();
+  private readonly shutdownWaiting=new Map<string,(result:ShutdownResult)=>void>();
   private workerCleanupPromise: Promise<boolean> = Promise.resolve(true);
   private readonly activeObservationFailures = new Map<string, WorkerObservationIncident>();
   private childExitIntent?: ExecutorExitReason;
@@ -639,8 +653,106 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
   }
 
   close(): Promise<void> {
+    if(this.nonforcingClose)return this.nonforcingClose.then(result=>{
+      if(!result.exited)throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+    });
     if (!this.closePromise) this.closePromise = this.closeInternal();
     return this.closePromise;
+  }
+
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult> {
+    const pinned=snapshotShutdownPolicy(policy);
+    if(pinned.allowSigkillEscalation!==false)throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
+    if(this.nonforcingClose)return this.nonforcingClose;
+    let resolve!:(result:ShutdownResult)=>void;
+    this.nonforcingClose=new Promise(done=>{resolve=done;});
+    this.nonforcingHistoryUncertain=Boolean(this.closePromise || this.detached);
+    this.closed=true;this.nonforcingChild=this.child;
+    this.workerProcesses.pinNonforcingShutdown();
+    this.ordinaryCloseWait?.();
+    if(this.restartTimer)clearTimeout(this.restartTimer);
+    if(this.workerCleanupTimer)clearTimeout(this.workerCleanupTimer);
+    if(this.acknowledgementTimer)clearTimeout(this.acknowledgementTimer);
+    // Preserve reservations, assignments and ACK evidence rather than synthesize
+    // completion or release an unknown writer during shutdown.
+    for(const pending of this.pending.values())pending.reject(new Error("NONFORCING_EXECUTION_OUTCOME_UNKNOWN"));
+    const binding=this.nonforcingChild?.pinNonforcingShutdown();
+    const requestId=randomUUID();
+    const request=binding && binding.generation===this.generation ? snapshotExecutionShutdownRequest({...binding,
+      type:"close-nonforcing",requestId,closeRequestId:requestId,policy:{...pinned,allowSigkillEscalation:false}}) : undefined;
+    if(request?.type==="close-nonforcing")this.nonforcingRequest=request;
+    const deadline=pinned.graceMs*2+6000;
+    void boundedShutdown(async()=>{
+      const workers=this.nonforcingRequest ? await this.exchangeShutdown(this.nonforcingRequest,deadline) : shutdownResult("uncertain");
+      return this.finishNonforcing(workers,deadline);
+    },Math.min(180000,deadline*3)).then(result=>{this.nonforcingSettled=true;resolve(result);},()=>{
+      this.nonforcingSettled=true;resolve(shutdownResult("uncertain"));
+    });
+    return this.nonforcingClose;
+  }
+
+  async observeNonforcingExit():Promise<ShutdownResult> {
+    if(!this.nonforcingSettled || !this.nonforcingRequest)return shutdownResult("uncertain");
+    if(this.finalWorkerReceipt)return this.measureNonforcing(this.finalWorkerReceipt,6000);
+    // Observation has no policy field; the strict parser rejects an extra one.
+    const {policy,...original}=this.nonforcingRequest;
+    const observation=snapshotExecutionShutdownRequest({...original,type:"observe-nonforcing",requestId:randomUUID()});
+    if(!observation)return shutdownResult("uncertain");
+    return boundedShutdown(async()=>this.finishNonforcing(await this.exchangeShutdown(observation,6000),6000),18000);
+  }
+
+  private exchangeShutdown(request:ExecutionShutdownRequest,deadline:number):Promise<ShutdownResult> {
+    const child=this.nonforcingChild;
+    if(!child?.connected || this.child!==child || !child.nonforcingBinding || this.shutdownIssued.size>=128)return Promise.resolve(shutdownResult("uncertain"));
+    return new Promise(resolve=>{
+      let settled=false;
+      const finish=(result:ShutdownResult)=>{if(settled)return;settled=true;clearTimeout(timer);this.shutdownWaiting.delete(request.requestId);resolve(result);};
+      const timer=setTimeout(()=>finish(shutdownResult("uncertain")),deadline);
+      this.shutdownIssued.set(request.requestId,request);this.shutdownWaiting.set(request.requestId,finish);
+      try{if(!child.send(request,error=>{if(error)finish(shutdownResult("uncertain"));}))finish(shutdownResult("uncertain"));}
+      catch{finish(shutdownResult("uncertain"));}
+    });
+  }
+
+  private receiveShutdownReceipt(value:unknown):void {
+    for(const [id,request] of this.shutdownIssued) {
+      const receipt=snapshotExecutionShutdownReceipt(value,request);if(!receipt)continue;
+      const prior=this.shutdownReceived.get(id);
+      if(prior && JSON.stringify(prior)!==JSON.stringify(receipt.result)) {
+        this.nonforcingHistoryUncertain=true;
+        this.shutdownWaiting.get(id)?.(shutdownResult("uncertain"));return;
+      }
+      this.shutdownReceived.set(id,receipt.result);
+      if(request.type==="finalize-nonforcing" && receipt.result.exited)this.finalWorkerReceipt=receipt.result;
+      this.shutdownWaiting.get(id)?.(receipt.result);return;
+    }
+  }
+
+  private async finishNonforcing(workers:ShutdownResult,deadline:number):Promise<ShutdownResult> {
+    if(workers.exited && this.nonforcingRequest && !this.finalWorkerReceipt) {
+      const {policy,...original}=this.nonforcingRequest;
+      const finalize=snapshotExecutionShutdownRequest({...original,type:"finalize-nonforcing",requestId:randomUUID()});
+      if(finalize)workers=await this.exchangeShutdown(finalize,deadline);
+    }
+    if(this.finalWorkerReceipt)workers=this.finalWorkerReceipt;
+    return this.measureNonforcing(workers,deadline);
+  }
+
+  private async measureNonforcing(workers:ShutdownResult,deadline:number):Promise<ShutdownResult> {
+    const child=this.nonforcingChild;
+    const owner=await boundedShutdown(async()=>{
+      const stop=performance.now()+deadline;
+      let result=child?.observeNonforcingExit() ?? shutdownResult("uncertain");
+      while(workers.exited && this.finalWorkerReceipt && result.outcome==="timeout" && performance.now()<stop) {
+        await new Promise(done=>setTimeout(done,20));result=child?.observeNonforcingExit() ?? shutdownResult("uncertain");
+      }
+      return result;
+    },deadline+100);
+    const trees=await this.workerProcesses.observeNonforcingExit();
+    const proof=combineShutdown([owner,workers,trees,...(this.nonforcingHistoryUncertain ? [shutdownResult("uncertain")] : [])]);
+    // Remote/local worker observations overlap; the executor is a separate root.
+    return shutdownResult(proof.outcome,owner.survivors+Math.max(workers.survivors,trees.survivors),
+      owner.signalFailures+Math.max(workers.signalFailures,trees.signalFailures),owner.identityChanges+Math.max(workers.identityChanges,trees.identityChanges));
   }
 
   private request<T>(
@@ -709,6 +821,10 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
         "EXECUTION_CAPACITY: The Codex execution byte capacity is exhausted."
       ));
     }
+    // Argument serialization may reenter the controller. Do not admit a new
+    // reservation after a synchronous shutdown fence or owner replacement.
+    if(this.closed || this.nonforcingClose || this.child!==child || this.generation!==generation)
+      return Promise.reject(new Error("NONFORCING_EXECUTION_OUTCOME_UNKNOWN"));
     return new Promise<T>((resolve, reject) => {
       this.pendingBytes += bytes;
       if (!control) {
@@ -740,6 +856,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
   }
 
   private sendProtect(threadId: string): void {
+    if(this.nonforcingClose)return;
     const child = this.child;
     if (!child?.connected || !this.generation) return;
     const message: ProtectMessage = {
@@ -768,6 +885,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
 
   recoverExecution(jobId: string, onProgress?: (progress: CodexProgress) => void,
     onAssigned?: (assignment: UpstreamWorkerAssignment) => void): Promise<ToolResult> {
+    if(this.nonforcingClose)return Promise.reject(new Error("NONFORCING_EXECUTION_OUTCOME_UNKNOWN"));
     if (this.pending.has(jobId)) return Promise.reject(new Error("EXECUTION_RECOVERY_ALREADY_ATTACHED"));
     return new Promise((resolve, reject) => {
       const message = { type: "recover" as const, generation: this.generation || "", requestId: jobId };
@@ -779,6 +897,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
   }
 
   acknowledgeExecution(jobId: string): void {
+    if(this.nonforcingClose)return;
     this.acknowledgements.add(jobId);
     this.sendNextAcknowledgement();
   }
@@ -808,6 +927,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
   }
 
   private finishReleasedReplies(): void {
+    if(this.nonforcingClose)return;
     if (this.acknowledgementTimer) clearTimeout(this.acknowledgementTimer);
     this.acknowledgementTimer = undefined;
     this.acknowledgementsInFlight.clear();
@@ -820,6 +940,9 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
 
   /** Detaches a restarting controller without closing the execution owner. */
   detachExecution(): void {
+    if(this.nonforcingClose) {
+      this.nonforcingHistoryUncertain=true;this.detached=true;this.child?.detach();return;
+    }
     this.detached = true;
     this.finishReleasedReplies();
     this.closed = true;
@@ -854,6 +977,13 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
       const timer = setTimeout(() => finish(new Error("EXECUTION_START_PENDING")), STARTUP_TIMEOUT_MS);
       timer.unref();
       child.on("message", value => {
+        if(this.nonforcingClose) {
+          if(this.child!==child || child!==this.nonforcingChild)return;
+          this.receiveShutdownReceipt(value);
+          if(isChildMessage(value) && (value.type==="worker-observed" || value.type==="worker-observation-status") &&
+            value.generation===this.generation)this.onMessage(value);
+          return;
+        }
         if (this.detached || this.child !== child || !isChildMessage(value)) return;
         if (value.type === "fatal") { finish(new Error(value.message)); return; }
         if (value.type === "ready") {
@@ -889,7 +1019,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
     // A large retained history must not overflow the finite transport queue on
     // reconnect. Each write is bounded; active receipts still own their IDs.
     const send = (message: unknown) => new Promise<boolean>(resolve => {
-      if (this.child !== child || !child.connected) { resolve(false); return; }
+      if (this.nonforcingClose || this.child !== child || !child.connected) { resolve(false); return; }
       child.send(message, error => resolve(!error));
     });
     for (const threadId of this.protectedThreads) {
@@ -1074,6 +1204,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
 
   private onExit(child: ExecutionPeer, error: Error): void {
     if (this.child !== child) return;
+    if(this.nonforcingClose) {this.starting=false;return;}
     child.detach();
     this.child = undefined;
     this.generation = undefined;
@@ -1121,6 +1252,7 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
   }
 
   private async cleanupRegisteredWorkers(): Promise<boolean> {
+    if(this.nonforcingClose)return (await this.workerProcesses.observeNonforcingExit()).exited;
     // The final auxiliary snapshot may not have crossed a broken socket.
     // Failure to read retained ownership evidence cannot authorize replacement.
     try {
@@ -1170,23 +1302,27 @@ export class ChildProcessCodexExecutionService implements CodexUpstream {
       if (child.connected) child.send({ type: "close" } satisfies CloseMessage);
       await new Promise<void>(resolve => {
         let settled = false;
-        const force = setTimeout(() => child.kill("SIGKILL"), FORCE_CLOSE_MS);
+        const force = setTimeout(() => {if(!this.nonforcingClose)child.kill("SIGKILL");}, FORCE_CLOSE_MS);
         force.unref();
         const finish = () => {
           if (settled) return;
           settled = true;
           clearTimeout(force);
+          this.ordinaryCloseWait=undefined;
           resolve();
         };
+        this.ordinaryCloseWait=finish;
         child.once("exit", finish);
         if (child.exitCode !== null || child.signalCode !== null) finish();
       });
     }
+    if(this.nonforcingClose)return this.close();
     if (this.child === child) {
       this.child = undefined;
       this.generation = undefined;
     }
     await this.workerCleanupPromise.catch(() => false);
+    if(this.nonforcingClose)return this.close();
     const cleaned = await this.cleanupRegisteredWorkers();
     if (!cleaned) {
       throw new Error(
@@ -1283,28 +1419,89 @@ async function runChild(configuration: ChildConfiguration): Promise<void> {
     heartbeatAt: Date.now(), inFlight: active.size, journal: journal.status() }), HEARTBEAT_MS);
   heartbeat.unref();
   let closeServer: (() => Promise<void>) | undefined;
+  type ControlLink={send:(value:unknown,done?:(error?:Error|null)=>void)=>boolean;controllerId:string};
+  let controlLink:ControlLink|undefined;
+  let lastControllerId:string|undefined;
+  let poolReceipt:Promise<ShutdownResult>|undefined;
+  const stopObservers=()=>{
+    closing=true;clearInterval(observerTimer);clearInterval(heartbeat);
+    for(const check of releaseChecks.values()){clearTimeout(check.timer);check.resolve(false);}
+    releaseChecks.clear();journal.disconnect();
+  };
+  const workersResult=(poolResult:ShutdownResult,trees:ShutdownResult):ShutdownResult=>{
+    const proof=combineShutdown([poolResult,trees]);
+    // Each pool receipt includes its selected tree; the all-tree ledger overlaps.
+    return shutdownResult(proof.outcome,Math.max(poolResult.survivors,trees.survivors),
+      Math.max(poolResult.signalFailures,trees.signalFailures),Math.max(poolResult.identityChanges,trees.identityChanges));
+  };
+  const shutdownOwner=new ExecutionShutdownOwner(generation,process.pid,{
+    pin(policy){
+      stopObservers();workerObserver.pinNonforcingShutdown();
+      poolReceipt=pool.closeNonforcing(policy);return true;
+    },
+    async close(){
+      const result=await observeResourcesAfterClose(await poolReceipt!,()=>pool.observeNonforcingExit());
+      return workersResult(result,await workerObserver.observeNonforcingExit());
+    },
+    async observe(){
+      return workersResult(await pool.observeNonforcingExit(),await workerObserver.observeNonforcingExit());
+    }
+  });
+  const writeControl=(link:ControlLink,value:unknown)=>new Promise<boolean>(resolve=>{
+    let settled=false;
+    const finish=(ok:boolean)=>{if(settled)return;settled=true;clearTimeout(timer);resolve(ok && controlLink===link);};
+    const timer=setTimeout(()=>finish(false),6000);
+    if(controlLink!==link){finish(false);return;}
+    try{if(!link.send(value,error=>finish(!error)))finish(false);}catch{finish(false);}
+  });
+  const shutdownControl=async(value:unknown,controllerId:string)=>{
+    const link=controlLink;
+    const receipt=await shutdownOwner.handle(value,controllerId);
+    if(!receipt || !link || link.controllerId!==controllerId || controlLink!==link)return;
+    try {writeExecutionRecord(configuration.endpoint,"trees.json",workerObserver.snapshots());}
+    catch{shutdownOwner.invalidateObservation();return;}
+    // The tree snapshot and correlated receipt use one authenticated stream.
+    // An auxiliary journal queue cannot establish this ordering.
+    if(!await writeControl(link,{type:"worker-observed",generation,trees:workerObserver.snapshots()})){
+      shutdownOwner.invalidateObservation();return;
+    }
+    if(!await writeControl(link,receipt)){shutdownOwner.invalidateObservation();return;}
+    if(receipt.operation==="finalize-nonforcing" && receipt.result.exited && shutdownOwner.finalizationAllowed &&
+      controlLink===link)await closeServer?.();
+  };
   const close = async () => {
+    if(shutdownOwner.pinned)return;
+    shutdownOwner.markOrdinaryShutdown();
     if (closing) return;
     closing = true;
     clearInterval(observerTimer); clearInterval(heartbeat);
     for (const check of releaseChecks.values()) { clearTimeout(check.timer); check.resolve(false); }
     releaseChecks.clear();
     await pool.close().catch(() => {});
+    if(shutdownOwner.pinned)return;
     await workerObserver.cleanupAll(ORPHAN_CLEANUP_GRACE_MS).catch(() => false);
+    if(shutdownOwner.pinned)return;
     try { persistTrees(); } catch { /* The last verified ledger remains. */ }
     await closeServer?.();
   };
   closeServer = await listenExecutionOwner(configuration.endpoint, generation, {
     connected(link, controllerId) {
+      if(shutdownOwner.pinned && lastControllerId!==controllerId)shutdownOwner.invalidateObservation();
+      lastControllerId=controllerId;
+      controlLink={send:link,controllerId};
       // ready precedes any receipt replay.
       link({ type: "ready", protocol: PROTOCOL, version: PROTOCOL_VERSION,
         generation, heartbeatAt: Date.now(), capabilities: pool.capabilities(), journal: journal.status() });
-      journal.connect(link, controllerId);
+      if(!shutdownOwner.pinned)journal.connect(link, controllerId);
       try { persistTrees(true); } catch { /* observation is advisory */ }
     },
-    disconnected() { journal.disconnect(); },
-    message(value) {
+    disconnected() { controlLink=undefined;journal.disconnect(); },
+    message(value,authenticatedControllerId) {
+      const shutdownRequest=snapshotExecutionShutdownRequest(value);
+      if(shutdownRequest){void shutdownControl(shutdownRequest,authenticatedControllerId).catch(()=>shutdownOwner.invalidateObservation());return;}
+      if(shutdownOwner.pinned)return;
       if (value?.type === "terminate-owner") {
+        shutdownOwner.markOrdinaryShutdown();
         if (["SIGTERM", "SIGINT", "SIGKILL", "SIGSTOP", "SIGCONT"].includes(value.signal)) process.kill(process.pid, value.signal);
         return;
       }

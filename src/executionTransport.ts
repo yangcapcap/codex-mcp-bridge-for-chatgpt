@@ -167,7 +167,7 @@ export class ExecutionPeer extends EventEmitter {
       const request=snapshotExecutionShutdownRequest(message),binding=this.nonforcingBinding;
       const previous=this.nonforcingCloseRequest;
       if (!request || !binding || request.generation!==binding.generation || request.ownerPid!==binding.ownerPid ||
-          request.controllerId!==binding.controllerId || request.type==="observe-nonforcing" &&
+          request.controllerId!==binding.controllerId || request.type!=="close-nonforcing" &&
           (!previous || request.closeRequestId!==previous.requestId) || request.type==="close-nonforcing" &&
           previous && (request.requestId!==previous.requestId || request.policy.graceMs!==previous.policy.graceMs)) {
         callback(new Error("NONFORCING_EXECUTION_MESSAGE_REJECTED"));return false;
@@ -328,7 +328,7 @@ export function clearExitedExecutionOwner(endpoint: ExecutionEndpoint): void {
 
 export async function listenExecutionOwner(endpoint: ExecutionEndpoint, generation: string,
   handlers: { connected(send: (value: unknown, done?: (error?: Error | null) => void) => boolean, controllerId: string): void;
-    disconnected(): void; message(value: any): void }): Promise<() => Promise<void>> {
+    disconnected(): void; message(value: any, authenticatedControllerId: string): void }): Promise<() => Promise<void>> {
   let current: ExecutionSocket | undefined;
   const sockets = new Set<Socket>();
   const server = createServer(socket => {
@@ -336,18 +336,20 @@ export async function listenExecutionOwner(endpoint: ExecutionEndpoint, generati
     if (sockets.size >= 4) { socket.destroy(); return; }
     sockets.add(socket);
     let authenticated = false;
+    let controllerId:string|undefined;
     const authTimer = setTimeout(() => { if (!authenticated) socket.destroy(); }, 5_000);
     authTimer.unref();
     const framed = new ExecutionSocket(socket, value => {
       if (!authenticated) {
         if (value?.type !== "authenticate" || value.token !== endpoint.token || typeof value.controllerId !== "string") { socket.destroy(); return; }
         authenticated = true;
+        controllerId=value.controllerId;
         clearTimeout(authTimer);
         current?.socket.destroy();
         current = framed;
         framed.send({ type: "owner", pid: process.pid, generation });
         handlers.connected((message, done) => framed.send(message, done), value.controllerId);
-      } else if (current === framed) handlers.message(value);
+      } else if (current === framed && controllerId) handlers.message(value,controllerId);
     });
     socket.on("close", () => {
       clearTimeout(authTimer); sockets.delete(socket);

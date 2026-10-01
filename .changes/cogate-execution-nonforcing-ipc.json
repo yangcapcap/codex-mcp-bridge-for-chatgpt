@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Bind nonforcing execution shutdown to the authenticated original owner and retain worker receipts, actual child exit and unresolved writer evidence.",
+  "breaking": false,
+  "migration": null
+}

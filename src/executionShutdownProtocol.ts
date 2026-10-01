@@ -7,7 +7,7 @@ export type ExecutionShutdownBinding = Readonly<{
 }>;
 export type ExecutionShutdownRequest = ExecutionShutdownBinding & (
   | Readonly<{type:"close-nonforcing";policy:Readonly<{allowSigkillEscalation:false;graceMs:number}>}>
-  | Readonly<{type:"observe-nonforcing"}>
+  | Readonly<{type:"observe-nonforcing"|"finalize-nonforcing"}>
 );
 export type ExecutionShutdownReceipt = ExecutionShutdownBinding & Readonly<{
   type:"shutdown-receipt";operation:ExecutionShutdownRequest["type"];result:ShutdownResult;
@@ -33,12 +33,12 @@ export function snapshotExecutionShutdownRequest(value:unknown):ExecutionShutdow
   try {
     if(!value || typeof value!=="object")return;
     const type=Object.getOwnPropertyDescriptor(value,"type");
-    if(!type || !Object.hasOwn(type,"value") || !["close-nonforcing","observe-nonforcing"].includes(type.value))return;
+    if(!type || !Object.hasOwn(type,"value") || !["close-nonforcing","observe-nonforcing","finalize-nonforcing"].includes(type.value))return;
     const raw=data(value,["type",...bindingKeys,...(type.value==="close-nonforcing"?["policy"]:[])]);
     const b=raw && binding(raw);if(!raw || !b || raw.type!==type.value)return;
-    if(raw.type==="observe-nonforcing") {
+    if(raw.type==="observe-nonforcing" || raw.type==="finalize-nonforcing") {
       if(b.requestId===b.closeRequestId)return;
-      return Object.freeze({...b,type:"observe-nonforcing"});
+      return Object.freeze({...b,type:raw.type});
     }
     if(b.requestId!==b.closeRequestId)return;
     const p=snapshotShutdownPolicy(raw.policy as never);
