@@ -33,6 +33,13 @@ import type {
   BridgeRuntimeAdmissionSnapshot
 } from "./tools.js";
 import { decodeUtf8Strict } from "./textIntegrity.js";
+import {OwnedProcessShutdown,beginOrdinaryOwnedProcessStop,isOwnedProcessNonforcing} from './ownedProcessShutdown.js';
+import {ExecutionShutdownOwner} from './executionShutdownOwner.js';
+import {snapshotExecutionShutdownRequest} from './executionShutdownProtocol.js';
+import {RuntimeOperationFence} from './runtimeOperationFence.js';
+import {RuntimeResourceShutdown,type RuntimeResourceHooks} from './runtimeResourceShutdown.js';
+import {snapshotNonforcingData} from './nonforcingData.js';
+import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from './shutdown.js';
 
 type RuntimeStateServiceStatus = NonNullable<
   BridgeRuntimeAdmissionSnapshot["stateService"]
@@ -41,7 +48,9 @@ type RuntimeStateServiceStatus = NonNullable<
 const CHILD_FLAG = "--isolated-bridge-runtime-child";
 const CHILD_STDIO_FLAG = "--stdio";
 const STATE_OWNER_PROTOCOL = "bridge-operational-state-owner" as const;
-const STATE_OWNER_PROTOCOL_VERSION = 2 as const;
+const STATE_OWNER_PROTOCOL_VERSION = 3 as const;
+const RUNTIME_CONTROLLER_ENV="CODEX_MCP_BRIDGE_PRIVATE_RUNTIME_CONTROLLER";
+const RUNTIME_GENERATION_ENV="CODEX_MCP_BRIDGE_PRIVATE_RUNTIME_GENERATION";
 const HEARTBEAT_INTERVAL_MS = 250;
 const HEARTBEAT_STALE_MS = 2_000;
 // These are observation budgets. They never limit the lifetime of a Codex Job.
@@ -131,6 +140,7 @@ type RuntimeReadyMessage = {
   protocol: typeof STATE_OWNER_PROTOCOL;
   protocolVersion: number;
   transport: RuntimeTransport;
+  controllerId:string;
   generation: string;
   port?: number;
   heartbeatAt: number;
@@ -224,6 +234,8 @@ type ProxyFailureContext = {
 export type IsolatedStdioRuntime = {
   readonly applicationService: BridgeApplicationService;
   close(): Promise<void>;
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult>;
+  observeNonforcingExit():Promise<ShutdownResult>;
 };
 
 /**
@@ -269,6 +281,7 @@ export async function createIsolatedHttpServer(
   );
   const applicationService = runtime.applicationService();
   const server = createServer((request, response) => {
+    if(runtime.nonforcingShutdownPinned){writeJson(response,503,{error:"RUNTIME_NONFORCING_PINNED"});return;}
     const pathname = new URL(request.url || "/", "http://bridge.invalid").pathname;
     if (pathname === "/healthz" && request.method === "GET") {
       writeJson(response, 200, {
@@ -300,8 +313,35 @@ export async function createIsolatedHttpServer(
   });
 
   const closeHttp = server.close.bind(server);
+  const listenHttp=server.listen.bind(server),closeIdle=server.closeIdleConnections.bind(server);
+  const sockets=new Set<import('node:net').Socket>();
+  server.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
   let closePromise: Promise<void> | undefined;
+  let nonforcingClose:Promise<ShutdownResult>|undefined,nonforcingPinned=false,nonforcingUnknown=false,ordinaryClosed=false;
+  const localObservation=()=>!nonforcingPinned||nonforcingUnknown?shutdownResult('uncertain'):
+    !server.listening && sockets.size===0?shutdownResult('exited'):shutdownResult('timeout',Math.max(1,sockets.size));
+  server.listen=((...args:unknown[])=>{if(nonforcingPinned)throw new Error('RUNTIME_NONFORCING_PINNED');return Reflect.apply(listenHttp,server,args);}) as BridgeHttpServer['listen'];
+  server.pinNonforcingShutdown=()=>{if(!nonforcingPinned){nonforcingPinned=true;nonforcingUnknown ||= ordinaryClosed;void runtime.closeNonforcing({allowSigkillEscalation:false});}return true;};
+  server.observeNonforcingExit=async()=>combineShutdown([localObservation(),await runtime.observeNonforcingExit()]);
+  server.closeNonforcing=policy=>{
+    const supplied=snapshotShutdownPolicy(policy);if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
+    if(nonforcingClose)return nonforcingClose;
+    let finish!:(value:ShutdownResult)=>void;nonforcingClose=new Promise(resolve=>finish=resolve);
+    nonforcingPinned=true;nonforcingUnknown ||= ordinaryClosed;
+    const remote=runtime.closeNonforcing(supplied);
+    const local=new Promise<void>((resolve,reject)=>{try{closeHttp(error=>error&&(error as NodeJS.ErrnoException).code!=='ERR_SERVER_NOT_RUNNING'?reject(error):resolve());}catch(error){reject(error);}});
+    try{closeIdle();}catch{nonforcingUnknown=true;}
+    const resources=Promise.allSettled([local,remote]).then(results=>{if(results.some(r=>r.status==='rejected'))nonforcingUnknown=true;});
+    void boundedShutdown(async()=>{
+      let timer:NodeJS.Timeout|undefined;
+      try{await Promise.race([resources,new Promise<void>(resolve=>{timer=setTimeout(resolve,supplied.graceMs*2+6000);})]);}finally{if(timer)clearTimeout(timer);}
+      return server.observeNonforcingExit();
+    },Math.min(180000,supplied.graceMs*2+12000)).then(finish);
+    return nonforcingClose;
+  };
   server.close = ((callback?: (error?: Error) => void) => {
+    if(nonforcingPinned){void (nonforcingClose??Promise.resolve(shutdownResult('uncertain'))).then(result=>callback?.(result.exited?undefined:new Error('NONFORCING_SHUTDOWN_UNCONFIRMED')));return server;}
+    ordinaryClosed=true;
     if (!closePromise) {
       closePromise = new Promise<void>((resolve, reject) => {
         closeHttp(error => error ? reject(error) : resolve());
@@ -361,11 +401,13 @@ export async function createIsolatedStdioRuntime(
   );
   return {
     applicationService: runtime.applicationService(),
-    close: () => runtime.close()
+    close: () => runtime.close(),
+    closeNonforcing:policy=>runtime.closeNonforcing(policy),
+    observeNonforcingExit:()=>runtime.observeNonforcingExit()
   };
 }
 
-class IsolatedRuntimeController {
+export class IsolatedRuntimeController {
   private child?: ChildProcess;
   private generation?: string;
   private port?: number;
@@ -388,6 +430,14 @@ class IsolatedRuntimeController {
   private startupReject?: (error: Error) => void;
   private startupTimer?: NodeJS.Timeout;
   private stderr = "";
+  private shutdown?:OwnedProcessShutdown;
+  private spawnGeneration?:string;
+  private controllerId?:string;
+  private nonforcingPinned=false;
+  private nonforcingUnknown=false;
+  private nonforcingClose?:Promise<ShutdownResult>;
+  private readonly requestFence=new RuntimeOperationFence();
+  private readonly retainedNonforcingMessages:unknown[]=[];
 
   private constructor(
     private readonly transport: RuntimeTransport,
@@ -485,7 +535,7 @@ class IsolatedRuntimeController {
       this.generation
     );
     const fresh = connected && heartbeatAgeMs !== undefined && heartbeatAgeMs <= HEARTBEAT_STALE_MS;
-    const accepting = fresh && this.lastRuntimeHealth?.acceptingNewJobs === true;
+    const accepting = !this.nonforcingPinned && fresh && this.lastRuntimeHealth?.acceptingNewJobs === true;
     const reportedStateStatus = fresh
       ? this.lastRuntimeHealth?.stateService?.status
       : undefined;
@@ -543,12 +593,12 @@ class IsolatedRuntimeController {
 
   runtimeHealth(): BridgeRuntimeAdmissionSnapshot {
     const current = this.lastRuntimeHealth || emptyRuntimeHealth();
-    const fresh = this.isFresh();
+    const fresh = !this.nonforcingPinned && this.isFresh();
     const readiness = this.readiness();
     const observationAgeMs = readiness.stateService?.heartbeatAgeMs ?? 0;
     return {
       ...current,
-      acceptingNewJobs: fresh && current.acceptingNewJobs,
+      acceptingNewJobs: !this.nonforcingPinned && fresh && current.acceptingNewJobs,
       backgroundProcessState: fresh ? current.backgroundProcessState : "unknown",
       ...(current.readService ? {
         readService: fresh ? current.readService : {
@@ -595,6 +645,7 @@ class IsolatedRuntimeController {
       ordinarySlotReserved: boolean;
     }
   ): void {
+    if(this.nonforcingPinned){writeJson(outgoing,503,{error:'RUNTIME_NONFORCING_PINNED'});return;}
     if (this.port === undefined || !this.child?.connected) {
       if (bufferedRequest) {
         this.activeProxyRequests -= 1;
@@ -859,6 +910,10 @@ class IsolatedRuntimeController {
   }
 
   async close(): Promise<void> {
+    if(this.nonforcingPinned){
+      if(!this.nonforcingClose || !(await this.nonforcingClose).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');
+      return;
+    }
     if (this.closed) return;
     this.closed = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
@@ -868,10 +923,11 @@ class IsolatedRuntimeController {
     const child = this.child;
     this.child = undefined;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    if(this.nonforcingPinned || !beginOrdinaryOwnedProcessStop(child))return;
     if (child.connected) child.send({ type: "close" } satisfies RuntimeCloseMessage);
     await new Promise<void>(resolve => {
       let settled = false;
-      const force = setTimeout(() => child.kill("SIGKILL"), FORCE_CLOSE_MS);
+      const force = setTimeout(() => {if(!this.nonforcingPinned && beginOrdinaryOwnedProcessStop(child))child.kill("SIGKILL");}, FORCE_CLOSE_MS);
       force.unref();
       const finish = () => {
         if (settled) return;
@@ -882,6 +938,37 @@ class IsolatedRuntimeController {
       child.once("exit", finish);
       if (child.exitCode !== null || child.signalCode !== null) finish();
     });
+  }
+
+  get nonforcingShutdownPinned():boolean{return this.nonforcingPinned;}
+  private freezeNonforcing():true {
+    if(this.nonforcingPinned)return true;
+    this.nonforcingPinned=true;
+    this.nonforcingUnknown ||= this.closed || !this.generation || this.outstanding>0;
+    this.closed=true;this.requestFence.pinNonforcingShutdown();
+    if(this.restartTimer)clearTimeout(this.restartTimer);
+    if(this.stableTimer)clearTimeout(this.stableTimer);
+    if(this.startupTimer)clearTimeout(this.startupTimer);
+    if(this.transport==='stdio' && this.child?.stdin && this.input)this.input.unpipe(this.child.stdin);
+    this.startupReject?.(new Error('RUNTIME_STARTUP_NONFORCING_PINNED'));
+    return true;
+  }
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult> {
+    const supplied=snapshotShutdownPolicy(policy);if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
+    if(this.nonforcingClose)return this.nonforcingClose;
+    let finish!:(value:ShutdownResult)=>void;this.nonforcingClose=new Promise(resolve=>finish=resolve);
+    this.freezeNonforcing();
+    const owner=this.shutdown;
+    if(!owner){this.nonforcingUnknown=true;finish(shutdownResult('uncertain'));return this.nonforcingClose;}
+    const operation=owner.closeNonforcing(supplied);
+    void boundedShutdown(()=>operation,Math.min(180000,(supplied.graceMs*2+6000)*3)).then(result=>{
+      finish(combineShutdown([result,this.nonforcingUnknown?shutdownResult('uncertain'):this.requestFence.observeNonforcingExit()]));
+    });
+    return this.nonforcingClose;
+  }
+  async observeNonforcingExit():Promise<ShutdownResult>{
+    if(!this.nonforcingPinned || !this.shutdown || this.nonforcingUnknown)return shutdownResult('uncertain');
+    return combineShutdown([await this.shutdown.observeNonforcingExit(),this.requestFence.observeNonforcingExit()]);
   }
 
   private get outstanding(): number {
@@ -906,6 +993,10 @@ class IsolatedRuntimeController {
   }
 
   private rpc(method: ApplicationRpcMethod, args: unknown[]): Promise<unknown> {
+    if(this.nonforcingPinned)return Promise.reject(new Error('RUNTIME_NONFORCING_PINNED'));
+    const captured=snapshotNonforcingData(args,()=>this.nonforcingPinned);
+    if(!captured.ok || this.nonforcingPinned)return Promise.reject(new Error('RUNTIME_REQUEST_DATA_UNCONFIRMED'));
+    args=captured.value;
     if (!this.child?.connected || !this.generation) {
       return Promise.reject(new Error(
         "RUNTIME_RESPONSE_UNCONFIRMED: The isolated Bridge runtime is not currently responsive."
@@ -935,6 +1026,7 @@ class IsolatedRuntimeController {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        if(this.nonforcingPinned)return;
         const pending = this.pending.get(requestId);
         if (!pending) return;
         this.pending.delete(requestId);
@@ -949,6 +1041,7 @@ class IsolatedRuntimeController {
         reject: error => { clearTimeout(timer); reject(error); }
       });
       this.child?.send(message, error => {
+        if(this.nonforcingPinned){if(error && this.retainedNonforcingMessages.length<128)this.retainedNonforcingMessages.push(error);return;}
         if (!error) return;
         const pending = this.pending.get(requestId);
         if (!pending) return;
@@ -970,21 +1063,14 @@ class IsolatedRuntimeController {
       : [modulePath, CHILD_FLAG];
     if (this.transport === "stdio") args.push(CHILD_STDIO_FLAG);
     if (this.conformanceFixtures) args.push("--conformance-fixtures");
+    const controllerId=randomUUID(),spawnGeneration=randomUUID();
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
-      env: this.childEnvironment,
+      env: {...this.childEnvironment,[RUNTIME_CONTROLLER_ENV]:controllerId,[RUNTIME_GENERATION_ENV]:spawnGeneration},
       stdio: [this.transport === "stdio" ? "pipe" : "ignore", "pipe", "pipe", "ipc"]
     });
-    this.child = child;
-    if (child.pid !== undefined) this.onRuntimeProcessSpawn?.(child.pid);
-    this.stderr = "";
-    child.stdout?.pipe(this.transport === "stdio" ? this.output || process.stdout : process.stdout);
-    if (this.transport === "stdio" && child.stdin && this.input) this.input.pipe(child.stdin);
-    child.stderr?.on("data", chunk => {
-      const text = String(chunk);
-      this.stderr = (this.stderr + text).slice(-8_192);
-      process.stderr.write(text);
-    });
+    this.child = child;this.controllerId=controllerId;this.spawnGeneration=spawnGeneration;
+    this.shutdown=new OwnedProcessShutdown(child,{generation:()=>spawnGeneration,pin:()=>this.freezeNonforcing()},controllerId);
     child.on("message", message => {
       if (this.child === child) this.onMessage(message);
     });
@@ -996,11 +1082,22 @@ class IsolatedRuntimeController {
         (this.stderr ? ` ${this.stderr}` : "")
       )
     ));
+    if (child.pid !== undefined) this.onRuntimeProcessSpawn?.(child.pid);
+    if(this.nonforcingPinned){await ready;return;}
+    this.stderr = "";
+    child.stdout?.pipe(this.transport === "stdio" ? this.output || process.stdout : process.stdout);
+    if (this.transport === "stdio" && child.stdin && this.input) this.input.pipe(child.stdin);
+    child.stderr?.on("data", chunk => {
+      if(this.nonforcingPinned){if(this.retainedNonforcingMessages.length<128)this.retainedNonforcingMessages.push(chunk);return;}
+      const text = String(chunk);
+      this.stderr = (this.stderr + text).slice(-8_192);
+      process.stderr.write(text);
+    });
     const startupTimeoutMs = this.restartAttempts === 0
       ? STARTUP_TIMEOUT_MS
       : this.restartStartupTimeoutMs;
     this.startupTimer = setTimeout(() => {
-      if (this.child !== child || this.generation !== undefined) return;
+      if (this.child !== child || this.generation !== undefined || this.nonforcingPinned || !beginOrdinaryOwnedProcessStop(child)) return;
       child.kill("SIGKILL");
       this.startupReject?.(new Error(
         `RUNTIME_START_TIMEOUT: Isolated Bridge runtime did not start within ` +
@@ -1012,12 +1109,17 @@ class IsolatedRuntimeController {
   }
 
   private onMessage(value: unknown): void {
+    if(this.nonforcingPinned){if(this.retainedNonforcingMessages.length<128)this.retainedNonforcingMessages.push(value);return;}
+    const captured=snapshotNonforcingData(value,()=>this.nonforcingPinned);
+    if(!captured.ok || this.nonforcingPinned)return;
+    value=captured.value;
     if (!isRuntimeChildMessage(value)) return;
     if (value.type === "fatal") {
       this.startupReject?.(new Error(`RUNTIME_START_FAILED: ${value.message}`));
       return;
     }
     if (value.type === "ready") {
+      if(value.controllerId!==this.controllerId || value.generation!==this.spawnGeneration){this.startupReject?.(new Error('RUNTIME_OWNER_BINDING_MISMATCH'));return;}
       if (
         value.protocol !== STATE_OWNER_PROTOCOL ||
         value.protocolVersion !== STATE_OWNER_PROTOCOL_VERSION
@@ -1045,7 +1147,7 @@ class IsolatedRuntimeController {
       this.startupResolve = undefined;
       this.startupReject = undefined;
       if (this.stableTimer) clearTimeout(this.stableTimer);
-      this.stableTimer = setTimeout(() => { this.restartAttempts = 0; }, RESTART_STABLE_MS);
+      this.stableTimer = setTimeout(() => { if(!this.nonforcingPinned)this.restartAttempts = 0; }, RESTART_STABLE_MS);
       this.stableTimer.unref();
       return;
     }
@@ -1087,6 +1189,7 @@ class IsolatedRuntimeController {
 
   private onExit(child: ChildProcess, error: Error): void {
     if (this.child !== child) return;
+    if(this.nonforcingPinned || isOwnedProcessNonforcing(child))return;
     if (this.transport === "stdio" && child.stdin && this.input) {
       this.input.unpipe(child.stdin);
     }
@@ -1113,7 +1216,7 @@ class IsolatedRuntimeController {
   }
 
   private scheduleRestart(): void {
-    if (this.closed || this.restartTimer) return;
+    if (this.closed || this.nonforcingPinned || this.restartTimer) return;
     const delay = Math.min(
       RESTART_BASE_DELAY_MS * 2 ** Math.min(this.restartAttempts, 16),
       RESTART_MAX_DELAY_MS
@@ -1122,6 +1225,7 @@ class IsolatedRuntimeController {
     // outages. The counter is capped only to keep backoff arithmetic bounded.
     this.restartAttempts = Math.min(this.restartAttempts + 1, 16);
     this.restartTimer = setTimeout(() => {
+      if(this.nonforcingPinned)return;
       this.restartTimer = undefined;
       void this.spawnAndWait().catch(() => this.scheduleRestart());
     }, delay);
@@ -1131,7 +1235,10 @@ class IsolatedRuntimeController {
 
 async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
   if (process.platform === "darwin") process.title = "Codex MCP Bridge State Owner";
-  const generation = randomUUID();
+  const privateGeneration=process.env[RUNTIME_GENERATION_ENV],privateController=process.env[RUNTIME_CONTROLLER_ENV];
+  const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if(!privateGeneration || !privateController || !uuid.test(privateGeneration) || !uuid.test(privateController))throw new Error('RUNTIME_PRIVATE_OWNER_BINDING_MISSING');
+  const generation=privateGeneration,controllerId=privateController;
   const conformanceFixtures = process.argv.includes("--conformance-fixtures");
   let activeOperation: OperationalStateOperationObservation | undefined;
   let operationStartedAt = 0;
@@ -1151,8 +1258,66 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
   let applicationService: BridgeApplicationService | undefined;
   let heartbeat: NodeJS.Timeout | undefined;
   let unsubscribe: (() => void) | undefined;
+  const resources=new RuntimeResourceShutdown(['telemetry','read','execution','frontend']);
+  let shutdownPolicy:ShutdownPolicy & {allowSigkillEscalation:false}={allowSigkillEscalation:false};
+  let databaseClosed=false;
+  const pinned=()=>resources.pinned;
+  const observeResources=async():Promise<ShutdownResult>=>{
+    const observed=await resources.observe();
+    if(!observed.exited)return observed;
+    if(!store)return shutdownResult('uncertain');
+    // Database closure follows positive actor/frontend/application quiescence.
+    if(!databaseClosed){const closed=store.closeNonforcing();databaseClosed=closed.exited;if(!closed.exited)return closed;}
+    return combineShutdown([observed,store.observeNonforcingExit()]);
+  };
+  const shutdownOwner=new ExecutionShutdownOwner(generation,process.pid,{
+    pin(policy){
+      shutdownPolicy=policy;
+      if(heartbeat)clearInterval(heartbeat);
+      if(!store){resources.invalidate('missing-operational-store',undefined);}else {
+        try{if(store.pinNonforcingShutdown()!==true)resources.invalidate('database-pin',false);}catch(error){resources.invalidate('database-pin',error);}
+      }
+      return resources.pin(policy);
+    },
+    async close(policy){await resources.close(policy);return observeResources();},
+    observe:observeResources
+  });
+  const registerActor=(name:string,actor:{closeNonforcing?:(policy:ShutdownPolicy & {allowSigkillEscalation:false})=>Promise<ShutdownResult>;observeNonforcingExit?:()=>ShutdownResult|Promise<ShutdownResult>;pinNonforcingShutdown?:()=>true})=>{
+    const close=actor.closeNonforcing,observe=actor.observeNonforcingExit,pin=actor.pinNonforcingShutdown;
+    let initial:Promise<ShutdownResult>|undefined;
+    if(typeof close!=='function'||typeof observe!=='function'){resources.invalidate('unsupported-actor:'+name,actor);throw new Error('RUNTIME_RESOURCE_CAPABILITY_INVALID');}
+    const hooks:RuntimeResourceHooks={
+      pin(){
+        if(pin && Reflect.apply(pin,actor,[])!==true)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');
+        initial=Reflect.apply(close,actor,[shutdownPolicy]);return true;
+      },
+      close:()=>initial ?? Reflect.apply(close,actor,[shutdownPolicy]),
+      observe:()=>Reflect.apply(observe,actor,[])
+    };
+    resources.register(name,hooks);
+    if(pinned())throw new Error('RUNTIME_STARTUP_NONFORCING_PINNED');
+  };
+  // The final receipt must reach the authenticated parent before IPC closes.
+  process.on('message',value=>{
+    if(!snapshotExecutionShutdownRequest(value))return;
+    void shutdownOwner.handle(value,controllerId).then(receipt=>{
+      if(!receipt)return;
+      if(!process.connected || !process.send){shutdownOwner.invalidateObservation();return;}
+      let settled=false;
+      const finish=(error?:unknown)=>{
+        if(settled)return;settled=true;clearTimeout(timer);
+        if(error){shutdownOwner.invalidateObservation();resources.invalidate('shutdown-receipt-send',error);return;}
+        if(receipt.operation==='finalize-nonforcing'&&receipt.result.exited&&shutdownOwner.finalizationAllowed){
+          process.exitCode=0;if(process.connected)process.disconnect();
+        }
+      };
+      const timer=setTimeout(()=>finish(new Error('RUNTIME_SHUTDOWN_RECEIPT_TIMEOUT')),6000);
+      try{process.send(receipt,finish);}catch(error){finish(error);}
+    });
+  });
 
   const send = (message: RuntimeChildMessage) => {
+    if(pinned())return;
     if (!process.connected || !process.send) return;
     try {
       process.send(message, () => {
@@ -1165,6 +1330,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     }
   };
   const observeTransaction = (phase: OperationalStateOperationObservation["phase"]) => {
+    if(pinned())return;
     const token = ++observationToken;
     if (phase === "write-lock-wait" || operationStartedAt === 0) {
       operationStartedAt = Date.now();
@@ -1186,7 +1352,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
         now: lastCommitAt
       });
       queueMicrotask(() => {
-        if (token !== observationToken || activeOperation?.access !== "write") return;
+        if (pinned() || token !== observationToken || activeOperation?.access !== "write") return;
         activeOperation = undefined;
         operationStartedAt = 0;
         send({ type: "operation-clear", generation });
@@ -1194,12 +1360,14 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     }
   };
   const observeTransactionFailure = (error: unknown) => {
+    if(pinned()){resources.invalidate('late-observation',error);return;}
     activeOperation = undefined;
     operationStartedAt = 0;
     send({ type: "operation-clear", generation });
     observeStorageFailure(error);
   };
   const observeStorageFailure = (error: unknown) => {
+    if(pinned()){resources.invalidate('late-observation',error);return;}
     const classified = runtimeStorageError(error);
     if (classified) {
       const changed = storageFault?.error !== classified;
@@ -1213,6 +1381,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     }
   };
   const observeTransactionCommitted = () => {
+    if(pinned())return;
     const recovered = storageFault !== undefined;
     storageFault = undefined;
     applicationService?.setStorageAdmissionError?.();
@@ -1223,6 +1392,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     });
   };
   const observeSql = (sql: string) => {
+    if(pinned())return;
     if (activeOperation?.access === "write") return;
     const statement = sql.trimStart().toUpperCase();
     if (!/^(SELECT|WITH|PRAGMA|EXPLAIN)\b/u.test(statement)) return;
@@ -1244,7 +1414,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     // statement. This microtask therefore cannot run until the read (and its
     // current synchronous projection stack) has yielded back to the loop.
     queueMicrotask(() => {
-      if (token !== observationToken || activeOperation?.access !== "read") return;
+      if (pinned() || token !== observationToken || activeOperation?.access !== "read") return;
       activeOperation = {
         ...activeOperation,
         phase: "serializing",
@@ -1252,7 +1422,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
       };
       send({ type: "operation", generation, observation: activeOperation });
       queueMicrotask(() => {
-        if (token !== observationToken || activeOperation?.access !== "read") return;
+        if (pinned() || token !== observationToken || activeOperation?.access !== "read") return;
         activeOperation = undefined;
         send({ type: "operation-clear", generation });
       });
@@ -1260,14 +1430,18 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
   };
 
   const close = async (code = 0, stopExecution = true) => {
+    if(pinned()){return;}
+    shutdownOwner.markOrdinaryShutdown();
     if (closing) return;
     closing = true;
     if (heartbeat) clearInterval(heartbeat);
     unsubscribe?.();
     const closeStep = async (step: () => void | Promise<void>) => {
       try {
+        if(pinned())return;
         await step();
       } catch (error) {
+        if(pinned()){resources.invalidate('ordinary-close-rejection',error);return;}
         code = 1;
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       }
@@ -1286,6 +1460,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     await closeStep(() => readProjection?.close());
     await closeStep(() => store?.close());
     await closeStep(() => telemetry?.close());
+    if(pinned())return;
     if (process.connected) process.disconnect();
     process.exitCode = code;
   };
@@ -1305,17 +1480,20 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
         { sourceStateDatabaseId: store.databaseId }
       );
     } catch (error) {
+      if(pinned()){resources.invalidate('telemetry-startup-rejection',error);throw new Error('RUNTIME_STARTUP_NONFORCING_PINNED');}
       telemetry = new InMemoryTelemetryService();
       process.stderr.write(
         `Telemetry persistence unavailable; using bounded memory only: ` +
         `${error instanceof Error ? error.message : String(error)}\n`
       );
     }
+    registerActor('telemetry',telemetry);
     readProjection = await ChildProcessStateReadService.start(
       config.stateDatabaseFile,
       process.env,
       { authBoundary: () => config.codexService?.sessionAuthBoundary() || null }
     );
+    registerActor('read',readProjection);
     const appServerLateResponses = new AppServerLateResponseJournal(store);
     upstream = createExecutionRuntime(
       config,
@@ -1362,6 +1540,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
         }
       }
     );
+    registerActor('execution',upstream);
     const canAcceptExecution = () => {
       const status = upstream?.executionHealth?.().status;
       return status === undefined || status === "idle" || status === "ready";
@@ -1376,6 +1555,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
         onOperationFailure: observeStorageFailure,
         canAcceptNewJobs: canAcceptExecution
       });
+      registerActor('frontend',httpServer);
       await new Promise<void>((resolve, reject) => {
         httpServer?.once("error", reject);
         httpServer?.listen(0, "127.0.0.1", () => {
@@ -1392,9 +1572,11 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
         onOperationFailure: observeStorageFailure,
         canAcceptNewJobs: canAcceptExecution
       });
+      registerActor('frontend',stdioRuntime);
       await stdioRuntime.start();
       applicationService = stdioRuntime.applicationService;
     }
+    if(pinned())throw new Error('RUNTIME_STARTUP_NONFORCING_PINNED');
     applicationService.setStorageAdmissionError?.(storageFault?.error);
     if (
       process.env.NODE_ENV === "test" &&
@@ -1479,8 +1661,10 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
         } : {})
       };
     };
+    resources.sealReady();
     send({
       type: "ready",
+      controllerId,
       protocol: STATE_OWNER_PROTOCOL,
       protocolVersion: STATE_OWNER_PROTOCOL_VERSION,
       transport,
@@ -1507,27 +1691,25 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
       closeHttpAfterReadyMs > 0 && closeHttpAfterReadyMs <= 30_000
     ) {
       const timer = setTimeout(() => {
-        if (!closing) httpServer?.close();
+        if (!closing && !pinned()) httpServer?.close();
       }, closeHttpAfterReadyMs);
       timer.unref();
     }
 
     process.on("message", value => {
-      if (!isRuntimeParentMessage(value) || closing) return;
+      if (pinned() || !isRuntimeParentMessage(value) || closing) return;
       if (value.type === "close") {
         void close();
         return;
       }
       if (value.generation !== generation) return;
-      void dispatchApplicationRpc(applicationService as BridgeApplicationService, value).then(
-        result => send({
-          type: "rpc-response",
-          generation,
-          requestId: value.requestId,
-          ok: true,
-          result: result === undefined ? null : result
-        }),
+      void resources.operations.run(()=>dispatchApplicationRpc(applicationService as BridgeApplicationService, value)).then(
+        result => {
+          if(pinned()){resources.invalidate('application-rpc-result:'+value.requestId,{request:value,result});return;}
+          send({type:'rpc-response',generation,requestId:value.requestId,ok:true,result:result===undefined?null:result});
+        },
         error => {
+          if(pinned()){resources.invalidate('application-rpc-rejection',error);return;}
           observeStorageFailure(error);
           send({
             type: "rpc-response",
@@ -1547,6 +1729,7 @@ async function runRuntimeChild(transport: RuntimeTransport): Promise<void> {
     process.once("SIGTERM", () => { void close(0, false); });
     process.once("SIGINT", () => { void close(0, false); });
   } catch (error) {
+    if(pinned()){resources.invalidate('startup-rejection',error);return;}
     send({ type: "fatal", message: error instanceof Error ? error.message : String(error) });
     await close(1, false);
   }
@@ -1626,7 +1809,7 @@ function isRuntimeChildMessage(value: unknown): value is RuntimeChildMessage {
       : undefined;
     return message.protocol === STATE_OWNER_PROTOCOL &&
       Number.isSafeInteger(message.protocolVersion) &&
-      transport !== undefined && typeof message.generation === "string" &&
+      transport !== undefined && typeof message.controllerId==="string" && typeof message.generation === "string" &&
       (transport === "stdio" || Number.isInteger(message.port) && Number(message.port) > 0) &&
       Number.isSafeInteger(message.heartbeatAt) && isRuntimeHealth(message.runtimeHealth);
   }
