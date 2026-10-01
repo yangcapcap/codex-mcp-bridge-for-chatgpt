@@ -544,3 +544,15 @@ the existing ten-second retry. Synchronous scope, Job, transaction and ledger
 calls register their original delegate before method lookup and preserve raw
 unsupported Promise/Proxy/results before pin checks. A delayed result is not a
 synchronous save acknowledgement or evidence of completed writer cleanup.
+
+Fixed synchronous Events callbacks
+-----------------------------------
+
+Events uses a separate fixed synchronous fence for scope, Job, transaction and
+ledger callbacks. Unsupported raw thenables are rejected before the caller can
+perform another ledger mutation. Native Promise errors are observed only after
+strict prototype/constructor/species validation, without assimilating arbitrary
+thenables. The original captured unsubscribe runs in its own registered fence:
+a reentrant observation sees the active callback, and unsupported raw returns
+and errors remain UNKNOWN after repeated pins. This contract never permits an
+asynchronous value to serve as a synchronous mutation acknowledgement.

@@ -44,6 +44,23 @@ export class RuntimeOperationFence {
   }
   return current===null;
  }
+ /** Fixed synchronous semantics: reject raw thenables before caller continuation. */
+ runSynchronous<T>(operation:()=>T):T {
+  this.assertAdmission();const token={};this.active.set(token,undefined);let retain=false;
+  try {
+   const value=Reflect.apply(operation,undefined,[]);this.active.set(token,value);
+   if(!this.safeValue(value,false)){
+    retain=true;this.uncertain=true;
+    // Only a strictly validated original native Promise can be observed without
+    // executing an overridden then/constructor/species. Never assimilate data.
+    if(types.isPromise(value)&&this.safeValue(value,true))Reflect.apply(nativeThen,value,[
+     ()=>undefined,(error:unknown)=>{this.active.set(token,{value,error});this.uncertain=true;}
+    ]);
+    throw new Error('RUNTIME_OPERATION_RESULT_UNCONFIRMED');
+   }
+   return value;
+  }finally{if(!retain)this.active.delete(token);}
+ }
  async run<T>(operation:()=>T|Promise<T>):Promise<T>{
   this.assertAdmission();const token={};this.active.set(token,undefined);
   let retain=false;

@@ -1,4 +1,3 @@
-import {types} from 'node:util';
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer, ProtocolError, type ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -88,6 +87,7 @@ export class McpEventsController {
   private readonly senderFence=new RuntimeOperationFence();
   private readonly requestFence=new RuntimeOperationFence();
   private readonly delegateFence=new RuntimeOperationFence();
+  private readonly unsubscribeFence=new RuntimeOperationFence();
 
   pinNonforcingShutdown():true {
     if(this.nonforcingPinned)return true;
@@ -96,14 +96,20 @@ export class McpEventsController {
     this.requestFence.pinNonforcingShutdown();
     this.delegateFence.pinNonforcingShutdown();
     this.stop.abort();
-    try{this.unsubscribe();}catch(error){this.nonforcingUnknown=true;this.retainedErrors.set('unsubscribe',error);}
+    try{this.unsubscribeFence.runSynchronous(()=>{
+      this.unsubscribeFence.pinNonforcingShutdown();
+      const raw=Reflect.apply(this.unsubscribe,undefined,[]);
+      if(raw!==undefined){this.retainedErrors.set('unsubscribe-result',raw);this.nonforcingUnknown=true;}
+      return raw;
+    });}catch(error){this.nonforcingUnknown=true;this.retainedErrors.set('unsubscribe',error);}
+    finally{this.unsubscribeFence.pinNonforcingShutdown();}
     if(this.timer)clearTimeout(this.timer);this.timer=undefined;
     return true;
   }
   observeNonforcingExit():ShutdownResult {
     if(!this.nonforcingPinned || this.nonforcingUnknown)return shutdownResult('uncertain');
     const active=this.verifying.size+(this.running?1:0);
-    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit(),this.requestFence.observeNonforcingExit(),this.delegateFence.observeNonforcingExit()]);
+    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit(),this.requestFence.observeNonforcingExit(),this.delegateFence.observeNonforcingExit(),this.unsubscribeFence.observeNonforcingExit()]);
   }
   async closeNonforcing():Promise<ShutdownResult>{
     this.pinNonforcingShutdown();
@@ -172,20 +178,24 @@ export class McpEventsController {
     this.assertAdmission();return method;
   }
   private ownedCall<T extends object,K extends keyof T>(owner:T,key:K,args:unknown[]):ReturnType<Extract<T[K],(...args:any[])=>any>> {
-    this.assertAdmission();let value:unknown,failed=false,originalError:unknown;
-    const observed=this.delegateFence.run(()=>{
-      try{const method=this.ownedMethod(owner,key);value=Reflect.apply(method as (...args:any[])=>any,owner,args);return value;}
-      catch(error){failed=true;originalError=error;this.nonforcingUnknown=true;this.retainedErrors.set('call-error:'+String(key),error);throw error;}
-    });
-    void observed.catch(error=>{this.nonforcingUnknown=true;this.retainedErrors.set('delegate-error:'+String(key),error);});
-    if(failed)throw originalError;
-    if(this.nonforcingPinned || types.isPromise(value) || types.isProxy(value) ||
-      key==='save' && typeof value!=='boolean' || (key==='maintain'||key==='enqueue') && value!==undefined){
+    this.assertAdmission();let value:unknown;
+    try {
+      const result=this.delegateFence.runSynchronous(()=>{
+        const method=this.ownedMethod(owner,key);value=Reflect.apply(method as (...args:any[])=>any,owner,args);
+        return value;
+      });
+      if(this.nonforcingPinned || key==='save' && typeof result!=='boolean' ||
+        (key==='maintain'||key==='enqueue') && result!==undefined) {
+        this.nonforcingUnknown=true;this.retainedErrors.set('call-result:'+String(key),value);
+        throw new Error('MCP_EVENTS_SYNC_RESULT_UNCONFIRMED');
+      }
+      this.assertAdmission();return result as ReturnType<Extract<T[K],(...args:any[])=>any>>;
+    }catch(error){
       this.nonforcingUnknown=true;this.retainedErrors.set('call-result:'+String(key),value);
-      if(!this.nonforcingPinned)throw new Error('MCP_EVENTS_SYNC_RESULT_UNCONFIRMED');
+      this.retainedErrors.set('call-error:'+String(key),error);throw error;
     }
-    this.assertAdmission();return value as ReturnType<Extract<T[K],(...args:any[])=>any>>;
   }
+
   private ownedData<T>(value:T,label:string):T {
     const captured=snapshotNonforcingData(value,()=>this.nonforcingPinned);
     if(!captured.ok){this.nonforcingUnknown=true;this.retainedErrors.set(label,value);throw new Error('MCP_EVENTS_DATA_UNCONFIRMED');}
