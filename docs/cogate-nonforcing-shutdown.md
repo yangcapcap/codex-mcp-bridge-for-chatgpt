@@ -375,3 +375,36 @@ ownership evidence and retain bounded (128) original values plus sticky UNKNOWN.
 Queue status reads the last validated primitive limits without executing option
 getters after pin. Nine root suites (116 cases) are regression evidence only;
 fresh exact-head independent review and complete runtime wiring remain pending.
+
+
+## Pending state registry integration
+
+The registry has an internal synchronous `pinNonforcingShutdown()` fence with a
+positive acknowledgement only after every existing owned background component
+has been pinned. Admission, recovery, deferred launch/discard, cancellation,
+steering, interaction responses and registry mutation endpoints cannot resume
+once pinned. Application service drain cancellation cannot reopen this fence.
+The internal fence is not an MCP tool or a public runtime RPC method.
+
+Registry callback inputs are captured as bounded own-data snapshots before
+mutation. Accessors, cycles, unsupported values and descriptor inspection failures
+are retained as uncertainty. Late progress, assignment and original settlements
+cannot update the durable Job or acknowledge an execution owner after the fence.
+The original outcome stays reserved; terminal rollback callbacks are retained
+rather than executed after the fence. Completion callbacks accept only `undefined`
+or a synchronous undo function; unsupported returns retain the original resolved
+settlement without a terminal commit or execution ACK. Ordinary admitted-thread
+callbacks update the registry's captured `sessionDecision` object.
+
+Observation is resource-only. A known active Job, construction or bounded observer
+wait gives `TIMEOUT`; retained outcomes, unfinished admissions or control maps,
+unsupported callback returns, prior ordinary-close history and a fence inside an
+activity transaction give sticky `UNKNOWN`. Activity transactions reject their
+commit after a reentrant fence. Notification dispatch stops before later listeners
+when one listener pins. Retained observation samples are bounded at 128 and
+sample overflow remains `UNKNOWN`.
+
+This registry component does not close the state database, retire a durable writer
+or approve the complete runtime. The full runtime owner must additionally fence
+in-flight application RPCs and frontends before closing resources and authenticating
+its generation-bound shutdown receipts. Production policy remains unchanged.

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Seal registry admission and state callbacks during explicit nonforcing shutdown while retaining unfinished owner outcomes and transaction uncertainty.","breaking":false,"migration":null}
