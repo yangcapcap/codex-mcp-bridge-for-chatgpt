@@ -1,6 +1,6 @@
 import { CLI_INSTALL_VALIDATION_ID, verifyCliConnection } from "./runtimeCompatibility.js";
 import { inspectCliProtocol, type CliProtocolSupport } from "./cliProtocol.js";
-import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync, statSync, lstatSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { access, chmod, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -10,6 +10,43 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { installManagedCli } from "./runtimeDownloads.js";
 import { decodeUtf8Strict, parseJsonUtf8Strict } from "./textIntegrity.js";
+
+type RetainedCliLease = {file:string;directory:string;fileIdentity:string;directoryIdentity:string;sha256:string;failed:boolean};
+const retainedCliLeases=new WeakMap<()=>Promise<void>,RetainedCliLease>();
+const leaseStatIdentity=(value:import('node:fs').BigIntStats,file:boolean)=>[
+  value.dev,value.ino,value.mode,value.uid,value.gid,value.nlink,
+  ...(file?[value.size,value.mtimeNs,value.ctimeNs]:[])
+].join(':');
+function readRetainedCliLease(file:string,directory:string):Omit<RetainedCliLease,'failed'>|undefined {
+  let descriptor:number|undefined;
+  try {
+    if(path.dirname(file)!==directory || realpathSync(directory)!==directory)return;
+    const uid=process.getuid?.();if(uid===undefined)return;
+    const parent=lstatSync(directory,{bigint:true}),entry=lstatSync(file,{bigint:true});
+    if(!parent.isDirectory() || parent.uid!==BigInt(uid) || (parent.mode&0o7777n)!==0o700n ||
+      !entry.isFile() || entry.uid!==BigInt(uid) || (entry.mode&0o7777n)!==0o600n || entry.nlink!==1n || entry.size>32768n)return;
+    descriptor=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW);
+    const opened=fstatSync(descriptor,{bigint:true});if(leaseStatIdentity(opened,true)!==leaseStatIdentity(entry,true))return;
+    const bytes=Buffer.alloc(Number(entry.size));let offset=0;
+    while(offset<bytes.length){const count=readSync(descriptor,bytes,offset,bytes.length-offset,offset);if(!count)return;offset+=count;}
+    const extra=Buffer.alloc(1);if(readSync(descriptor,extra,0,1,offset)!==0)return;
+    if(leaseStatIdentity(fstatSync(descriptor,{bigint:true}),true)!==leaseStatIdentity(entry,true) ||
+      leaseStatIdentity(lstatSync(file,{bigint:true}),true)!==leaseStatIdentity(entry,true) ||
+      leaseStatIdentity(lstatSync(directory,{bigint:true}),false)!==leaseStatIdentity(parent,false) || realpathSync(directory)!==directory)return;
+    const payload=parseJsonUtf8Strict(bytes,'CLI retained lease') as {pid?:unknown};
+    if(!payload || payload.pid!==process.pid)return;
+    return {file,directory,fileIdentity:leaseStatIdentity(entry,true),directoryIdentity:leaseStatIdentity(parent,false),sha256:createHash('sha256').update(bytes).digest('hex')};
+  }catch{return;}finally{if(descriptor!==undefined){try{closeSync(descriptor);}catch{return;}}}
+}
+/** Only an original manager-created passive record can prove retained quiescence.
+ * No release, lease removal, writer retirement or owner-exit claim occurs here. */
+export function observeRetainedCliLease(release:unknown):boolean {
+  if(typeof release!=='function')return false;
+  const owned=retainedCliLeases.get(release as ()=>Promise<void>);if(!owned || owned.failed)return false;
+  const current=readRetainedCliLease(owned.file,owned.directory);
+  if(!current || current.fileIdentity!==owned.fileIdentity || current.directoryIdentity!==owned.directoryIdentity || current.sha256!==owned.sha256){owned.failed=true;return false;}
+  return true;
+}
 
 const executeFile = promisify(execFile);
 const versionSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
@@ -337,7 +374,10 @@ export class CodexRuntimeManager {
       await writeFile(temporary, JSON.stringify({ pid: process.pid, selection, startedAt: new Date().toISOString() }), { mode: 0o600, flag: "wx" });
       await rename(temporary, file);
     } finally { await rm(temporary, { force: true }); }
-    return () => rm(file, { force: true });
+    const release=()=>rm(file,{force:true});
+    const retained=readRetainedCliLease(file,directory);
+    if(retained)retainedCliLeases.set(release,{...retained,failed:false});
+    return release;
   }
 
   /** Seal the selection and its usage record under the same lock as activation/removal. */

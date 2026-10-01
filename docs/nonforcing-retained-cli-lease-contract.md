@@ -1,0 +1,7 @@
+# Passive CLI lease quiescence
+
+A manager-created original release function is privately associated with the exact published passive lease. Observation validates its canonical owner-0700 directory, owner-0600 single-link regular file, O_NOFOLLOW stable bounded read, current process PID, exact inode/mode/UID/GID/link count, nanosecond modification/change timestamps and original byte digest. Unknown, wrapped, replaced, missing, altered or previously failed evidence stays unconfirmed.
+
+A resolved original lease can remain unchanged while the independently owned execution actors close. The resource receipt claims only resource quiescence: no lease is released or removed, no durable writer is retired, and no process exit is inferred from the passive record. Pending acquisition or ordinary release in progress remains UNKNOWN; late original context/error is retained without field delegation after pin. Context accessors and proxies are rejected without execution. Fresh file uncertainty defeats cached EXIT for ordinary close-after-pin, while the initial receipt remains immutable.
+
+Twenty contract/lifecycle cases and 109 cases across eight isolated suites passed, as did typecheck. Additional actual process tests for direct and isolated execution require positive native actor exit and unchanged original lease bytes; exact host execution and independent review are pending. No production operations.

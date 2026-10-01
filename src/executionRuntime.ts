@@ -1,10 +1,11 @@
+import {types as contextTypes} from "node:util";
 import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownResult} from "./shutdown.js";
 import { executionEndpoint } from "./executionTransport.js";
 import { CodexService } from "./codexService.js";
 import type { CodexUpstream } from "./upstream.js";
 import type { CodexBackendKind } from "./config.js";
 import type { BridgeConfig } from "./config.js";
-import { CodexRuntimeManager } from "./codexRuntime.js";
+import { CodexRuntimeManager, observeRetainedCliLease } from "./codexRuntime.js";
 import { CodexAppServerUpstreamPool, type CodexAppServerProtocolOptions } from "./appServerUpstream.js";
 import { CodexBackendRouter } from "./upstreamRouter.js";
 import { LazyCodexUpstream } from "./lazyUpstream.js";
@@ -37,10 +38,28 @@ export function createExecutionRuntime(
   const service = config.codexService = new CodexService(codexEnvironment, manager);
   let selected: Promise<string> | undefined;
   let release: (() => Promise<void>) | undefined;
+  let selectionPending=false,selectionResolved=false,selectionUnconfirmed=false,leaseReleaseStarted=false;
+  const retainedContexts:unknown[]=[];
   const resolveCli = (): Promise<string> => {
-    if (!selected) selected = service.acquireContext()
-      .then(context => { release = context.release; return context.selection.command; })
-      .catch(error => { selected = undefined; throw error; });
+    if (!selected) {
+      selectionPending=true;
+      selected=service.acquireContext().then(context=>{
+        retainedContexts.push(context);
+        if(constructionPinned)throw new Error('NONFORCING_EXECUTION_CONSTRUCTION_CLOSED');
+        if(!context || typeof context!=='object' || contextTypes.isProxy(context))throw new Error('CLI_CONTEXT_OWNER_UNCONFIRMED');
+        const fields=Object.getOwnPropertyDescriptors(context);
+        const ownedRelease=fields.release,ownedSelection=fields.selection;
+        if(!ownedRelease || !('value' in ownedRelease) || typeof ownedRelease.value!=='function' ||
+          !ownedSelection || !('value' in ownedSelection) || !ownedSelection.value || typeof ownedSelection.value!=='object' ||
+          contextTypes.isProxy(ownedSelection.value))throw new Error('CLI_CONTEXT_OWNER_UNCONFIRMED');
+        const commandField=Object.getOwnPropertyDescriptor(ownedSelection.value,'command');
+        if(!commandField || !('value' in commandField) || typeof commandField.value!=='string')throw new Error('CLI_CONTEXT_OWNER_UNCONFIRMED');
+        if(constructionPinned)throw new Error('NONFORCING_EXECUTION_CONSTRUCTION_CLOSED');
+        release=ownedRelease.value;const command=commandField.value;
+        selectionResolved=true;return command;
+      }).catch(error=>{retainedContexts.push(error);selectionUnconfirmed=true;if(!constructionPinned)selected=undefined;throw error;})
+        .finally(()=>{selectionPending=false;});
+    }
     return selected;
   };
   config.runtimeStatusResolver = async () => {
@@ -114,16 +133,21 @@ export function createExecutionRuntime(
     const supplied=snapshotShutdownPolicy(policy);if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
     if(nonforcingClose)return nonforcingClose;
     let finish!:(value:ShutdownResult)=>void;nonforcingClose=new Promise(resolve=>finish=resolve);
-    constructionPinned=true;leaseUnconfirmed=Boolean(selected || release);
+    constructionPinned=true;
+    leaseUnconfirmed=selectionUnconfirmed || leaseReleaseStarted || selectionPending || Boolean(selected && (!selectionResolved || !observeRetainedCliLease(release)));
     const resource=closeNonforcing({...supplied,allowSigkillEscalation:false});
-    void boundedShutdown(()=>resource,supplied.graceMs*2+6000).then(result=>finish(combineShutdown([result,leaseUnconfirmed?shutdownResult('uncertain'):shutdownResult('exited')])));
+    void boundedShutdown(()=>resource,supplied.graceMs*2+6000).then(result=>finish(combineShutdown([result,retainedLeaseObservation()])));
     return nonforcingClose;
   };
-  router.observeNonforcingExit=async()=>combineShutdown([await observe(),leaseUnconfirmed?shutdownResult('uncertain'):shutdownResult('exited')]);
+  const retainedLeaseObservation=()=>{
+    if(release&&!observeRetainedCliLease(release))leaseUnconfirmed=true;
+    return leaseUnconfirmed?shutdownResult('uncertain'):shutdownResult('exited');
+  };
+  router.observeNonforcingExit=async()=>combineShutdown([await observe(),retainedLeaseObservation()]);
   router.close = async () => {
-    if(nonforcingClose){if(!(await nonforcingClose).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
-    await close();const pinnedClose=currentNonforcingClose();if(pinnedClose){if(!(await pinnedClose).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
-    await release?.();
+    if(nonforcingClose){if(!(await nonforcingClose).exited || !(await router.observeNonforcingExit()).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
+    await close();const pinnedClose=currentNonforcingClose();if(pinnedClose){if(!(await pinnedClose).exited || !(await router.observeNonforcingExit()).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
+    if(release){leaseReleaseStarted=true;await release();}
   };
   return router;
 }
