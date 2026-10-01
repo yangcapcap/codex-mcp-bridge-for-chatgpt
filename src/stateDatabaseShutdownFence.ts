@@ -15,10 +15,16 @@ export class StateDatabaseShutdownFence {
   private closeConfirmed = false;
   private readonly capturedClose: () => void;
   private readonly wrapped = new WeakMap<object,object>();
+  private readonly nativeHandleSymbols = new Map<symbol,object>();
 
   constructor(private readonly owned: Database.Database) {
     const close = owned.close;
     this.capturedClose = () => Reflect.apply(close,owned,[]);
+    for (const key of Object.getOwnPropertySymbols(owned)) {
+      const field = Object.getOwnPropertyDescriptor(owned,key);
+      if (field && Object.hasOwn(field,"value") && field.value && typeof field.value === "object")
+        this.nativeHandleSymbols.set(key,this.wrap(field.value,"native-handle"));
+    }
     this.database = this.wrap(owned,"database") as Database.Database;
   }
 
@@ -57,7 +63,7 @@ export class StateDatabaseShutdownFence {
     if (this.pinned) throw new Error("STATE_DATABASE_NONFORCING_PINNED");
   }
 
-  private wrap(value: object, kind: "database" | "statement" | "transaction" | "iterator"): object {
+  private wrap(value: object, kind: "database" | "statement" | "transaction" | "iterator" | "native-handle"): object {
     const previous = this.wrapped.get(value);
     if (previous) return previous;
     const fence = this;
@@ -65,11 +71,22 @@ export class StateDatabaseShutdownFence {
     const facade = typeof value === "function" ? function() {} : Object.create(Object.getPrototypeOf(value));
     const proxy = new Proxy(facade, {
       get(target,key) {
+        const native = typeof key === "symbol" ? fence.nativeHandleSymbols.get(key) : undefined;
+        if (native) return native;
+        // A borrowed native prototype sees only a guarded basic handle. Native
+        // async/extension internals are never leaked through this compatibility path.
+        if (kind === "native-handle" && !["prepare","exec","close","defaultSafeIntegers","unsafeMode",
+          "name","open","inTransaction","readonly","memory"].includes(String(key))) {
+          fence.assertOpen();
+          throw new Error("STATE_DATABASE_NATIVE_HANDLE_UNAVAILABLE");
+        }
         // No caller can recover the unguarded native connection from a handle.
         if (key === "database") return fence.database;
         if (methods.has(key)) return methods.get(key);
         const result = Reflect.get(value,key,value);
         if (typeof result !== "function") return result;
+        if (kind === "transaction" && ["default","deferred","immediate","exclusive"].includes(String(key)))
+          return fence.wrap(result,"transaction");
         const method = function(this: unknown,...args: unknown[]) {
           return fence.invoke(value,kind,key,result,args,kind === "transaction" &&
             key !== "call" && key !== "apply" && key !== "bind" ? this : value);
@@ -87,11 +104,15 @@ export class StateDatabaseShutdownFence {
 
   private invoke(target: object,kind: string,key: PropertyKey,
     operation: (...args: unknown[]) => unknown,args: unknown[],receiver: unknown = target): unknown {
-    // A transaction that crosses the fence may roll back, never commit.
-    const rollback = kind === "database" && key === "exec" && args.length === 1 && args[0] === "ROLLBACK" && this.owned.inTransaction;
+    // A prepared abort used by a borrowed native transaction may still unwind.
+    // An already admitted native COMMIT can finish; pinning then stays UNKNOWN.
+    const rollback = this.owned.inTransaction && (
+      ((kind === "database" || kind === "native-handle") && key === "exec" && args.length === 1 && args[0] === "ROLLBACK") ||
+      (kind === "statement" && key === "run" && args.length === 0 &&
+        Reflect.get(target,"source",target) === "ROLLBACK"));
     const iteratorReturn = kind === "iterator" && key === "return";
     if (!rollback && !iteratorReturn) this.assertOpen();
-    if (kind === "database" && key === "close") this.ordinaryClosed = true;
+    if ((kind === "database" || kind === "native-handle") && key === "close") this.ordinaryClosed = true;
     if (kind === "database" && key === "transaction") {
       const callback = args[0];
       if (typeof callback !== "function") throw new Error("STATE_TRANSACTION_CALLBACK_INVALID");
@@ -106,9 +127,13 @@ export class StateDatabaseShutdownFence {
     this.nativeCalls++;
     let result: unknown;
     try {result = Reflect.apply(operation,receiver,args);}
+    catch (error) {
+      if (this.pinned && (rollback || iteratorReturn)) this.uncertain = true;
+      throw error;
+    }
     finally {this.nativeCalls--;}
     if (result === this.owned) return this.database;
-    if (kind === "database" && key === "prepare" && result && typeof result === "object")
+    if ((kind === "database" || kind === "native-handle") && key === "prepare" && result && typeof result === "object")
       return this.wrap(result,"statement");
     if (kind === "database" && key === "transaction" && typeof result === "function")
       return this.wrap(result,"transaction");

@@ -415,11 +415,18 @@ its generation-bound shutdown receipts. Production policy remains unchanged.
 
 Every state connection and cached statement/transaction/iterator handle passes
 through an internal fence. After a synchronous pin, no new native operation is
-admitted; an existing transaction crossing that boundary rolls back rather than
-committing. Already active native or asynchronous work and prior ordinary close
+admitted. Pinning inside a transaction callback prevents its subsequent commit
+and permits a prepared `ROLLBACK` to unwind, including a borrowed public native
+transaction. A native SQL statement or COMMIT already admitted before pinning can
+finish; that case stays `UNKNOWN` even when the connection becomes idle. Already
+active native or asynchronous work and prior ordinary close
 history produce sticky `UNKNOWN`. Live iterators prevent closure until their
 existing cleanup returns. Native close is attempted at most once; failure remains
 `UNKNOWN`. Ordinary transaction variants preserve their caller receiver.
+Borrowed basic native prototype methods use a guarded compatibility handle;
+internal extension or asynchronous handles are unavailable through that path.
+Transaction variants preserve their guarded database binding, default identity
+and chained variants. Resource cleanup failures remain `UNKNOWN`.
 
 Resource-only nonforcing close leaves `bridge_instances` stopped/retirement fields
 unchanged. The enclosing owner must establish independent actor/frontend/RPC
