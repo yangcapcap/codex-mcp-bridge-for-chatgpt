@@ -4,6 +4,8 @@ import { createServer, request as httpRequest, type IncomingHttpHeaders } from "
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import { Readable, type Writable } from "node:stream";
+import {EventEmitter} from "node:events";
+const ownedEventOn=EventEmitter.prototype.on;
 const ownedReadableUnpipe=Readable.prototype.unpipe;
 const ownedReadablePause=Readable.prototype.pause;
 import type { BridgeConfig } from "./config.js";
@@ -442,6 +444,26 @@ export class IsolatedRuntimeController {
       }catch(error){this.nonforcingUnknown=true;this.retainedNonforcingMessages.push(error);}
     }
   }
+  private proxyEffect<T>(action:()=>T):T {
+    if(this.nonforcingPinned)throw new Error('RUNTIME_PROXY_NONFORCING_PINNED');
+    let value!:T,error:unknown,failed=false;
+    const observed=this.requestFence.run(()=>{
+      try{value=Reflect.apply(action,undefined,[]);}catch(raw){failed=true;error=raw;throw raw;}
+    });
+    void observed.catch(raw=>{this.nonforcingUnknown=true;this.retainedNonforcingMessages.push(raw);});
+    if(failed)throw error;
+    if(this.retainProxyContinuation(value))throw new Error('RUNTIME_PROXY_NONFORCING_PINNED');
+    return value;
+  }
+  private proxyRead<T=any>(owner:object,key:PropertyKey):T {
+    try{return this.proxyEffect(()=>Reflect.get(owner,key)) as T;}
+    catch(error){this.nonforcingUnknown=true;this.retainedNonforcingMessages.push({owner,key,error});throw error;}
+  }
+  private proxyCall<T=any>(owner:object,key:PropertyKey,args:unknown[]):T {
+    const method=this.proxyRead(owner,key);
+    try{return this.proxyEffect(()=>Reflect.apply(method,owner,args)) as T;}
+    catch(error){this.nonforcingUnknown=true;this.retainedNonforcingMessages.push({owner,key,method,args,error});throw error;}
+  }
   private activeProxyRequests = 0;
   private activeProxyBytes = 0;
   private closed = false;
@@ -657,306 +679,484 @@ export class IsolatedRuntimeController {
     };
   }
 
-  proxy(
-    incoming: import("node:http").IncomingMessage,
-    outgoing: import("node:http").ServerResponse,
-    bufferedRequest?: {
-      body: Buffer;
-      capture: McpRequestIdCapture;
-      priority: boolean;
-      ordinarySlotReserved: boolean;
-    }
-  ): void {
-    if(this.nonforcingPinned){writeJson(outgoing,503,{error:'RUNTIME_NONFORCING_PINNED'});return;}
-    if (this.port === undefined || !this.child?.connected) {
-      if (bufferedRequest) {
-        this.activeProxyRequests -= 1;
-        writeUnavailable(outgoing, this.readiness(), "not-observed", {}, bufferedRequest.capture.id());
-      } else writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
-      return;
-    }
-    const declaredLength = requestContentLength(incoming.headers);
-    if (declaredLength !== undefined && declaredLength > MAX_RPC_BYTES) {
-      bufferedRequest?.capture.dispose();
-      if (bufferedRequest) this.activeProxyRequests -= 1;
-      writeJson(outgoing, 413, {
-        ok: false,
-        code: "RUNTIME_REQUEST_TOO_LARGE",
-        reason: "request-bytes"
-      });
-      return;
-    }
-    if (!bufferedRequest && declaredLength !== undefined &&
-        this.activeProxyBytes + declaredLength > MAX_PROXY_BYTES_IN_FLIGHT) {
-      writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", {
-        reason: "state-capacity", limitations: ["state-capacity"]
-      });
-      return;
-    }
-    // Another request can consume ordinary bytes after these headers arrive.
-    // Classify every unknown-length MCP body before its single dispatch so
-    // priority eligibility cannot depend on that arrival order.
-    const unknownLengthMcpPost = declaredLength === undefined &&
-      incoming.method === "POST" &&
-      new URL(incoming.url || "/", "http://bridge.invalid").pathname === "/mcp";
-    const ordinarySlotReserved = this.activeProxyRequests < MAX_PROXY_REQUESTS &&
-      this.activeProxyBytes < MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT;
-    const needsPriorityReservation = this.outstanding >= MAX_PENDING_REQUESTS ||
-      this.activeProxyRequests >= MAX_PROXY_REQUESTS ||
-      this.activeProxyBytes + (declaredLength ?? 0) > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT ||
-      unknownLengthMcpPost &&
-        this.activeProxyBytes > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT - MAX_PRIORITY_MCP_REQUEST_BYTES;
-    if (!bufferedRequest && (
-      needsPriorityReservation || unknownLengthMcpPost
-    )) {
-      if (incoming.method === "POST" && this.outstanding < MAX_PENDING_REQUESTS &&
-          this.activeProxyRequests < MAX_PENDING_REQUESTS) {
-        this.classifyReservedMcpRequest(incoming, outgoing, {
-          ordinarySlotReserved: unknownLengthMcpPost && ordinarySlotReserved,
-          normalAdmission: unknownLengthMcpPost && !needsPriorityReservation
-        });
-      } else {
-        writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
-      }
-      return;
-    }
-    const bufferedOrdinaryOverCapacity = bufferedRequest && !bufferedRequest.priority && (
-      (!bufferedRequest.ordinarySlotReserved && this.activeProxyRequests > MAX_PROXY_REQUESTS) ||
-      this.activeProxyBytes + bufferedRequest.body.length > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT
-    );
-    if (bufferedOrdinaryOverCapacity ||
-        (declaredLength !== undefined || bufferedRequest) &&
-        this.activeProxyBytes + (bufferedRequest?.body.length ?? declaredLength ?? 0) > MAX_PROXY_BYTES_IN_FLIGHT) {
-      const failure = { reason: "state-capacity" as const, limitations: ["state-capacity"] };
-      if (bufferedRequest) {
-        this.activeProxyRequests -= 1;
-        writeUnavailable(outgoing, this.readiness(), "not-observed", failure, bufferedRequest.capture.id());
-      } else writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", failure);
-      return;
-    }
-    const port = this.port;
-    if (!bufferedRequest) this.activeProxyRequests += 1;
-    let requestBytes = bufferedRequest?.body.length ?? declaredLength ?? 0;
-    this.activeProxyBytes += requestBytes;
-    let responseStarted = false;
-    let settled = false;
-    let requestOutcome: ProxyRequestOutcome = "not-observed";
-    const requestIdCapture = bufferedRequest?.capture || new McpRequestIdCapture();
-    const edge={incoming,outgoing,capture:requestIdCapture,freeze:()=>{},proxied:undefined as Writable|undefined,response:undefined as Readable|undefined};
-    this.proxyEdges.add(edge);
-    const finish = () => {
-      if(this.retainProxyContinuation())return;
-      if (settled) return;
-      this.proxyEdges.delete(edge);
-      settled = true;
-      requestIdCapture.dispose();
-      this.activeProxyRequests = Math.max(0, this.activeProxyRequests - 1);
-      this.activeProxyBytes = Math.max(0, this.activeProxyBytes - requestBytes);
-    };
-    const rejectBody = (reason: "request-bytes" | "state-capacity") => {
-      if(this.retainProxyContinuation(reason))return;
-      proxied.destroy(new Error(
-        reason === "request-bytes" ? "RUNTIME_REQUEST_TOO_LARGE" : "RUNTIME_CAPACITY"
-      ));
-      if (!responseStarted && !outgoing.headersSent) {
-        if (reason === "request-bytes") {
-          writeJson(outgoing, 413, {
-            ok: false,
-            code: "RUNTIME_REQUEST_TOO_LARGE",
-            reason
-          });
-        } else {
-          writeUnavailable(outgoing, this.readiness(), "not-observed", {
-            reason: "state-capacity",
-            limitations: ["state-capacity"]
-          }, requestIdCapture.id());
+  proxy(incoming: import("node:http").IncomingMessage, outgoing: import("node:http").ServerResponse, bufferedRequest?: {
+    body: Buffer;
+    capture: McpRequestIdCapture;
+    priority: boolean;
+    ordinarySlotReserved: boolean;
+}): void {
+    try {
+        if (this.nonforcingPinned) {
+            writeJson(outgoing, 503, { error: 'RUNTIME_NONFORCING_PINNED' });
+            return;
         }
-      } else if (!outgoing.destroyed) {
-        outgoing.destroy();
-      }
-      finish();
-    };
-    const proxied = httpRequest({
-      host: "127.0.0.1",
-      port,
-      method: incoming.method,
-      path: incoming.url,
-      headers: requestHeaders(incoming.headers)
-    }, response => {
-      edge.response=response;
-      if(this.retainProxyContinuation(response)){this.freezeProxyEdges();return;}
-      responseStarted = true;
-      if (outgoing.destroyed) {
-        response.destroy();
-        finish();
-        return;
-      }
-      outgoing.writeHead(response.statusCode || 502, responseHeaders(response.headers));
-      response.pipe(outgoing);
-      response.once("end", finish);
-      response.once("error", error => {
-        if(this.retainProxyContinuation(error))return;
-        if (!outgoing.destroyed) outgoing.destroy(error);
-        finish();
-      });
-    });
-    edge.proxied=proxied;
-    if(this.retainProxyContinuation(proxied)){this.freezeProxyEdges();return;}
-    proxied.once("finish", () => {
-      if(this.retainProxyContinuation())return;
-      // The full request crossed the supervisor boundary. The child may have
-      // acted even if its response or next heartbeat is never observed.
-      requestOutcome = "unknown";
-    });
-    proxied.setTimeout(PROXY_IDLE_TIMEOUT_MS, () => {
-      if(this.retainProxyContinuation())return;
-      proxied.destroy(new Error("RUNTIME_RESPONSE_UNCONFIRMED"));
-      if (!responseStarted && !outgoing.headersSent) {
-        writeUnavailable(outgoing, this.readiness(), requestOutcome, {}, requestIdCapture.id());
-      } else if (!outgoing.destroyed) {
-        outgoing.destroy();
-      }
-      finish();
-    });
-    proxied.once("error", error => {
-      if(this.retainProxyContinuation(error))return;
-      if (!outgoing.headersSent) {
-        writeUnavailable(
-          outgoing,
-          this.readiness(),
-          requestOutcome,
-          {
-            reason: "state-recovering",
-            limitations: ["state-response-unconfirmed"]
-          },
-          requestIdCapture.id()
-        );
-      } else if (!outgoing.destroyed) {
-        outgoing.destroy(error);
-      }
-      finish();
-    });
-    incoming.once("aborted", () => {
-      if(this.retainProxyContinuation())return;
-      proxied.destroy();
-      finish();
-    });
-    outgoing.once("close", () => {
-      if(this.retainProxyContinuation())return;
-      if (outgoing.writableEnded) return;
-      // A completed request body does not emit IncomingMessage.aborted when
-      // its caller disconnects while waiting for the response.
-      proxied.destroy();
-      finish();
-    });
-    if (!bufferedRequest) incoming.on("data", chunk => {
-      if(this.retainProxyContinuation(chunk))return;
-      requestIdCapture.append(chunk);
-    });
-    if (!bufferedRequest) incoming.once("end", () => {if(!this.retainProxyContinuation())requestIdCapture.complete();});
-    if (declaredLength === undefined && !bufferedRequest) {
-      incoming.on("data", chunk => {
-        if(this.retainProxyContinuation(chunk))return;
-        if (settled) return;
-        const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
-        requestBytes += bytes;
-        this.activeProxyBytes += bytes;
-        if (requestBytes > MAX_RPC_BYTES) rejectBody("request-bytes");
-        else if (this.activeProxyBytes > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT) {
-          rejectBody("state-capacity");
+        if (this.port === undefined || !this.child?.connected) {
+            if (bufferedRequest) {
+                this.activeProxyRequests -= 1;
+                writeUnavailable(outgoing, this.readiness(), "not-observed", {}, bufferedRequest.capture.id());
+            }
+            else
+                writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
+            return;
         }
-      });
-    }
-    if (bufferedRequest) proxied.end(bufferedRequest.body);
-    else incoming.pipe(proxied);
-  }
+        const declaredLength = this.proxyEffect(()=>requestContentLength(this.proxyRead(incoming, "headers")));
+        if (declaredLength !== undefined && declaredLength > MAX_RPC_BYTES) {
+            bufferedRequest?.capture.dispose();
+            if (bufferedRequest)
+                this.activeProxyRequests -= 1;
+            writeJson(outgoing, 413, {
+                ok: false,
+                code: "RUNTIME_REQUEST_TOO_LARGE",
+                reason: "request-bytes"
+            });
+            return;
+        }
+        if (!bufferedRequest && declaredLength !== undefined &&
+            this.activeProxyBytes + declaredLength > MAX_PROXY_BYTES_IN_FLIGHT) {
+            writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", {
+                reason: "state-capacity", limitations: ["state-capacity"]
+            });
+            return;
+        }
+        // Another request can consume ordinary bytes after these headers arrive.
+        // Classify every unknown-length MCP body before its single dispatch so
+        // priority eligibility cannot depend on that arrival order.
+        const unknownLengthMcpPost = declaredLength === undefined &&
+            this.proxyRead(incoming, "method") === "POST" &&
+            new URL(this.proxyRead(incoming, "url") || "/", "http://bridge.invalid").pathname === "/mcp";
+        const ordinarySlotReserved = this.activeProxyRequests < MAX_PROXY_REQUESTS &&
+            this.activeProxyBytes < MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT;
+        const needsPriorityReservation = this.outstanding >= MAX_PENDING_REQUESTS ||
+            this.activeProxyRequests >= MAX_PROXY_REQUESTS ||
+            this.activeProxyBytes + (declaredLength ?? 0) > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT ||
+            unknownLengthMcpPost &&
+                this.activeProxyBytes > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT - MAX_PRIORITY_MCP_REQUEST_BYTES;
+        if (!bufferedRequest && (needsPriorityReservation || unknownLengthMcpPost)) {
+            if (this.proxyRead(incoming, "method") === "POST" && this.outstanding < MAX_PENDING_REQUESTS &&
+                this.activeProxyRequests < MAX_PENDING_REQUESTS) {
+                this.classifyReservedMcpRequest(incoming, outgoing, {
+                    ordinarySlotReserved: unknownLengthMcpPost && ordinarySlotReserved,
+                    normalAdmission: unknownLengthMcpPost && !needsPriorityReservation
+                });
+            }
+            else {
+                writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
+            }
+            return;
+        }
+        const bufferedOrdinaryOverCapacity = bufferedRequest && !bufferedRequest.priority && ((!bufferedRequest.ordinarySlotReserved && this.activeProxyRequests > MAX_PROXY_REQUESTS) ||
+            this.activeProxyBytes + bufferedRequest.body.length > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT);
+        if (bufferedOrdinaryOverCapacity ||
+            (declaredLength !== undefined || bufferedRequest) &&
+                this.activeProxyBytes + (bufferedRequest?.body.length ?? declaredLength ?? 0) > MAX_PROXY_BYTES_IN_FLIGHT) {
+            const failure = { reason: "state-capacity" as const, limitations: ["state-capacity"] };
+            if (bufferedRequest) {
+                this.activeProxyRequests -= 1;
+                writeUnavailable(outgoing, this.readiness(), "not-observed", failure, bufferedRequest.capture.id());
+            }
+            else
+                writeMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", failure);
+            return;
+        }
+        const port = this.port;
+        if (!bufferedRequest)
+            this.activeProxyRequests += 1;
+        let requestBytes = bufferedRequest?.body.length ?? declaredLength ?? 0;
+        this.activeProxyBytes += requestBytes;
+        let responseStarted = false;
+        let settled = false;
+        let requestOutcome: ProxyRequestOutcome = "not-observed";
+        const requestIdCapture = bufferedRequest?.capture || new McpRequestIdCapture();
+        const edge = { incoming, outgoing, capture: requestIdCapture, freeze: () => {
+                try { }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            }, proxied: undefined as Writable | undefined, response: undefined as Readable | undefined };
+        this.proxyEdges.add(edge);
+        const finish = () => {
+            try {
+                if (this.retainProxyContinuation())
+                    return;
+                if (settled)
+                    return;
+                this.proxyCall(requestIdCapture, "dispose", []);
+                this.proxyEdges.delete(edge);
+                settled = true;
+                this.activeProxyRequests = Math.max(0, this.activeProxyRequests - 1);
+                this.activeProxyBytes = Math.max(0, this.activeProxyBytes - requestBytes);
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const rejectBody = (reason: "request-bytes" | "state-capacity") => {
+            try {
+                if (this.retainProxyContinuation(reason))
+                    return;
+                this.proxyCall(proxied, "destroy", [new Error(reason === "request-bytes" ? "RUNTIME_REQUEST_TOO_LARGE" : "RUNTIME_CAPACITY")]);
+                if (!responseStarted && !this.proxyRead(outgoing, "headersSent")) {
+                    if (reason === "request-bytes") {
+                        writeJson(outgoing, 413, {
+                            ok: false,
+                            code: "RUNTIME_REQUEST_TOO_LARGE",
+                            reason
+                        });
+                    }
+                    else {
+                        writeUnavailable(outgoing, this.readiness(), "not-observed", {
+                            reason: "state-capacity",
+                            limitations: ["state-capacity"]
+                        }, this.proxyCall(requestIdCapture, "id", []));
+                    }
+                }
+                else if (!this.proxyRead(outgoing, "destroyed")) {
+                    this.proxyCall(outgoing, "destroy", []);
+                }
+                finish();
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const proxied = httpRequest({
+            host: "127.0.0.1",
+            port,
+            method: this.proxyRead(incoming, "method"),
+            path: this.proxyRead(incoming, "url"),
+            headers: this.proxyEffect(()=>requestHeaders(this.proxyRead(incoming, "headers")))
+        }, (response: any) => {
+            try {
+                edge.response = response;
+                Reflect.apply(ownedEventOn,response,["error", (error: any) => {
+                        try {
+                            if (this.retainProxyContinuation(error))
+                                return;
+                            if (!this.proxyRead(outgoing, "destroyed"))
+                                this.proxyCall(outgoing, "destroy", [error]);
+                            finish();
+                        }
+                        catch (error) {
+                            this.nonforcingUnknown = true;
+                            this.retainedNonforcingMessages.push(error);
+                        }
+                    }]);
+                if (this.retainProxyContinuation(response)) {
+                    this.freezeProxyEdges();
+                    return;
+                }
+                responseStarted = true;
+                if (this.proxyRead(outgoing, "destroyed")) {
+                    this.proxyCall(response, "destroy", []);
+                    finish();
+                    return;
+                }
+                this.proxyCall(outgoing, "writeHead", [this.proxyRead(response, "statusCode") || 502, this.proxyEffect(()=>responseHeaders(this.proxyRead(response, "headers")))]);
+                this.proxyCall(response, "pipe", [outgoing]);
+                this.proxyCall(response, "once", ["end", finish]);
 
-  private classifyReservedMcpRequest(
-    incoming: import("node:http").IncomingMessage,
-    outgoing: import("node:http").ServerResponse,
-    reservation: { ordinarySlotReserved: boolean; normalAdmission: boolean }
-  ): void {
-    // Reserve before reading so concurrent candidates cannot overfill the
-    // physical HTTP limit. Failed classification releases this same slot.
-    this.activeProxyRequests += 1;
-    const capture = new McpRequestIdCapture();
-    let settled = false;
-    let reservedBytes = 0;
-    let timer:NodeJS.Timeout|undefined;
-    const edge={incoming,outgoing,capture,freeze:()=>{if(timer)clearTimeout(timer);}};
-    this.proxyEdges.add(edge);
-    const releaseBytes = () => {
-      if(this.retainProxyContinuation())return;
-      this.activeProxyBytes = Math.max(0, this.activeProxyBytes - reservedBytes);
-      reservedBytes = 0;
-    };
-    const cleanup = () => {
-      if(this.retainProxyContinuation())return;
-      this.proxyEdges.delete(edge);
-      if(timer)clearTimeout(timer);
-      incoming.off("data", onData);
-      incoming.off("end", onEnd);
-      incoming.off("close", onClose);
-      outgoing.off("close", onClose);
-    };
-    const reject = (reason: "state-capacity" | "request-bytes" = "state-capacity") => {
-      if(this.retainProxyContinuation())return;
-      if (settled) return;
-      settled = true;
-      cleanup();
-      releaseBytes();
-      this.activeProxyRequests -= 1;
-      const id = capture.id();
-      capture.dispose();
-      if (reason === "request-bytes") {
-        writeJson(outgoing, 413, { ok: false, code: "RUNTIME_REQUEST_TOO_LARGE", reason });
-      } else {
-        writeUnavailable(outgoing, this.readiness(), "not-observed", {
-          reason: "state-capacity", limitations: ["state-capacity"]
-        }, id);
-      }
-    };
-    const onData = (chunk: Buffer | string) => {
-      if(this.retainProxyContinuation(chunk))return;
-      if(this.retainProxyContinuation())return;
-      if (settled) return;
-      if (reservation.normalAdmission) timer?.refresh();
-      const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
-      if (reservedBytes + bytes > MAX_RPC_BYTES) { reject("request-bytes"); return; }
-      if (this.activeProxyBytes + bytes > MAX_PROXY_BYTES_IN_FLIGHT ||
-          !capture.append(chunk)) { reject(); return; }
-      reservedBytes += bytes;
-      this.activeProxyBytes += bytes;
-    };
-    const onEnd = () => {
-      if(this.retainProxyContinuation())return;
-      if (settled) return;
-      capture.complete();
-      const body = capture.body();
-      const priority = body ? isPriorityMcpRequest(body) : false;
-      const ordinaryFits = !priority && body &&
-        (reservation.ordinarySlotReserved || this.activeProxyRequests <= MAX_PROXY_REQUESTS) &&
-        this.activeProxyBytes <= MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT;
-      if (!body || new URL(incoming.url || "/", "http://bridge.invalid").pathname !== "/mcp" ||
-          !priority && !ordinaryFits) {
-        reject(); return;
-      }
-      settled = true;
-      cleanup();
-      releaseBytes();
-      this.proxy(incoming, outgoing, { body, capture, priority,
-        ordinarySlotReserved: reservation.ordinarySlotReserved });
-    };
-    const onClose = () => reject();
-    timer = setTimeout(reject,
-      reservation.normalAdmission ? PROXY_IDLE_TIMEOUT_MS : MCP_REJECTION_BODY_WAIT_MS);
-    timer.unref();
-    incoming.on("data", onData);
-    incoming.once("end", onEnd);
-    incoming.once("close", onClose);
-    outgoing.once("close", onClose);
-    incoming.resume();
-  }
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        });
+        edge.proxied = proxied;
+        if (this.retainProxyContinuation(proxied)) {
+            this.freezeProxyEdges();
+            return;
+        }
+        this.proxyCall(proxied, "once", ["finish", () => {
+                try {
+                    if (this.retainProxyContinuation())
+                        return;
+                    // The full request crossed the supervisor boundary. The child may have
+                    // acted even if its response or next heartbeat is never observed.
+                    requestOutcome = "unknown";
+                }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            }]);
+        this.proxyCall(proxied, "setTimeout", [PROXY_IDLE_TIMEOUT_MS, () => {
+                try {
+                    if (this.retainProxyContinuation())
+                        return;
+                    this.proxyCall(proxied, "destroy", [new Error("RUNTIME_RESPONSE_UNCONFIRMED")]);
+                    if (!responseStarted && !this.proxyRead(outgoing, "headersSent")) {
+                        writeUnavailable(outgoing, this.readiness(), requestOutcome, {}, this.proxyCall(requestIdCapture, "id", []));
+                    }
+                    else if (!this.proxyRead(outgoing, "destroyed")) {
+                        this.proxyCall(outgoing, "destroy", []);
+                    }
+                    finish();
+                }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            }]);
+        this.proxyCall(proxied, "once", ["error", (error: any) => {
+                try {
+                    if (this.retainProxyContinuation(error))
+                        return;
+                    if (!this.proxyRead(outgoing, "headersSent")) {
+                        writeUnavailable(outgoing, this.readiness(), requestOutcome, {
+                            reason: "state-recovering",
+                            limitations: ["state-response-unconfirmed"]
+                        }, this.proxyCall(requestIdCapture, "id", []));
+                    }
+                    else if (!this.proxyRead(outgoing, "destroyed")) {
+                        this.proxyCall(outgoing, "destroy", [error]);
+                    }
+                    finish();
+                }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            }]);
+        this.proxyCall(incoming, "once", ["aborted", () => {
+                try {
+                    if (this.retainProxyContinuation())
+                        return;
+                    this.proxyCall(proxied, "destroy", []);
+                    finish();
+                }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            }]);
+        this.proxyCall(outgoing, "once", ["close", () => {
+                try {
+                    if (this.retainProxyContinuation())
+                        return;
+                    if (this.proxyRead(outgoing, "writableEnded"))
+                        return;
+                    // A completed request body does not emit IncomingMessage.aborted when
+                    // its caller disconnects while waiting for the response.
+                    this.proxyCall(proxied, "destroy", []);
+                    finish();
+                }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            }]);
+        if (!bufferedRequest)
+            this.proxyCall(incoming, "on", ["data", (chunk: any) => {
+                    try {
+                        if (this.retainProxyContinuation(chunk))
+                            return;
+                        this.proxyCall(requestIdCapture, "append", [chunk]);
+                    }
+                    catch (error) {
+                        this.nonforcingUnknown = true;
+                        this.retainedNonforcingMessages.push(error);
+                    }
+                }]);
+        if (!bufferedRequest)
+            this.proxyCall(incoming, "once", ["end", () => {
+                    try {
+                        if (!this.retainProxyContinuation())
+                            this.proxyCall(requestIdCapture, "complete", []);
+                    }
+                    catch (error) {
+                        this.nonforcingUnknown = true;
+                        this.retainedNonforcingMessages.push(error);
+                    }
+                }]);
+        if (declaredLength === undefined && !bufferedRequest) {
+            this.proxyCall(incoming, "on", ["data", (chunk: any) => {
+                    try {
+                        if (this.retainProxyContinuation(chunk))
+                            return;
+                        if (settled)
+                            return;
+                        const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+                        requestBytes += bytes;
+                        this.activeProxyBytes += bytes;
+                        if (requestBytes > MAX_RPC_BYTES)
+                            rejectBody("request-bytes");
+                        else if (this.activeProxyBytes > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT) {
+                            rejectBody("state-capacity");
+                        }
+                    }
+                    catch (error) {
+                        this.nonforcingUnknown = true;
+                        this.retainedNonforcingMessages.push(error);
+                    }
+                }]);
+        }
+        if (bufferedRequest)
+            this.proxyCall(proxied, "end", [bufferedRequest.body]);
+        else
+            this.proxyCall(incoming, "pipe", [proxied]);
+    }
+    catch (error) {
+        this.nonforcingUnknown = true;
+        this.retainedNonforcingMessages.push(error);
+    }
+}
+
+  private classifyReservedMcpRequest(incoming: import("node:http").IncomingMessage, outgoing: import("node:http").ServerResponse, reservation: {
+    ordinarySlotReserved: boolean;
+    normalAdmission: boolean;
+}): void {
+    try {
+        // Reserve before reading so concurrent candidates cannot overfill the
+        // physical HTTP limit. Failed classification releases this same slot.
+        this.activeProxyRequests += 1;
+        const capture = new McpRequestIdCapture();
+        let settled = false;
+        let reservedBytes = 0;
+        let timer: NodeJS.Timeout | undefined;
+        const edge = { incoming, outgoing, capture, freeze: () => {
+                try {
+                    if (timer)
+                        clearTimeout(timer);
+                }
+                catch (error) {
+                    this.nonforcingUnknown = true;
+                    this.retainedNonforcingMessages.push(error);
+                }
+            } };
+        this.proxyEdges.add(edge);
+        const releaseBytes = () => {
+            try {
+                if (this.retainProxyContinuation())
+                    return;
+                this.activeProxyBytes = Math.max(0, this.activeProxyBytes - reservedBytes);
+                reservedBytes = 0;
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const cleanup = () => {
+            try {
+                if (this.retainProxyContinuation())
+                    return;
+                if (timer)
+                    clearTimeout(timer);
+                this.proxyCall(incoming, "off", ["data", onData]);
+                this.proxyCall(incoming, "off", ["end", onEnd]);
+                this.proxyCall(incoming, "off", ["close", onClose]);
+                this.proxyCall(outgoing, "off", ["close", onClose]);
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const reject = (reason: "state-capacity" | "request-bytes" = "state-capacity") => {
+            try {
+                if (this.retainProxyContinuation())
+                    return;
+                if (settled)
+                    return;
+                settled = true;
+                cleanup();
+                if(this.retainProxyContinuation())return;
+                releaseBytes();
+                if(this.retainProxyContinuation())return;
+                this.activeProxyRequests -= 1;
+                const id = this.proxyCall(capture, "id", []);
+                this.proxyCall(capture, "dispose", []);
+                if (reason === "request-bytes") {
+                    writeJson(outgoing, 413, { ok: false, code: "RUNTIME_REQUEST_TOO_LARGE", reason });
+                }
+                else {
+                    writeUnavailable(outgoing, this.readiness(), "not-observed", {
+                        reason: "state-capacity", limitations: ["state-capacity"]
+                    }, id);
+                }
+                if(!this.nonforcingPinned)this.proxyEdges.delete(edge);
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const onData = (chunk: Buffer | string) => {
+            try {
+                if (this.retainProxyContinuation(chunk))
+                    return;
+                if (this.retainProxyContinuation())
+                    return;
+                if (settled)
+                    return;
+                if (reservation.normalAdmission)
+                    timer?.refresh();
+                const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+                if (reservedBytes + bytes > MAX_RPC_BYTES) {
+                    reject("request-bytes");
+                    return;
+                }
+                if (this.activeProxyBytes + bytes > MAX_PROXY_BYTES_IN_FLIGHT ||
+                    !this.proxyCall(capture, "append", [chunk])) {
+                    reject();
+                    return;
+                }
+                reservedBytes += bytes;
+                this.activeProxyBytes += bytes;
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const onEnd = () => {
+            try {
+                if (this.retainProxyContinuation())
+                    return;
+                if (settled)
+                    return;
+                this.proxyCall(capture, "complete", []);
+                const body = this.proxyCall(capture, "body", []);
+                const priority = body ? isPriorityMcpRequest(body) : false;
+                const ordinaryFits = !priority && body &&
+                    (reservation.ordinarySlotReserved || this.activeProxyRequests <= MAX_PROXY_REQUESTS) &&
+                    this.activeProxyBytes <= MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT;
+                if (!body || new URL(this.proxyRead(incoming, "url") || "/", "http://bridge.invalid").pathname !== "/mcp" ||
+                    !priority && !ordinaryFits) {
+                    reject();
+                    return;
+                }
+                settled = true;
+                cleanup();
+                if(this.retainProxyContinuation())return;
+                releaseBytes();
+                if(this.retainProxyContinuation())return;
+                this.proxy(incoming, outgoing, { body, capture, priority,
+                    ordinarySlotReserved: reservation.ordinarySlotReserved });
+                if(!this.nonforcingPinned)this.proxyEdges.delete(edge);
+            }
+            catch (error) {
+                this.nonforcingUnknown = true;
+                this.retainedNonforcingMessages.push(error);
+            }
+        };
+        const onClose = () => reject();
+        timer = setTimeout(reject, reservation.normalAdmission ? PROXY_IDLE_TIMEOUT_MS : MCP_REJECTION_BODY_WAIT_MS);
+        timer.unref();
+        this.proxyCall(incoming, "on", ["data", onData]);
+        this.proxyCall(incoming, "once", ["end", onEnd]);
+        this.proxyCall(incoming, "once", ["close", onClose]);
+        this.proxyCall(outgoing, "once", ["close", onClose]);
+        this.proxyCall(incoming, "resume", []);
+    }
+    catch (error) {
+        this.nonforcingUnknown = true;
+        this.retainedNonforcingMessages.push(error);
+    }
+}
 
   async close(): Promise<void> {
     if(this.nonforcingPinned){

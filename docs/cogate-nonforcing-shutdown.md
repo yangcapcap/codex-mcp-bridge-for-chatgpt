@@ -533,3 +533,15 @@ capture. Active edges stay UNKNOWN. Ordinary close after pin requires a fresh
 original-owner observation and the lower owner close-after-pin check; a cached
 initial EXIT cannot override sticky PID uncertainty. No edge or process receipt
 retires a database writer.
+
+Proxy reentry before new delegation
+------------------------------------
+
+Parent proxy property reads and method calls register their original operation
+before a callback can pin, and stop the caller synchronously after pin. Captured
+methods retain the original receiver and failure evidence. Response error
+observation uses the captured native EventEmitter operation before headers or
+pipes can reenter shutdown, so a late error keeps the original response and
+request accounting. Classification cleanup keeps its edge through rejection or
+replacement dispatch; a failed transfer cannot discard the original capture.
+These are resource-observation controls and never grant database writer release.

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Stop new private proxy dispatch and pipe installation after reentrant shutdown pin during property reads or original method calls; retain original error observation and classification edges.",
+  "breaking": false,
+  "migration": null
+}
