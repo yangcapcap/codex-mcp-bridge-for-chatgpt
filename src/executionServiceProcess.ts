@@ -1,5 +1,6 @@
 import { currentExecutionIdentity } from "./executionIdentity.js";
 import { ExecutionJournal, type ExecutionJournalStatus } from "./executionJournal.js";
+import {WorkerTreeShutdownSupervisor} from "./workerTreeShutdownSupervisor.js";
 import { ExecutionPeer, executionEndpoint, listenExecutionOwner, readExecutionRecord,
   writeExecutionRecord, clearExitedExecutionOwner, type ExecutionEndpoint } from "./executionTransport.js";
 import { randomUUID } from "node:crypto";
@@ -1201,6 +1202,7 @@ async function runChild(configuration: ChildConfiguration): Promise<void> {
   const generation = randomUUID();
   let closing = false;
   const workerObserver = new SupervisedProcessTreeRegistry();
+  const workerShutdown = new WorkerTreeShutdownSupervisor(workerObserver);
   let refreshInFlight = false;
   let refreshFailure: ProcessObservationFailure | undefined;
   const active = new Set<Promise<void>>();
@@ -1240,11 +1242,16 @@ async function runChild(configuration: ChildConfiguration): Promise<void> {
   const pool = new CodexAppServerUpstreamPool(configuration.command, configuration.poolSize, {
     ...configuration.options, environment: process.env,
     onLateResponse: response => send({ type: "late-response", generation, response }),
-    onWorkerProcessStarted: async identity => {
+    workerShutdownSupervisor:workerShutdown.supervisor,
+    onWorkerProcessExitObserved:(identity,binding)=>{
+      workerShutdown.markExited(identity,binding);
+    },
+    onWorkerProcessStarted: async (identity,binding) => {
       // The spawn event and owned pipes establish ownership, independently of ps.
-      workerObserver.remember(identity, true);
+      const registration=workerShutdown.register(identity,binding);
       persistTrees();
       send({ type: "worker-started", generation, registrationId: randomUUID(), identity });
+      await registration;
       void observe();
     },
     onWorkerProcessExited: async identity => {
