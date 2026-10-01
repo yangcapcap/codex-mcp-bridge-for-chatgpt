@@ -279,8 +279,9 @@ type JobCompletionCallback = (result: ToolResult, job: CodexJob) => void | (() =
 
 class JobTerminalCommitError extends Error {
   constructor(cause: unknown) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    super(`BRIDGE_TERMINAL_COMMIT_FAILED: ${detail}`, { cause });
+    // The original cause can contain accessors or a Proxy. Retain it without
+    // formatting it, including when a completion callback has just pinned.
+    super("BRIDGE_TERMINAL_COMMIT_FAILED: terminal state remains unconfirmed", { cause });
     this.name = "JobTerminalCommitError";
   }
 }
@@ -2470,6 +2471,36 @@ export class CodexJobRegistry {
     return () => { this.changeListeners.delete(listener); };
   }
 
+  /** Internal application listener boundary; no MCP/native exposure. */
+  publishApplicationChange(listener:()=>unknown):void {
+    this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
+    try {
+      const result=Reflect.apply(listener,undefined,[]);
+      if(result!==undefined){this.nonforcingUnknown=true;this.retainNonforcingObservation('application-listener','listener-result',result);}
+    }catch(error){this.nonforcingUnknown=true;this.retainNonforcingObservation('application-listener','listener-error',error);throw error;}
+    finally{this.registryCallbacksInFlight--;}
+  }
+  /** Register first, then retain a returned cleanup capability if pin reenters. */
+  registerApplicationSubscription(register:()=>unknown):(()=>void)|undefined {
+    this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
+    try {
+      const result=Reflect.apply(register,undefined,[]);
+      if(this.nonforcingPinned || result!==undefined && typeof result!=='function') {
+        this.nonforcingUnknown=true;this.retainNonforcingObservation('application-subscription','registration-result',result);
+        throw new Error('STATE_APPLICATION_SUBSCRIPTION_UNCONFIRMED');
+      }
+      return result as (()=>void)|undefined;
+    }catch(error){this.nonforcingUnknown=true;this.retainNonforcingObservation('application-subscription','registration-error',error);throw error;}
+    finally{this.registryCallbacksInFlight--;}
+  }
+  releaseApplicationSubscriptions(subscriptions:Array<(()=>void)|undefined>):void {
+    for(const unsubscribe of subscriptions) {
+      if(!unsubscribe)continue;
+      if(this.nonforcingPinned){this.retainNonforcingObservation('application-subscription','retained-unsubscribe',unsubscribe);continue;}
+      this.publishApplicationChange(unsubscribe);
+    }
+  }
+
   private persistenceWarningShown = false;
 
   private recordPersistenceWarning(kind: string, error: unknown): void {
@@ -2649,7 +2680,10 @@ export class CodexJobRegistry {
             if (this.nonforcingPinned) return;
             if (!promise) {failed(observation.value);return;}
             Reflect.apply(ackPromiseThen,observation.value,[
-              () => {if (!this.nonforcingPinned) this.executionAcknowledgements.delete(job);},
+              (value:unknown) => {
+                if(value!==undefined){failed(value);return;}
+                if (!this.nonforcingPinned) this.executionAcknowledgements.delete(job);
+              },
               (error: unknown) => {failed(error);}
             ]);
             return;
@@ -2687,19 +2721,20 @@ export class CodexJobRegistry {
   }
 
   private async settleExecution(job: CodexJob, settlement: DeferredJobSettlement): Promise<void> {
+    const jobId=job.jobId;
     if (!this.nonforcingPinned && settlement.kind === "resolved") {
       const captured = snapshotNonforcingData(settlement.result, () => this.nonforcingPinned);
       if (!captured.ok) {
         this.nonforcingUnknown = true;
-        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
-        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        if (!this.deferredSettlements.has(jobId)) this.deferredSettlements.set(jobId,settlement);
+        else this.retainNonforcingObservation(jobId,"terminal-settlement",settlement);
         return;
       }
       const validated = CallToolResultSchema.safeParse(captured.value);
       if (!validated.success) {
         this.nonforcingUnknown = true;
-        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
-        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        if (!this.deferredSettlements.has(jobId)) this.deferredSettlements.set(jobId,settlement);
+        else this.retainNonforcingObservation(jobId,"terminal-settlement",settlement);
         return;
       }
       settlement = {...settlement,result:{...captured.value,content:validated.data.content}};
@@ -2708,15 +2743,15 @@ export class CodexJobRegistry {
       const captured = this.capturedExecutionError(settlement.error);
       if (!captured.ok) {
         this.nonforcingUnknown = true;
-        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
-        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        if (!this.deferredSettlements.has(jobId)) this.deferredSettlements.set(jobId,settlement);
+        else this.retainNonforcingObservation(jobId,"terminal-settlement",settlement);
         return;
       }
       settlement = {...settlement,error:captured.error};
     }
     while (!this.stateMaintenanceClosed && !this.unconfirmedJobCallbacks.has(job)) {
       if (job.status === "terminating") {
-        this.deferredSettlements.set(job.jobId, settlement);
+        this.deferredSettlements.set(jobId, settlement);
         return;
       }
       try {
@@ -2743,8 +2778,8 @@ export class CodexJobRegistry {
       }
     }
     if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) {
-      if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId, settlement);
-      else this.retainNonforcingObservation(job.jobId, "terminal-settlement", settlement);
+      if (!this.deferredSettlements.has(jobId)) this.deferredSettlements.set(jobId, settlement);
+      else this.retainNonforcingObservation(jobId, "terminal-settlement", settlement);
       return;
     }
     this.pendingTerminalCommits.delete(job);
@@ -3752,6 +3787,7 @@ export class CodexJobRegistry {
     callback?: JobCompletionCallback): (() => void) | undefined {
     this.assertNonforcingAdmission();
     if (!callback) return undefined;
+    const jobId=job.jobId;
     this.registryCallbacksInFlight++;
     try {
       const returned = Reflect.apply(callback,undefined,[result,job]);
@@ -3759,28 +3795,28 @@ export class CodexJobRegistry {
       if (typeof returned === "function") return returned;
       this.nonforcingUnknown = true;
       this.unconfirmedJobCallbacks.add(job);
-      this.retainNonforcingObservation(job.jobId,"completion-callback-result",returned);
+      this.retainNonforcingObservation(jobId,"completion-callback-result",returned);
       throw new Error("STATE_COMPLETION_CALLBACK_UNCONFIRMED");
     } catch (error) {
       this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
-      this.retainNonforcingObservation(job.jobId,'completion-callback-error',error);
+      this.retainNonforcingObservation(jobId,'completion-callback-error',error);
       throw error;
     } finally {this.registryCallbacksInFlight--;}
   }
 
-  private invokeTerminalUndo(job:CodexJob,undo?:()=>void):void {
+  private invokeTerminalUndo(job:CodexJob,undo:((()=>void)|undefined),jobId:string):void {
     if(!undo)return;
-    if(this.nonforcingPinned){this.retainNonforcingObservation(job.jobId,'terminal-undo',undo);return;}
+    if(this.nonforcingPinned){this.retainNonforcingObservation(jobId,'terminal-undo',undo);return;}
     this.registryCallbacksInFlight++;
     try {
       const result=Reflect.apply(undo,undefined,[]);
       if(result!==undefined) {
         this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
-        this.retainNonforcingObservation(job.jobId,'terminal-undo-result',result);
+        this.retainNonforcingObservation(jobId,'terminal-undo-result',result);
       }
     }catch(error){
       this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
-      this.retainNonforcingObservation(job.jobId,'terminal-undo-error',error);
+      this.retainNonforcingObservation(jobId,'terminal-undo-error',error);
     }finally{this.registryCallbacksInFlight--;}
   }
 
@@ -3803,10 +3839,12 @@ export class CodexJobRegistry {
       this.allowedRoots,
       this.steeringPromptsFor(job.jobId)
     );
+    const jobId=job.jobId;
     let undo: (() => void) | undefined;
     try {
       const next = this.activityStore.transaction(() => {
         undo = this.invokeCompletionCallback(job,result,onComplete);
+        this.assertNonforcingAdmission();
         const candidate: CodexJob = {
           ...job,
           threadId: job.sessionDecision.threadId,
@@ -3833,7 +3871,7 @@ export class CodexJobRegistry {
       this.notify(job.jobId, "terminal");
       this.notifyScope(job.scopeId);
     } catch (error) {
-      this.invokeTerminalUndo(job,undo);
+      this.invokeTerminalUndo(job,undo,jobId);
       throw new JobTerminalCommitError(error);
     }
   }
@@ -3851,12 +3889,14 @@ export class CodexJobRegistry {
       this.allowedRoots,
       this.steeringPromptsFor(job.jobId)
     );
+    const jobId=job.jobId;
     let undo: (() => void) | undefined;
     try {
       const next = this.activityStore.transaction(() => {
         // A failed turn can still have created or resumed a durable thread.
         // Keep the same callback in the atomic terminal transaction.
         undo = this.invokeCompletionCallback(job,result,onComplete);
+        this.assertNonforcingAdmission();
         const candidate: CodexJob = {
           ...job,
           threadId: job.sessionDecision.threadId,
@@ -3884,7 +3924,7 @@ export class CodexJobRegistry {
       this.notify(job.jobId, "terminal");
       this.notifyScope(job.scopeId);
     } catch (error) {
-      this.invokeTerminalUndo(job,undo);
+      this.invokeTerminalUndo(job,undo,jobId);
       throw new JobTerminalCommitError(error);
     }
   }
@@ -5814,14 +5854,26 @@ export function registerBridgeTools(
     },
     subscribeChanges(listener) {
       if (jobs.nonforcingShutdownPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
-      const publish = (topic: "settings" | "dashboard" | "enrichment") => {if (!jobs.nonforcingShutdownPinned) listener(topic);};
-      const subscriptions = [
-        jobs.subscribeChanges(() => publish("dashboard")),
-        userSettings.subscribeChanges(() => { publish("settings"); publish("dashboard"); }),
-        modelCatalog.subscribe?.(() => publish("settings")),
-        subscribeCardObservations(upstream, () => publish("enrichment"))
-      ];
-      return () => { for (const unsubscribe of subscriptions) unsubscribe?.(); };
+      const publish = (topic: "settings" | "dashboard" | "enrichment") => {
+        if(!jobs.nonforcingShutdownPinned)jobs.publishApplicationChange(()=>Reflect.apply(listener,undefined,[topic]));
+      };
+      const subscriptions:Array<(()=>void)|undefined>=[];
+      const register=(receiver:object,key:string,callback:()=>void)=>{
+        const subscribe=(receiver as Record<string,unknown>)[key];
+        if(jobs.nonforcingShutdownPinned)throw new Error('NONFORCING_SHUTDOWN_PINNED');
+        if(subscribe===undefined)return undefined;
+        if(typeof subscribe!=='function')throw new Error('STATE_APPLICATION_SUBSCRIPTION_UNCONFIRMED');
+        return Reflect.apply(subscribe,receiver,[callback]);
+      };
+      try {
+        for(const subscription of [
+          ()=>jobs.subscribeChanges(()=>publish('dashboard')),
+          ()=>register(userSettings,'subscribeChanges',()=>{publish('settings');publish('dashboard');}),
+          ()=>register(modelCatalog,'subscribe',()=>publish('settings')),
+          ()=>subscribeCardObservations(upstream,()=>publish('enrichment'))
+        ])subscriptions.push(jobs.registerApplicationSubscription(subscription));
+      }catch(error){jobs.releaseApplicationSubscriptions(subscriptions);throw error;}
+      return ()=>jobs.releaseApplicationSubscriptions(subscriptions);
     },
     async dashboardSnapshot(options = {}) {
       const startedAt = Date.now();

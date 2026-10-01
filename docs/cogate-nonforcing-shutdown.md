@@ -449,3 +449,15 @@ results. Invalid results remain reserved at their original owner. The already
 locked SDK core package is now an explicit runtime dependency; package versions
 and installed dependency bytes are unchanged. These repairs require a new exact
 head review; the database and complete runtime have separate pending reviews.
+
+
+Native asynchronous execution ACKs require an undefined fulfillment as well as
+a validated ordinary Promise observation. Nonvoid fulfillment retains the exact
+ACK Promise and returned value as UNKNOWN. Terminal callbacks are followed by
+an admission check before any live Job spread or getter; commit failure wrapping
+retains its original cause without string conversion. Internal application
+subscriptions track every listener return/error, including settings and catalog
+publications, and stop registration immediately after a pinning method lookup.
+Cleanup capabilities admitted before pin remain retained without late delegation.
+These checks provide registry resource evidence only; runtime and writer release
+remain separate requirements.
