@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Adapt the read-only state child to bounded original-owner nonforcing receipts while retaining unconfirmed reads and preventing force/restart continuations.",
+  "breaking": false,
+  "migration": null
+}

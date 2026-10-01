@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { computeSourceHash } from "./build-fingerprint.mjs";
 import { parseLauncherArgs, requiredBuildOutputs } from "./launcher-options.mjs";
 import {
@@ -11,6 +12,8 @@ import {
   codexChildEnvironmentFingerprint,
   codexAppliedEnvironment,
   codexProcessEnvironment,
+  mcpOAuthRequested,
+  mcpOAuthEnvironment,
   CODEX_CHILD_ENV_KEYS,
   loadRuntimeEnvFile,
   resolveRuntimeEnvFile,
@@ -139,6 +142,9 @@ async function main() {
   if (tunnelTransport !== "http" && tunnelTransport !== "stdio") {
     throw new Error(`Unknown transport: ${tunnelTransport}. Use http or stdio.`);
   }
+  if (mcpOAuthRequested(process.env) && tunnelTransport === "stdio") {
+    throw new Error("MCP OAuth requires HTTP transport; stdio cannot supply a verified user principal.");
+  }
   if (mode === "local" && tunnelTransport === "stdio") {
     throw new Error("Local stdio uses npm run dev:stdio or npm run start:stdio directly.");
   }
@@ -155,6 +161,11 @@ async function main() {
       : undefined;
   enforceManagedAppAuthenticationBoundary();
   ensureBuilt();
+  if (mcpOAuthRequested(process.env)) {
+    const { loadConfig } = await import(resolve(repoRoot, "dist/config.js"));
+    // Validate the explicit settings before acquiring locks or starting children.
+    loadConfig({ ...process.env, CODEX_MCP_BRIDGE_HOST: host, CODEX_MCP_BRIDGE_PORT: port });
+  }
   activeRuntimeBuildId = installedRuntimeBuildId();
   runtimeLocks = acquireRuntimeOwnershipLocks(
     resolve(args.runtimeLockDirectory || canonicalRuntimeLockDirectory),
@@ -266,7 +277,7 @@ function buildMatchesSource(outputPaths) {
 async function startSecureTunnel({ apiKey, tunnelId }) {
   const tunnelClient = args.tunnelClient || process.env.TUNNEL_CLIENT || defaultTunnelClient();
   const profile = args.profile || process.env.TUNNEL_CLIENT_PROFILE ||
-    (tunnelTransport === "stdio" ? "codex-mcp-bridge-stdio" : "codex-mcp-bridge");
+    (tunnelTransport === "stdio" ? "codex-mcp-bridge-stdio" : mcpOAuthRequested(process.env) ? "codex-mcp-bridge-oauth" : "codex-mcp-bridge");
   const endpointArguments = tunnelTransport === "stdio"
     ? [
         "--sample",
@@ -276,14 +287,14 @@ async function startSecureTunnel({ apiKey, tunnelId }) {
       ]
     : [
         "--sample",
-        "sample_mcp_remote_no_auth",
+        mcpOAuthRequested(process.env) ? "sample_mcp_with_dcr" : "sample_mcp_remote_no_auth",
         "--mcp-server-url",
         localMcpUrl,
         "--health-listen-addr",
         "127.0.0.1:0"
       ];
   const childEnvironment = {
-    ...bridgeEnvironment(),
+    ...codexProcessEnvironment(bridgeEnvironment()),
     CONTROL_PLANE_API_KEY: apiKey,
     CONTROL_PLANE_TUNNEL_ID: tunnelId
   };
@@ -305,7 +316,9 @@ async function startSecureTunnel({ apiKey, tunnelId }) {
     runtimeRoot: repoRoot,
     nodeExecutable: process.execPath,
     tunnelClient,
-    tunnelClientVersion
+    tunnelClientVersion,
+    authentication: mcpOAuthRequested(process.env)
+      ? createHash("sha256").update(JSON.stringify(mcpOAuthEnvironment(process.env))).digest("hex") : "noauth"
   });
   const reuse = args.reuseProfile
     ? inspectReusableTunnelProfile({
@@ -348,7 +361,7 @@ async function startSecureTunnel({ apiKey, tunnelId }) {
   const doctorStderr = processOutputText(doctor.stderr, "tunnel-client doctor stderr");
   if (doctorStdout) process.stdout.write(doctorStdout);
   if (doctorStderr) process.stderr.write(doctorStderr);
-  if (doctor.status !== 0 && !isIgnorableNoAuthDoctorFailure(`${doctorStdout}\n${doctorStderr}`)) {
+  if (doctor.status !== 0 && (mcpOAuthRequested(process.env) || !isIgnorableNoAuthDoctorFailure(`${doctorStdout}\n${doctorStderr}`))) {
     throw new Error("tunnel-client doctor failed. Fix the tunnel or API-key setup first.");
   }
   recordTunnelProfileMetadata({
@@ -431,9 +444,10 @@ function startBridge() {
 function bridgeEnvironment() {
   const env = {
     ...codexProcessEnvironment(process.env),
+    ...(mcpOAuthRequested(process.env) ? mcpOAuthEnvironment(process.env) : {}),
     CODEX_MCP_BRIDGE_HOST: host,
     CODEX_MCP_BRIDGE_PORT: port,
-    CODEX_MCP_BRIDGE_NO_AUTH: "1",
+    CODEX_MCP_BRIDGE_NO_AUTH: mcpOAuthRequested(process.env) ? "0" : "1",
     CODEX_MCP_BRIDGE_ALLOWED_HOSTS: "127.0.0.1,localhost"
   };
   if (args.write) {

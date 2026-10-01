@@ -49,7 +49,9 @@ describe("runtime environment", () => {
       CONTROL_PLANE_TUNNEL_ID: "tunnel-only",
       CLOUDFLARED_TUNNEL_TOKEN: "tunnel-only",
       TUNNEL_CLIENT_CONFIG: "/private/tunnel-config",
-      CODEX_MCP_BRIDGE_TOKEN: "bridge-only"
+      CODEX_MCP_BRIDGE_TOKEN: "bridge-only",
+      CODEX_MCP_BRIDGE_OAUTH_ISSUER: "https://id.example",
+      CODEX_GPT_BRIDGE_OAUTH_OPERATOR_SUBJECT: "private-operator"
     });
     expect(projected).toEqual({
       CODEX_HOME: "/selected/home",

@@ -14,7 +14,7 @@ rejected before they cross the wire.
 
 ## Task result
 
-`codex_task` input contract version 6 returns task output contract version 3.
+`codex_task` input contract version 6 returns task output contract version 4.
 The different numbers are intentional: input and output evolve independently.
 
 A successful new admission returns promptly with `state: "running"`, durable
@@ -56,6 +56,12 @@ return a scoped terminal admission receipt with `replay: true`, the original
 Job ID, and an omitted or unavailable result. It confirms prior admission but
 contains no recovered answer; missing and foreign handles use the same error.
 
+An admission with preapproved steps returns `approvedFollowups` in declaration
+order, including each bridge-issued `followupId`, canonical `requestId` and
+approval status. An exact retained predecessor read recovers those same
+references. Task output uses `null` when no steps were declared; status items
+omit the field. See [MCP Events](mcp-events.md) for review and expiry semantics.
+
 ## Structured next actions
 
 Model-visible `nextActions` is a closed union, never a free-form string list.
@@ -69,6 +75,8 @@ Each entry is one of:
 An action is recovery information. It does not confer authority to start work,
 alter settings, cancel a Job, or use an arbitrary tool. The receiver still
 performs the normal input, scope, version, and authorization checks.
+The descriptor shares this action union through a closed `$defs` definition
+and local `$ref` references across result branches.
 
 ## Model catalog and status
 
@@ -87,7 +95,7 @@ configuration.
 completed, failed, and cancelled task results; all twelve model-visible tools;
 root expansion; state contradictions; and structured action validation. The
 output-contract audit measures the current model-visible output schemas at
-51,204 UTF-8 JSON bytes. The total descriptor budget is 56,000 bytes and no
+47,340 UTF-8 JSON bytes. The total descriptor budget is 64,000 bytes and no
 single public output schema may exceed 18,000 bytes. These are descriptor
 measurements, not model-token counts or result-payload limits.
 

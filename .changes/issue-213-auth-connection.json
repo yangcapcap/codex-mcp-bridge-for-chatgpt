@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Document the supported OAuth 2.1 and private HTTP Tunnel connection design and pending configuration for MCP Events.",
+  "breaking": false,
+  "migration": null
+}

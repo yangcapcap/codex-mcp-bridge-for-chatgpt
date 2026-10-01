@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add a bounded retained private Node IPC child shutdown controller with strict owner receipts and sticky ordinary-stop history.",
+  "breaking": false,
+  "migration": null
+}

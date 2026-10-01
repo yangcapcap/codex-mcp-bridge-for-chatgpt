@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BridgeStateStore } from "./stateStore.js";
 import { parseJsonTextStrict } from "./textIntegrity.js";
+import type { ApprovedFollowup } from "./taskFollowups.js";
 
 export const JOB_TERMINAL_EVENT = "codex.job.terminal";
 const PREFIX = "mcp_events_v1/";
@@ -9,6 +10,7 @@ export const MAX_JOB_EVENT_SUBSCRIPTIONS = 8;
 export const EVENT_RESULT_RECOVERY_MS = 24 * 60 * 60 * 1_000;
 
 export type EventJob = {
+  approvedFollowups?: ApprovedFollowup[];
   jobId: string;
   scopeId: string;
   activityId?: string;
@@ -31,6 +33,7 @@ export type JobTerminalEvent = {
     agentId: string | null;
     state: string;
     terminalVersion: number;
+    availableFollowups?: Array<{ followupId: string }>;
     result: { tool: "codex_status"; query: { kind: "job"; id: string } };
   };
   cursor: null;
@@ -98,6 +101,9 @@ export class McpEventStore {
           agentId: job.agentId || null,
           state: job.status,
           terminalVersion: job.terminalVersion,
+          availableFollowups: job.status === "completed"
+            ? this.state.taskFollowups.references(job).filter(step => step.status === "approved-pending")
+              .map(({ followupId }) => ({ followupId })) : [],
           result: { tool: "codex_status", query: { kind: "job", id: job.jobId } }
         },
         cursor: null

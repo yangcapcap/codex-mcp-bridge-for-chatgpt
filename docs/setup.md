@@ -116,6 +116,13 @@ Once the server reports that the Bridge and Tunnel are connected:
 
 Refresh the ChatGPT connection after installing a Bridge release that changes its tools or cards. A normal app, server, Tunnel, or computer restart with the same build does not require Refresh.
 
+The steps above describe the default No Auth connection. For opt-in MCP Events,
+use the [OAuth HTTP configuration](mcp-events-authentication.md#configure-the-opt-in-adapter)
+and an OAuth developer-mode connection with a separately configured public login
+provider. The bridge JWT adapter is implemented, but this provider setup and
+actual ChatGPT Events acceptance remain pending. The app has no provider setup
+form; its existing Tunnel runtime key is separate from the user's OAuth login.
+
 The Dashboard switches between **This conversation** and **All work**, with
 running work, response requests and problems summarized in the selected scope.
 Open Dashboard for scoped work monitoring and Settings for configuration. GPT

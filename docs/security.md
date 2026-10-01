@@ -19,7 +19,15 @@ an operating-system sandbox or a multi-tenant service.
   enables the local no-auth development setting. Tunnel credentials live in a
   private owner-only runtime dotenv file outside registered projects.
 - The bridge does not expose a public OAuth authorization server. A well-known
-  OAuth resource request returns 404 rather than implying an unsupported flow.
+  OAuth resource request returns metadata only in the explicit HTTP OAuth mode;
+  otherwise it returns 404.
+
+The opt-in [authenticated Events connection](mcp-events-authentication.md)
+uses an external OAuth 2.1 provider and a private HTTP Tunnel. The JWT adapter
+verifies the exact issuer, resource audience, allowed operator subject, expiry,
+signature and Bridge scope on protected calls. User identity, Tunnel credentials
+and callback verification remain separate. Provider configuration and actual
+ChatGPT acceptance are pending; the default launcher still uses No Auth.
 
 Protocol version and request metadata identify a current request. They do not
 authorize a project, a task, a cancellation, or a settings change.

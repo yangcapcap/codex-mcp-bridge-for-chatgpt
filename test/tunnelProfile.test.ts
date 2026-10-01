@@ -105,6 +105,7 @@ describe("managed tunnel profile identity", () => {
       { ...identity, transport: "http" },
       { ...identity, endpoint: "command-two" },
       { ...identity, runtimeBuildId: "build-two" },
+      { ...identity, authentication: "oauth-configuration-digest" },
       { ...identity, runtimeRoot: "/runtime/two" }
     ]) {
       expect(inspectReusableTunnelProfile({

@@ -23,9 +23,13 @@ import {
 } from "./tools.js";
 import type { CodexUpstream, ToolResult } from "./upstream.js";
 import { UserSettingsStore } from "./userSettings.js";
+import {OwnedProcessShutdown,beginOrdinaryOwnedProcessStop,isOwnedProcessNonforcing} from "./ownedProcessShutdown.js";
+import {ExecutionShutdownOwner} from "./executionShutdownOwner.js";
+import {snapshotExecutionShutdownRequest} from "./executionShutdownProtocol.js";
+import {snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
 
 const CHILD_FLAG = "--bridge-state-read-child";
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const HEARTBEAT_MS = 250;
 const STALE_MS = 2_000;
 const STARTUP_TIMEOUT_MS = 10_000;
@@ -124,6 +128,10 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
   private closePromise?: Promise<void>;
   private restartTimer?: NodeJS.Timeout;
   private restartAttempts = 0;
+  private shutdown?:OwnedProcessShutdown;
+  private startupTimer?:NodeJS.Timeout;
+  private closeWait?:()=>void;
+  private nonforcingClose?:Promise<ShutdownResult>;
 
   private constructor(
     private readonly file: string,
@@ -193,7 +201,7 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
     const heartbeatAgeMs = this.lastHeartbeatAt === undefined
       ? undefined
       : Math.max(0, now - this.lastHeartbeatAt);
-    const fresh = processConnected && Boolean(this.generation) &&
+    const fresh = !this.closed && processConnected && Boolean(this.generation) &&
       heartbeatAgeMs !== undefined && heartbeatAgeMs <= STALE_MS;
     const reason = !processConnected
       ? "read-recovering"
@@ -217,8 +225,24 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
   }
 
   close(): Promise<void> {
+    if(this.shutdown?.pinned)return this.shutdown.closeAfterPin();
+    if(this.nonforcingClose)return this.nonforcingClose.then(result=>{if(!result.exited)throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");});
     if (!this.closePromise) this.closePromise = this.closeChild();
     return this.closePromise;
+  }
+
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult>{
+    const snapshot=snapshotShutdownPolicy(policy);
+    if(snapshot.allowSigkillEscalation!==false)throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
+    if(this.nonforcingClose)return this.nonforcingClose;
+    if(this.shutdown)return this.nonforcingClose=this.shutdown.closeNonforcing(snapshot);
+    this.closed=true;
+    if(this.restartTimer)clearTimeout(this.restartTimer);
+    return this.nonforcingClose=Promise.resolve(shutdownResult("uncertain"));
+  }
+
+  observeNonforcingExit():Promise<ShutdownResult>{
+    return this.shutdown?.observeNonforcingExit() ?? Promise.resolve(shutdownResult("uncertain"));
   }
 
   private rpc(method: ReadMethod, args: unknown[]): Promise<unknown> {
@@ -244,6 +268,7 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
     if (Buffer.byteLength(JSON.stringify(message), "utf8") > MAX_MESSAGE_BYTES) {
       return Promise.reject(new Error("STATE_READ_REQUEST_TOO_LARGE: Read request exceeds its IPC limit."));
     }
+    if(this.closed || this.child!==child)return Promise.reject(new Error("STATE_READ_OUTCOME_UNKNOWN"));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.pending.get(requestId);
@@ -259,6 +284,7 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
         if (!error) return;
         const pending = this.pending.get(requestId);
         if (!pending) return;
+        if(isOwnedProcessNonforcing(child))return;
         clearTimeout(pending.timer);
         this.pending.delete(requestId);
         if (!pending.abandoned) {
@@ -273,9 +299,11 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
       return Promise.reject(new Error("STATE_READ_CLOSED: Read projection closed."));
     }
     const modulePath = fileURLToPath(import.meta.url);
+    const controllerId=randomUUID();
     const args = modulePath.endsWith(".ts")
       ? ["--import", "tsx", modulePath, CHILD_FLAG, this.file]
       : [modulePath, CHILD_FLAG, this.file];
+    args.push(controllerId);
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
       env: {
@@ -285,6 +313,20 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
       stdio: ["ignore", "ignore", "pipe", "ipc"]
     });
     this.child = child;
+    this.shutdown=new OwnedProcessShutdown(child,{
+      generation:()=>this.generation,
+      pin:()=>{
+        this.closed=true;
+        if(this.restartTimer)clearTimeout(this.restartTimer);
+        if(this.startupTimer)clearTimeout(this.startupTimer);
+        this.closeWait?.();
+        for(const pending of this.pending.values()){
+          clearTimeout(pending.timer);
+          if(!pending.abandoned)pending.reject(new Error("STATE_READ_OUTCOME_UNKNOWN"));
+        }
+        return true;
+      }
+    },controllerId);
     this.generation = undefined;
     this.lastHeartbeatAt = undefined;
     this.activeOperation = undefined;
@@ -300,8 +342,9 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
       const timer = setTimeout(() => {
         const error = new Error("STATE_READ_START_TIMEOUT: Read projection did not become ready.");
         finish(error);
-        child.kill("SIGKILL");
+        if(beginOrdinaryOwnedProcessStop(child))child.kill("SIGKILL");
       }, STARTUP_TIMEOUT_MS);
+      this.startupTimer=timer;
       timer.unref();
       child.stderr?.on("data", chunk => {
         if (process.env.CODEX_MCP_BRIDGE_DEBUG === "1") process.stderr.write(chunk);
@@ -316,6 +359,7 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
         this.onExit(child, error);
       });
       child.on("message", value => {
+        if(isOwnedProcessNonforcing(child))return;
         if (this.child !== child || !isChildMessage(value)) return;
         if (value.type === "fatal") {
           finish(new Error(`STATE_READ_START_FAILED: ${value.message}`));
@@ -363,6 +407,7 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
 
   private onExit(child: ChildProcess, error: Error): void {
     if (this.child !== child) return;
+    if(isOwnedProcessNonforcing(child))return;
     this.child = undefined;
     this.generation = undefined;
     this.lastHeartbeatAt = undefined;
@@ -404,19 +449,24 @@ export class ChildProcessStateReadService implements BridgeReadProjectionService
     const child = this.child;
     this.child = undefined;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    if(!beginOrdinaryOwnedProcessStop(child))return this.shutdown?.closeAfterPin();
     if (child.connected) child.send({ type: "close" } satisfies CloseMessage);
+    if(isOwnedProcessNonforcing(child))return this.shutdown?.closeAfterPin();
     await new Promise<void>(resolve => {
       let settled = false;
-      const force = setTimeout(() => child.kill("SIGKILL"), FORCE_CLOSE_MS);
+      const force = setTimeout(() => {if(beginOrdinaryOwnedProcessStop(child))child.kill("SIGKILL");}, FORCE_CLOSE_MS);
       const finish = () => {
         if (settled) return;
         settled = true;
         clearTimeout(force);
+        this.closeWait=undefined;
         resolve();
       };
+      this.closeWait=finish;
       child.once("exit", finish);
       if (child.exitCode !== null || child.signalCode !== null) finish();
     });
+    if(isOwnedProcessNonforcing(child))return this.shutdown?.closeAfterPin();
   }
 }
 
@@ -428,13 +478,14 @@ class ProjectionUpstream implements CodexUpstream {
   async close(): Promise<void> {}
 }
 
-async function runChild(file: string): Promise<void> {
+async function runChild(file: string,controllerId:string): Promise<void> {
   const generation = randomUUID();
   const codexService = new CodexService(process.env);
   const unverifiedReadBoundary = randomUUID();
   let closing = false;
   let inFlight = 0;
   let tail: Promise<void> = Promise.resolve();
+  let resourceCloseUncertain=false;
   const send = (message: ChildMessage) => {
     if (!process.connected || !process.send) return;
     try { process.send(message, () => {}); } catch { /* Parent owns recovery. */ }
@@ -446,11 +497,38 @@ async function runChild(file: string): Promise<void> {
     inFlight
   }), HEARTBEAT_MS);
   heartbeat.unref();
+  const resources=async()=>{
+    await tail;
+    return resourceCloseUncertain || inFlight!==0 ? shutdownResult("uncertain") : shutdownResult("exited");
+  };
+  const shutdownOwner=new ExecutionShutdownOwner(generation,process.pid,{
+    pin(){closing=true;clearInterval(heartbeat);return true;},
+    close:resources,observe:resources
+  });
+  const handleShutdown=async(value:unknown)=>{
+    const receipt=await shutdownOwner.handle(value,controllerId);
+    if(!receipt || !process.connected || !process.send)return;
+    await new Promise<void>(resolve=>{
+      let settled=false;
+      const finish=(error?:Error|null)=>{
+        if(settled)return;settled=true;clearTimeout(timer);
+        if(error)shutdownOwner.invalidateObservation();
+        else if(receipt.operation==="finalize-nonforcing" && receipt.result.exited && shutdownOwner.finalizationAllowed &&
+          process.connected)process.disconnect();
+        resolve();
+      };
+      const timer=setTimeout(()=>finish(new Error("STATE_READ_SHUTDOWN_RECEIPT_TIMEOUT")),6000);
+      try{process.send!(receipt,finish);}catch{finish(new Error("STATE_READ_SHUTDOWN_RECEIPT_FAILED"));}
+    });
+  };
   const close = async () => {
+    if(shutdownOwner.pinned)return;
+    shutdownOwner.markOrdinaryShutdown();
     if (closing) return;
     closing = true;
     clearInterval(heartbeat);
     await tail.catch(() => undefined);
+    if(shutdownOwner.pinned)return;
     if (process.connected) process.disconnect();
   };
   try {
@@ -464,6 +542,9 @@ async function runChild(file: string): Promise<void> {
       heartbeatAt: Date.now()
     });
     process.on("message", value => {
+      const request=snapshotExecutionShutdownRequest(value);
+      if(request){void handleShutdown(request).catch(()=>shutdownOwner.invalidateObservation());return;}
+      if(shutdownOwner.pinned)return;
       if (!isParentMessage(value) || closing) return;
       if (value.type === "close") {
         void close();
@@ -490,7 +571,7 @@ async function runChild(file: string): Promise<void> {
         const boundaryIsCurrent = evidence && evidence.ownerStatus !== "unverified" &&
           evidence.snapshotAt <= Date.now() && Date.now() - evidence.snapshotAt <= REQUEST_DEADLINE_MS;
         const result = await executeProjection(file, value.method, value.args, codexService,
-          boundaryIsCurrent ? evidence.key : unverifiedReadBoundary);
+          boundaryIsCurrent ? evidence.key : unverifiedReadBoundary,()=>{resourceCloseUncertain=true;});
         observe("serializing");
         const encoded = JSON.stringify(result === undefined ? null : result);
         if (Buffer.byteLength(encoded, "utf8") > MAX_MESSAGE_BYTES) {
@@ -528,7 +609,8 @@ async function executeProjection(
   method: ReadMethod,
   args: unknown[],
   codexService: CodexService,
-  authBoundaryKey: string
+  authBoundaryKey: string,
+  closeFailure:()=>void
 ): Promise<unknown> {
   const config = loadConfig({
     ...process.env,
@@ -538,6 +620,7 @@ async function executeProjection(
   // selection for model discovery, even though no task worker runs here.
   config.codexService = codexService;
   const stateStore = new BridgeStateStore({ file, readOnly: true });
+  try {
   const upstream = new ProjectionUpstream();
   const sessions = new SessionRegistry({
     stateStore,
@@ -582,9 +665,14 @@ async function executeProjection(
       args
     );
   } finally {
-    await server.close();
-    await upstream.close();
-    stateStore.close();
+    const failures:unknown[]=[];
+    for(const close of [()=>server.close(),()=>upstream.close()]){
+      try{await close();}catch(error){closeFailure();failures.push(error);}
+    }
+    if(failures.length)throw new Error("STATE_READ_RESOURCE_CLOSE_UNCONFIRMED");
+  }
+  } finally {
+    try{stateStore.close();}catch{closeFailure();throw new Error("STATE_READ_DATABASE_CLOSE_UNCONFIRMED");}
   }
 }
 
@@ -642,7 +730,10 @@ function isReadBoundaryEvidence(value: unknown): value is CodexSessionAuthBounda
 }
 
 const childFile = process.argv[process.argv.indexOf(CHILD_FLAG) + 1];
+const childController = process.argv[process.argv.indexOf(CHILD_FLAG) + 2];
 if (process.argv.includes(CHILD_FLAG)) {
   if (!childFile) throw new Error("State read database path is required.");
-  await runChild(childFile);
+  if(!childController || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(childController))
+    throw new Error("State read child controller identity is required.");
+  await runChild(childFile,childController);
 }

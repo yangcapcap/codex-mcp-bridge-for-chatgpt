@@ -58,6 +58,8 @@ export function codexChildEnvironmentFingerprint(environment: NodeJS.ProcessEnv)
 export const CODEX_APPLIED_ENV_KEYS: readonly string[];
 export function codexAppliedEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export function codexProcessEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function mcpOAuthRequested(environment: NodeJS.ProcessEnv): boolean;
+export function mcpOAuthEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 
 export type PreparedRuntimeEnvUpdate = {
   readonly path: string;

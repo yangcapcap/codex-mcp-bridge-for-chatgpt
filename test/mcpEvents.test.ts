@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,6 +13,7 @@ import { ScopeResolver } from "../src/scopeResolver.js";
 import { JOB_TERMINAL_EVENT } from "../src/mcpEventStore.js";
 import { mcpBearerPrincipal } from "../src/mcpEvents.js";
 import { EventDestinationVault, publicAddress, signedHeaders, validateCallbackUrl, validateSigningSecret, type WebhookSender } from "../src/mcpWebhook.js";
+import { FOLLOWUP_ID_PATTERN, issueApprovedFollowups, promptDigest } from "../src/taskFollowups.js";
 import type { CodexUpstream, ToolResult } from "../src/upstream.js";
 import type { CodexModelCatalogProvider } from "../src/modelCatalog.js";
 
@@ -363,27 +364,130 @@ describe("MCP Events exact-Job lifecycle", () => {
 });
 
 describe("pre-approved followup admission across GPT runs", () => {
+  it("recovers issued references from an exact A read and its event after admission response loss", async () => {
+    const upstream = new Upstream(); const release = upstream.hold();
+    const f = await start(undefined, false, undefined, upstream);
+    const requestId = randomUUID();
+    const approvedFollowups = [{ prompt: "Read fixture B" }, { prompt: "Read fixture C" }];
+    const admitted = await task(f, { requestId, approvedFollowups });
+    const expected = admitted.approvedFollowups;
+    const replay = await task(f, { requestId, approvedFollowups });
+    expect(replay.jobId).toBe(admitted.jobId); expect(replay.approvedFollowups).toEqual(expected);
+    expect(new Set(expected.map((step: any) => step.followupId)).size).toBe(2);
+    const sub = await rpc(f, "events/subscribe", subscription(admitted.jobId));
+    release();
+    const status = await completed(f, admitted.jobId);
+    expect(status.items.find((item: any) => item.id === admitted.jobId).approvedFollowups).toEqual(expected);
+    await vi.waitFor(() => expect(f.state.mcpEvents.get(admitted.jobId, sub.result.id)?.delivery).toBe("acknowledged"));
+    const event = f.deliveries.find(item => item.body.eventId)!.body;
+    expect(event.data.availableFollowups).toEqual(expected.map(({ followupId }: any) => ({ followupId })));
+    expect(JSON.stringify(event)).not.toContain("Read fixture B");
+    expect(JSON.stringify(event)).not.toContain("stepId");
+    await f.client.close(); await new Promise<void>(resolve => f.server.close(() => resolve())); f.state.close();
+    fixtures.splice(fixtures.indexOf(f), 1);
+    const restarted = await start(undefined, false, { root: f.root, state: new BridgeStateStore({ file: path.join(f.root, "state.sqlite") }) });
+    const recovered = await completed(restarted, admitted.jobId);
+    const reference = recovered.items.find((item: any) => item.id === admitted.jobId).approvedFollowups[0];
+    expect(reference).toEqual(expected[0]);
+    const b = await task(restarted, { requestId: reference.requestId, project: undefined, selection: undefined,
+      prompt: approvedFollowups[0].prompt, followup: { followupId: reference.followupId, reviewedVersion: recovered.items[0].versions.job } });
+    expect(b.error).toBeNull(); expect(b.requestId).toBe(reference.requestId);
+    await completed(restarted, b.jobId); expect(restarted.upstream.calls).toBe(1);
+  });
+
+  it("rejects caller-issued stage identifiers and rolls back an uncommitted issued reference", async () => {
+    const f = await start();
+    for (const override of [{ stepId: "caller-B" }, { followupId: "fup_" + "1".repeat(96) }]) {
+      await expect(task(f, { approvedFollowups: [{ prompt: "Read fixture B", ...override }] })).rejects.toThrow();
+    }
+    expect(f.state.listJobs()).toHaveLength(0); expect(f.upstream.calls).toBe(0);
+    const save = f.state.setMeta.bind(f.state);
+    const fault = vi.spyOn(f.state, "setMeta").mockImplementation((key, value) => {
+      if (key.startsWith("task_followup_v1/")) throw new Error("isolated approval receipt failure");
+      save(key, value);
+    });
+    const requestId = randomUUID(); const approvedFollowups = [{ prompt: "Read fixture B" }];
+    const failed = await task(f, { requestId, approvedFollowups });
+    expect(failed.error).not.toBeNull();
+    expect(f.state.listJobs()).toHaveLength(0); expect(f.state.listMeta("task_followup_v1/", 8)).toHaveLength(0);
+    expect(f.upstream.calls).toBe(0);
+    fault.mockRestore();
+    const a = await task(f, { requestId, approvedFollowups });
+    expect(a.error).toBeNull(); expect(a.approvedFollowups[0].followupId).toMatch(FOLLOWUP_ID_PATTERN);
+    await completed(f, a.jobId); expect(f.upstream.calls).toBe(1);
+  });
+
+  it("keeps separately approved identical prompts distinct while deduplicating each issued reference", async () => {
+    const f = await start();
+    const a = await task(f, { approvedFollowups: [{ prompt: "Read fixture B" }, { prompt: "Read fixture B" }] });
+    await completed(f, a.jobId);
+    const parent = f.state.listJobs().find((job: any) => job.jobId === a.jobId) as any;
+    const results: string[] = [];
+    for (const reference of a.approvedFollowups) {
+      const input = { project: undefined, selection: undefined, requestId: reference.requestId, prompt: "Read fixture B",
+        followup: { followupId: reference.followupId, reviewedVersion: parent.version } };
+      const b = await task(f, input); expect(b.error).toBeNull();
+      const retry = await task(f, { ...input, requestId: randomUUID() });
+      expect(retry.jobId).toBe(b.jobId); results.push(b.jobId); await completed(f, b.jobId);
+    }
+    expect(new Set(results).size).toBe(2); expect(f.upstream.calls).toBe(3);
+  });
+
+  it("preserves a retained v1 approval's canonical request receipt during upgrade", async () => {
+    const f = await start();
+    const a = await task(f, { approvedFollowups: [{ prompt: "Read fixture B" }] });
+    await completed(f, a.jobId);
+    const parent = f.state.listJobs().find((job: any) => job.jobId === a.jobId) as any;
+    const modern = f.state.taskFollowups.get(a.approvedFollowups[0].followupId)!;
+    const legacyStep = { stepId: "legacy-B", promptSha256: promptDigest("Read fixture B") };
+    const followupId = issueApprovedFollowups(a.jobId, [legacyStep])![0]!.followupId!;
+    const bytes = createHash("sha1").update("codex-mcp-bridge/followup/v1\0" + JSON.stringify([parent.scopeId, a.jobId, legacyStep.stepId])).digest().subarray(0, 16);
+    bytes[6] = (bytes[6]! & 15) | 0x50; bytes[8] = (bytes[8]! & 63) | 0x80;
+    const hex = bytes.toString("hex");
+    const legacyRequestId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    f.state.deleteMeta(`task_followup_v1/${a.jobId}/${modern.followupId.slice(36)}`);
+    f.state.setMeta(`task_followup_v1/${a.jobId}/${createHash("sha256").update(legacyStep.stepId).digest("hex")}`,
+      JSON.stringify({ ...modern, ...legacyStep, followupId: undefined, requestId: legacyRequestId }));
+    f.state.upsertJob({ ...parent, approvedFollowups: [legacyStep] });
+    await f.client.close(); await new Promise<void>(resolve => f.server.close(() => resolve())); f.state.close();
+    fixtures.splice(fixtures.indexOf(f), 1);
+    const restarted = await start(undefined, false, { root: f.root, state: new BridgeStateStore({ file: path.join(f.root, "state.sqlite") }) });
+    const status = await completed(restarted, a.jobId);
+    const reference = status.items.find((item: any) => item.id === a.jobId).approvedFollowups[0];
+    expect(reference).toEqual({ followupId, requestId: legacyRequestId, status: "approved-pending" });
+    const input = { project: undefined, selection: undefined, prompt: "Read fixture B",
+      followup: { followupId, reviewedVersion: parent.version } };
+    const [b, retry] = await Promise.all([task(restarted, input), task(restarted, input)]);
+    expect(b.error).toBeNull(); expect(b.requestId).toBe(legacyRequestId); expect(retry.jobId).toBe(b.jobId);
+    await completed(restarted, b.jobId); expect(restarted.upstream.calls).toBe(1);
+  });
+
   it("converges duplicate callers, response loss and restart to exactly one approved B", async () => {
     const f = await start();
-    const a = await task(f, { approvedFollowups: [{ stepId: "B", prompt: "Read fixture B" }] });
+    const a = await task(f, { approvedFollowups: [{ prompt: "Read fixture B" }] });
     expect(a.jobId).toBeTruthy();
+    const followupId = a.approvedFollowups[0].followupId;
+    expect(followupId).toMatch(FOLLOWUP_ID_PATTERN);
+    expect(a.approvedFollowups[0].status).toBe("approved-pending");
     const rejectedBeforeReview = await task(f, { project: undefined, selection: undefined, prompt: "Read fixture B",
-      followup: { jobId: a.jobId, stepId: "B", reviewedVersion: 1 } });
+      followup: { followupId, reviewedVersion: 1 } });
     expect(rejectedBeforeReview.error.code).toBe("FOLLOWUP_REVIEW_REQUIRED");
     const status = await completed(f, a.jobId);
+    expect(status.items.find((item: any) => item.id === a.jobId).approvedFollowups).toEqual(a.approvedFollowups);
     const parent = f.state.listJobs().find((job: any) => job.jobId === a.jobId) as any;
     expect(f.state.getJobCompletionDelivery(a.jobId)?.directResultOfferedAt).toBeTruthy();
     expect(JSON.stringify(f.state.listMeta("task_followup_v1/", 256))).not.toContain("Read fixture B");
     const input = { project: undefined, selection: undefined, prompt: "Read fixture B",
-      followup: { jobId: a.jobId, stepId: "B", reviewedVersion: parent.version } };
+      followup: { followupId, reviewedVersion: parent.version } };
     const [b, duplicate] = await Promise.all([task(f, input), task(f, input)]);
     expect(b.error).toBeNull(); expect(duplicate.error).toBeNull();
     expect(b.jobId).toBe(duplicate.jobId);
     const replay = await task(f, input);
     expect(replay.jobId).toBe(b.jobId); expect(replay.requestId).toBe(b.requestId);
+    expect(b.requestId).toBe(a.approvedFollowups[0].requestId);
     await completed(f, b.jobId);
     expect(f.upstream.calls).toBe(2);
-    expect(f.state.taskFollowups.get(a.jobId, "B")?.admittedJobId).toBe(b.jobId);
+    expect(f.state.taskFollowups.get(followupId)?.admittedJobId).toBe(b.jobId);
     const altered = await task(f, { ...input, prompt: "Unauthorized different task" });
     expect(altered.error.code).toBe("FOLLOWUP_NOT_APPROVED");
     expect(f.upstream.calls).toBe(2);
@@ -393,36 +497,41 @@ describe("pre-approved followup admission across GPT runs", () => {
     const f = await start();
     const a = await task(f); await completed(f, a.jobId);
     const b = await task(f, { project: undefined, selection: undefined, prompt: "Read fixture B",
-      followup: { jobId: a.jobId, stepId: "B", reviewedVersion: 2 } });
+      followup: { followupId: "fup_" + "0".repeat(96), reviewedVersion: 2 } });
     expect(b.error.code).toBe("FOLLOWUP_NOT_APPROVED"); expect(f.upstream.calls).toBe(1);
   });
 
   it("rejects unrelated work occupying the approved step's canonical requestId", async () => {
     const f = await start();
-    const a = await task(f, { approvedFollowups: [{ stepId: "B", prompt: "Read fixture B" }] });
+    const a = await task(f, { approvedFollowups: [{ prompt: "Read fixture B" }] });
+    const followupId = a.approvedFollowups[0].followupId;
     await completed(f, a.jobId);
     const parent = f.state.listJobs().find((job: any) => job.jobId === a.jobId) as any;
-    const reserved = f.state.taskFollowups.get(a.jobId, "B")!.requestId;
+    const reserved = a.approvedFollowups[0].requestId;
     const other = await task(f, { requestId: reserved, prompt: "Unrelated approved work" });
     await completed(f, other.jobId);
     const b = await task(f, { project: undefined, selection: undefined, prompt: "Read fixture B",
-      followup: { jobId: a.jobId, stepId: "B", reviewedVersion: parent.version } });
+      followup: { followupId, reviewedVersion: parent.version } });
     expect(b.error.code).toBe("FOLLOWUP_ADMISSION_CONFLICT");
-    expect(f.state.taskFollowups.get(a.jobId, "B")?.admittedJobId).toBeUndefined();
+    expect(f.state.taskFollowups.get(followupId)?.admittedJobId).toBeUndefined();
     expect(f.upstream.calls).toBe(2);
   });
 
   it("recovers one admitted B after a response is lost and the bridge restarts", async () => {
     const f = await start();
-    const a = await task(f, { approvedFollowups: [{ stepId: "B", prompt: "Read fixture B" }] });
+    const a = await task(f, { approvedFollowups: [{ prompt: "Read fixture B" }] });
+    const followupId = a.approvedFollowups[0].followupId;
     await completed(f, a.jobId);
     const parent = f.state.listJobs().find((job: any) => job.jobId === a.jobId) as any;
     const input = { project: undefined, selection: undefined, prompt: "Read fixture B",
-      followup: { jobId: a.jobId, stepId: "B", reviewedVersion: parent.version } };
+      followup: { followupId, reviewedVersion: parent.version } };
     const b = await task(f, input); await completed(f, b.jobId);
     await f.client.close(); await new Promise<void>(resolve => f.server.close(() => resolve())); f.state.close();
     fixtures.splice(fixtures.indexOf(f), 1);
     const restarted = await start(undefined, false, { root: f.root, state: new BridgeStateStore({ file: path.join(f.root, "state.sqlite") }) });
+    const recoveredA = await completed(restarted, a.jobId);
+    const recoveredReference = recoveredA.items.find((item: any) => item.id === a.jobId).approvedFollowups[0];
+    expect(recoveredReference).toMatchObject({ followupId, status: "admitted", requestId: b.requestId });
     const recovery = await task(restarted, input);
     expect(recovery.jobId).toBe(b.jobId); expect(recovery.requestId).toBe(b.requestId);
     expect(restarted.upstream.calls).toBe(0);
@@ -432,16 +541,21 @@ describe("pre-approved followup admission across GPT runs", () => {
 
   it("expires unconsumed approvals while preserving admission tombstones", async () => {
     const f = await start();
-    const a = await task(f, { approvedFollowups: [{ stepId: "B", prompt: "Read fixture B" }, { stepId: "C", prompt: "Read fixture C" }] });
+    const a = await task(f, { approvedFollowups: [{ prompt: "Read fixture B" }, { prompt: "Read fixture C" }] });
+    const followupId = a.approvedFollowups[0].followupId;
+    const unusedId = a.approvedFollowups[1].followupId;
     await completed(f, a.jobId);
     const parent = f.state.listJobs().find((job: any) => job.jobId === a.jobId) as any;
     const b = await task(f, { project: undefined, selection: undefined, prompt: "Read fixture B",
-      followup: { jobId: a.jobId, stepId: "B", reviewedVersion: parent.version } });
+      followup: { followupId, reviewedVersion: parent.version } });
     expect(b.error).toBeNull();
     await completed(f, b.jobId);
     expect(f.state.taskFollowups.maintain(Date.now() + 8 * 86_400_000)).toBe(1);
-    expect(f.state.taskFollowups.get(a.jobId, "B")?.admittedJobId).toBe(b.jobId);
-    expect(f.state.taskFollowups.get(a.jobId, "C")).toBeUndefined();
+    expect(f.state.taskFollowups.get(followupId)?.admittedJobId).toBe(b.jobId);
+    expect(f.state.taskFollowups.get(unusedId)).toBeUndefined();
+    const status = await completed(f, a.jobId);
+    expect(status.items.find((item: any) => item.id === a.jobId).approvedFollowups[1]).toEqual({ followupId: unusedId,
+      requestId: a.approvedFollowups[1].requestId, status: "expired" });
   });
 });
 
