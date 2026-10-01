@@ -240,15 +240,17 @@ export class ThreadConnectionController {
 
   start(): void {
     if (this.timer || this.closed) return;
+    const intervalMs = this.options.intervalMs ?? 30_000;
+    if (this.closed) return;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2_147_483_647)
+      throw new Error("STATE_BACKGROUND_INTERVAL_INVALID");
     for (const threadId of this.store.protectedThreadIds()) {
       if (this.nonforcingPinned) return;
       const protect = this.upstream.protectThreadFromImplicitResume;
       if (this.nonforcingPinned) return;
-      protect?.call(this.upstream, threadId);
+      if (protect?.call(this.upstream, threadId) !== undefined) this.nonforcingUnknown = true;
     }
     if (this.nonforcingPinned) return;
-    const intervalMs = this.options.intervalMs ?? 30_000;
-    if (this.closed) return;
     this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     void this.sweep();
@@ -257,7 +259,7 @@ export class ThreadConnectionController {
   request(threadId: string): ThreadConnectionRecord {
     if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
     const current = this.store.requestHandoff(threadId, this.now());
-    this.options.changed?.();
+    this.publishChanges();
     void this.sweep();
     return current;
   }
@@ -265,7 +267,7 @@ export class ThreadConnectionController {
   cancel(threadId: string): ThreadConnectionRecord {
     if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
     const current = this.store.cancelHandoff(threadId, this.now());
-    this.options.changed?.();
+    this.publishChanges();
     return current;
   }
 
@@ -341,7 +343,7 @@ export class ThreadConnectionController {
           const updatedAt = this.now();
           if (this.nonforcingPinned) return;
           this.store.update(current.threadId, { phase: "blocked", reason }, updatedAt);
-          this.options.changed?.();
+          this.publishChanges();
         }
         continue;
       }
@@ -381,7 +383,7 @@ export class ThreadConnectionController {
           this.store.update(threadId, { phase: "released", evidence: result.evidence }, peerReleasedAt);
         }
       }
-      this.options.changed?.();
+      this.publishChanges();
     }
   }
 
@@ -402,6 +404,13 @@ export class ThreadConnectionController {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     return true;
+  }
+
+  private publishChanges(): void {
+    if (this.nonforcingPinned) return;
+    const changed = this.options.changed;
+    if (this.nonforcingPinned) return;
+    if (changed?.call(this.options) !== undefined) this.nonforcingUnknown = true;
   }
 
   observeNonforcingExit(): ShutdownResult {

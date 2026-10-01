@@ -256,9 +256,13 @@ export class AutomaticRecoveryController {
 
   start(): void {
     if (this.closed || this.timer) return;
-    this.store.reconcileInterrupted(this.now());
     const intervalMs = this.options.intervalMs ?? 5_000;
     if (this.closed) return;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 2_147_483_647)
+      throw new Error("STATE_BACKGROUND_INTERVAL_INVALID");
+    const observedAt = this.now();
+    if (this.nonforcingPinned) return;
+    this.store.reconcileInterrupted(observedAt);
     this.timer = setInterval(() => { void this.sweep(); }, intervalMs);
     this.timer.unref();
     this.schedule();
@@ -348,14 +352,25 @@ export class AutomaticRecoveryController {
     return true;
   }
 
+  private publishChanges(): void {
+    if (this.nonforcingPinned) return;
+    const changed = this.options.changed;
+    if (this.nonforcingPinned) return;
+    if (changed?.call(this.options) !== undefined) this.nonforcingUnknown = true;
+  }
+
   observeNonforcingExit(): ShutdownResult {
     if (!this.nonforcingPinned || this.nonforcingUnknown) return shutdownResult("uncertain");
     return this.pending ? shutdownResult("timeout", 1) : shutdownResult("exited");
   }
 
   private async runSweep(jobId?: string, agentId?: string): Promise<void> {
-    if (this.options.enabled?.() === false || this.nonforcingPinned) return;
-    this.store.reconcileInterrupted(this.now());
+    const enabled = this.options.enabled;
+    if (this.nonforcingPinned) return;
+    if (enabled?.call(this.options) === false || this.nonforcingPinned) return;
+    const observedAt = this.now();
+    if (this.nonforcingPinned) return;
+    this.store.reconcileInterrupted(observedAt);
     const budget = new BackgroundWorkSlice(RECOVERY_WORK_LIMITS);
     budget.roundTrips = 1; // bounded interrupted-attempt reconciliation
     let agents = 0, candidates = 0, dispatched = 0;
@@ -420,7 +435,7 @@ export class AutomaticRecoveryController {
         if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
         this.store.finish(record.key,record.attempts,{resolved:false,reason:"work-changed",retryable:false},observedAt);
         if (this.nonforcingPinned) return {candidates: 0, dispatched: 0};
-        this.options.changed?.();
+        this.publishChanges();
       }
     }
     const candidates = available.filter(candidate => !jobId || candidate.jobId === jobId)
@@ -444,7 +459,7 @@ export class AutomaticRecoveryController {
       const attempt = this.store.begin(candidate,attemptStartedAt);
       if (!attempt) continue;
       dispatched++;
-      this.options.changed?.();
+      this.publishChanges();
       if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
       let result: AutomaticRecoveryResult;
       try {
@@ -461,9 +476,7 @@ export class AutomaticRecoveryController {
       if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
       this.store.finish(candidate.key,attempt.attempts,retainedResult,finishedAt);
       if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
-      const changed = this.options.changed;
-      if (this.nonforcingPinned) return {candidates:candidates.length,dispatched};
-      changed?.();
+      this.publishChanges();
       // A shared-worker release may resolve a peer. Its durable state is
       // checked by begin() on the next candidate; no global rediscovery here.
     }

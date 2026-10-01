@@ -52,6 +52,9 @@ export class ScopeFairQueue<T> {
     if (this.closed) return false;
     const capacity = this.options.capacity;
     if (this.closed) return false;
+    if (!Number.isSafeInteger(capacity) || !Number.isSafeInteger(perScopeCapacity) ||
+        capacity < 1 || perScopeCapacity < 1 || perScopeCapacity > capacity)
+      throw new Error("FAIR_QUEUE_CAPACITY_INVALID");
     let queue = this.queues.get(scopeId);
     if (!queue) {
       queue = [];
