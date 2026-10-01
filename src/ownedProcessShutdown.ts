@@ -69,6 +69,7 @@ export class OwnedProcessShutdown {
  }
  async observeNonforcingExit():Promise<ShutdownResult>{
   if(!this.settled || !this.request)return shutdownResult("uncertain");
+  if(this.uncertain)return this.measure(this.finalReceipt ?? shutdownResult("uncertain"),6000);
   if(this.finalReceipt)return this.measure(this.finalReceipt,6000);
   const {policy,...original}=this.request;
   const request=snapshotExecutionShutdownRequest({...original,type:"observe-nonforcing",requestId:randomUUID()});
@@ -77,10 +78,11 @@ export class OwnedProcessShutdown {
  }
  /** Ordinary wrappers can report the initial result without reopening force. */
  async closeAfterPin():Promise<void>{
-  if(!this.initial || !(await this.initial).exited)throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+  if(this.uncertain || !this.initial || !(await this.initial).exited || this.uncertain)throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
  }
  private exchange(request:ExecutionShutdownRequest,deadline:number):Promise<ShutdownResult>{
-  if(!this.child.connected || this.child.pid!==request.ownerPid || this.issued.size>=128)return Promise.resolve(shutdownResult("uncertain"));
+  if(this.child.pid!==request.ownerPid){this.uncertain=true;return Promise.resolve(shutdownResult("uncertain"));}
+  if(!this.child.connected || this.issued.size>=128)return Promise.resolve(shutdownResult("uncertain"));
   return new Promise(resolve=>{
    let settled=false;
    const finish=(result:ShutdownResult)=>{if(settled)return;settled=true;clearTimeout(timer);this.waiting.delete(request.requestId);resolve(result);};
@@ -107,7 +109,7 @@ export class OwnedProcessShutdown {
   }
  }
  private async finish(resources:ShutdownResult,deadline:number):Promise<ShutdownResult>{
-  if(resources.exited && this.request && !this.finalReceipt){
+  if(resources.exited && !this.uncertain && this.request && !this.finalReceipt){
    const {policy,...original}=this.request;
    const request=snapshotExecutionShutdownRequest({...original,type:"finalize-nonforcing",requestId:randomUUID()});
    if(request)resources=await this.exchange(request,deadline);
@@ -118,7 +120,7 @@ export class OwnedProcessShutdown {
   const owner=await boundedShutdown(async()=>{
    const end=performance.now()+deadline;
    for(;;){
-    if(!this.request || this.child.pid!==this.request.ownerPid)return shutdownResult("uncertain");
+    if(!this.request || this.child.pid!==this.request.ownerPid){this.uncertain=true;return shutdownResult("uncertain");}
     if(this.child.exitCode!==null || this.child.signalCode!==null)return shutdownResult("exited");
     if(!resources.exited || !this.finalReceipt || performance.now()>=end)return shutdownResult("timeout",1);
     await new Promise(done=>setTimeout(done,20));

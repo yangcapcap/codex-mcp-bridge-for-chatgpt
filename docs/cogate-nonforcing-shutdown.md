@@ -279,3 +279,9 @@ ordinary close/disposal never resumes after pin. Execution factory construction
 checks its pin after CLI selection, and an unconfirmed router close retains the
 CLI context rather than releasing it. These are local source/pure checks pending
 fresh independent review and runtime/launcher integration.
+The private owned-child controller retains any observed PID identity mismatch
+as sticky UNKNOWN, including after the numeric PID field is restored. This
+invalidates cached final receipts for current observations and ordinary close
+reporting while preserving the immutable original result. No fresh finalization
+or receipt request is sent once such uncertainty has been recorded. The new
+repair requires its own independent exact-head review.

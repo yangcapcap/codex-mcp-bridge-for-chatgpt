@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Retain observed owned-child identity uncertainty across later observations and ordinary close without rewriting earlier receipts.","breaking":false,"migration":null}
