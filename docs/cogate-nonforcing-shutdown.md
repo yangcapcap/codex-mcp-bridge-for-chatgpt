@@ -191,3 +191,34 @@ the queue. Caller mutation, accessors and `toJSON` cannot change the transmitted
 representation after acceptance. An ordinary serialization that reentrantly
 installs the nonforcing fence is rejected before enqueueing. Prior serialized
 ordinary shutdown history remains unknown even after actual owned-child exit.
+
+### Authenticated execution-owner shutdown IPC
+
+The execution protocol is now version 7. Explicit nonforcing shutdown pins the
+controller's retained execution peer and worker ledger synchronously, then sends
+an exact `close-nonforcing` request bound to the authenticated controller UUID,
+execution generation, owner PID, original close nonce and bounded grace. An
+owner receipt reports its pool and retained trees; it is never owner-exit proof.
+A fresh `finalize-nonforcing` nonce permits cooperative listener closure only
+following a fresh zero-worker observation and successful receipt write on the
+same authenticated stream. The controller additionally requires actual exit of
+its original owned child handle and fresh retained local tree absence. A
+reattached owner, missing/mismatched/equivocating receipt, incomplete registration,
+prior ordinary shutdown or unresolved observation remains UNKNOWN.
+
+Nonforcing shutdown retains pending execution reservations, assignments, terminal
+ACK and release evidence. Late ordinary responses/ACKs cannot release unknown
+writers. It prevents default force timers, restart/replay, raw owner controls and
+queued ordinary cleanup from regaining termination authority. Initial receipts
+remain immutable; fresh read-only observation may resolve a previous timeout,
+but `close()` still reports the original unconfirmed result. Overlapping remote
+pool/tree and controller tree counts use their maximum, with the execution owner
+as a separate root. These are measured overlapping snapshots, not an assertion
+of globally simultaneous unique process counts; EXIT requires every view to be
+zero and positively confirmed.
+
+This component does not expose a production shutdown switch, authenticate state
+activation or establish complete launcher/state/runtime shutdown. It requires a
+new independent exact-head review before integration and final acceptance. The
+local tests cover correlation, real owned exit, retained writer evidence, prior
+force history, serialization reentrancy and an observed detached descendant.
