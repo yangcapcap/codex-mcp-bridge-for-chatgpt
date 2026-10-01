@@ -139,10 +139,11 @@ export class LazyCodexUpstream implements CodexUpstream {
       this.instance=instance;
       if(this.nonforcingClose){this.pinInstance(instance);return instance;}
       for(const threadId of this.pendingResumeProtections){
-        const method=instance.protectThreadFromImplicitResume;this.assertOpen();
+        this.assertOpen();const method=instance.protectThreadFromImplicitResume;this.assertOpen();
         if(method)Reflect.apply(method,instance,[threadId]);
+        this.assertOpen();
       }
-      this.pendingResumeProtections.clear();
+      this.assertOpen();this.pendingResumeProtections.clear();
       this.instance = instance;
       return instance;
     })

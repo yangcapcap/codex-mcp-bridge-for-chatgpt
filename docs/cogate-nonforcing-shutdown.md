@@ -292,3 +292,7 @@ invoke its returned method or clear retained resume protections afterward. This
 also covers direct tool/catalog/detach delegation and factory-time protection
 lookups. The new repair retains the rejected predecessor and requires fresh
 independent review.
+
+Each retained-protection flush also checks admission before lookup and after the
+callback, including the final item. A callback that installs the fence cannot
+start a later callback or clear the retained IDs, even in a single-item flush.

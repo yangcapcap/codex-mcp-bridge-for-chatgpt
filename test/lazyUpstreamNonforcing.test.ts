@@ -74,3 +74,11 @@ test("resume protection lookup cannot run or erase retained protections after a 
  await expect(lazy.startThread({} as any)).rejects.toThrow("closed");await closing;
  expect(delegated).not.toHaveBeenCalled();expect((lazy as any).pendingResumeProtections.has("retained-thread")).toBe(true);
 });
+
+test.each([1,2])("a protection callback that pins shutdown preserves every retained ID in a %s-item flush",async count=>{
+ const observed:string[]=[];let closing:Promise<any>|undefined;let lazy:LazyCodexUpstream;
+ const b={...backend(),protectThreadFromImplicitResume(threadId:string){observed.push(threadId);if(threadId==="first")closing=lazy.closeNonforcing(policy);}};
+ lazy=new LazyCodexUpstream("app-server",features,async()=>b as any);lazy.protectThreadFromImplicitResume("first");if(count===2)lazy.protectThreadFromImplicitResume("second");
+ await expect(lazy.startThread({} as any)).rejects.toThrow("closed");await closing;
+ expect(observed).toEqual(["first"]);expect([...(lazy as any).pendingResumeProtections]).toEqual(count===2?["first","second"]:["first"]);
+});
