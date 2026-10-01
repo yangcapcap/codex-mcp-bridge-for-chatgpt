@@ -11,14 +11,15 @@ const metadata = { "openai/organization": "org-private", "openai/subject": "subj
 const identity = { organization: "org-private", subject: "subject-private", session: "session-private" };
 const config = () => loadConfig({ CODEX_MCP_BRIDGE_NO_AUTH: "1", CODEX_MCP_BRIDGE_ALLOW_WRITE: "1" });
 const dbOf = (store: BridgeStateStore) => (store as unknown as { database: Database.Database }).database;
-function seedSyntheticRotation(store: BridgeStateStore, options: Parameters<typeof rotatedFixture>[0] = {}) {
+function seedSyntheticRotation(store: BridgeStateStore, options: NonNullable<Parameters<typeof rotatedFixture>[0]> & { omitExecutionKeys?: boolean } = {}) {
   const fixture = rotatedFixture(options); const db = dbOf(store);
   try {
     store.transaction(() => {
       for (const table of ["scopes", "security_key_rotation_plans", "security_hmac_keys",
         "security_key_rotation_events", "scope_rotation_lookup_evidence", "scope_aliases"]) {
         const rows = fixture.db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-        for (const row of rows.filter(row => table !== "security_key_rotation_events" || row.phase !== "applied")) {
+        for (const row of rows.filter(row => (table !== "security_key_rotation_events" || row.phase !== "applied") &&
+          !(options.omitExecutionKeys && table === "security_hmac_keys" && row.purpose === "execution-policy"))) {
           const fields = Object.keys(row);
           db.prepare(`INSERT INTO ${table}(${fields.join(",")}) VALUES(${fields.map(() => "?").join(",")})`).run(...Object.values(row));
         }
@@ -98,11 +99,8 @@ describe("HMAC routing in the current single state owner", () => {
     try {
       const resolver = new ScopeResolver({ stateStore: store });
       const settings = new UserSettingsStore(config(), { stateStore: store });
-      seedSyntheticRotation(store, { pending: problem === "pending" });
+      seedSyntheticRotation(store, { pending: problem === "pending", omitExecutionKeys: problem === "missing-pair" });
       if (problem === "required") store.setMeta("security_key_rotation_required_v1", "1");
-      if (problem === "missing-pair") {
-        dbOf(store).exec("DROP TRIGGER security_hmac_keys_no_delete; DELETE FROM security_hmac_keys WHERE purpose='execution-policy'");
-      }
       if (problem === "bad-fingerprint") {
         // Strict table insert rejects malformed text; change its canonical legacy
         // tombstone instead, keeping a complete ring and all original triggers.
@@ -137,7 +135,7 @@ describe("HMAC routing in the current single state owner", () => {
       seedSyntheticRotation(store);
       const shadow = vi.fn(() => { throw new Error("caller helper invoked"); });
       const object = store as unknown as Record<string, unknown>;
-      for (const name of ["hasVersionedSecurityHmacState", "assertHmacStateSchema", "withSecurityReadSnapshot"]) object[name] = shadow;
+      for (const name of ["hasVersionedSecurityHmacState", "assertHmacStateSchema", "withSecurityReadSnapshot", "securityMeta"]) object[name] = shadow;
       expect(store.activeSecurityHmacKey("execution-policy").generation).toBe(2);
       expect(store.conversationScopeRouting(identity)?.activeGeneration).toBe(2);
       expect(shadow).not.toHaveBeenCalled();
@@ -149,6 +147,35 @@ describe("HMAC routing in the current single state owner", () => {
       const resolver = new ScopeResolver({ stateStore: store });
       store.setMeta("scope_hmac_secret_v1", Buffer.alloc(32, 7).toString("base64url"));
       expect(resolver.resolve(metadata)).toEqual(new ScopeResolver({ secret: Buffer.alloc(32, 7) }).resolve(metadata));
+    } finally { store.close(); }
+  });
+  test.each([false, true])("rejects all TEMP-shadowed HMAC paths with main marker=%s", marked => {
+    const store = new BridgeStateStore({ file: ":memory:" });
+    try {
+      const resolver = new ScopeResolver({ stateStore: store });
+      const settings = new UserSettingsStore(config(), { stateStore: store });
+      if (marked) store.setMeta("security_key_rotation_required_v1", "0");
+      const db = dbOf(store);
+      db.exec("CREATE TEMP TABLE bridge_meta(key TEXT PRIMARY KEY,value TEXT)");
+      for (const name of ["scope_hmac_secret_v1", "execution_policy_hmac_secret_v1"]) {
+        db.prepare("INSERT INTO temp.bridge_meta VALUES(?,?)").run(name, Buffer.alloc(32, 9).toString("base64url"));
+      }
+      const before = db.serialize(); const temp = db.prepare("SELECT * FROM temp.bridge_meta ORDER BY key").all();
+      for (const attempt of [
+        () => store.activeSecurityHmacKey("scope", true),
+        () => store.activeSecurityHmacKey("execution-policy"),
+        () => store.conversationScopeRouting(identity),
+        () => store.canonicalConversationScopeId("11111111-1111-4111-8111-111111111111"),
+        () => resolver.resolve(metadata),
+        () => resolver.resolve(undefined, "11111111-1111-4111-8111-111111111111"),
+        () => settings.executionPolicyRef(), () => settings.taskExecutionEnvelopeRef(),
+        () => new ScopeResolver({ stateStore: store }),
+        () => new UserSettingsStore(config(), { stateStore: store })
+      ]) expect(attempt).toThrow("rejects TEMP objects");
+      expect(db.serialize()).toEqual(before);
+      expect(db.prepare("SELECT * FROM temp.bridge_meta ORDER BY key").all()).toEqual(temp);
+      expect(db.inTransaction).toBe(false);
+      if (marked) expect(db.prepare("SELECT value FROM main.bridge_meta WHERE key='security_key_rotation_required_v1'").get()).toEqual({ value: "0" });
     } finally { store.close(); }
   });
   test("keeps admission unavailable for nonempty CoGate state", () => {

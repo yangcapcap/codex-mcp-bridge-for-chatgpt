@@ -9,7 +9,9 @@ For ordinary upstream state, all reserved CoGate storage must retain the empty,
 disabled baseline. Existing canonical generation-one meta secrets and policy
 reference encodings are retained. Missing secrets can be initialized only by
 an existing writable owner, at construction; subsequent reference generation
-requires an existing key. Any CoGate marker or partial content prohibits
+requires an existing key. Before any HMAC metadata read, both baseline and versioned paths reject TEMP
+objects and require the fixed full schema31. HMAC metadata reads explicitly
+address `main.bridge_meta`. Any CoGate marker or partial content prohibits
 fallback or replacement with a fresh legacy secret.
 
 For versioned state, the complete fixed schema31 and both keyrings, paired

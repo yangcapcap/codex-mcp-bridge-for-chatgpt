@@ -4171,8 +4171,8 @@ export class BridgeStateStore {
       throw new Error("Invalid runtime HMAC purpose.");
     }
     const readOrCreate = () => {
+      this.#assertHmacStateSchema();
       if (this.#hasVersionedSecurityHmacState()) {
-        this.#assertHmacStateSchema();
         const key = loadSecurityHmacKeyring(this.database, purpose).active;
         return { generation: key.generation, secret: Buffer.from(key.secret) };
       }
@@ -4180,7 +4180,7 @@ export class BridgeStateStore {
       // newly generated legacy secret. This also preserves the activation gate.
       assertCoGateUnifiedRuntimeAdmission(this.database);
       const name = purpose === SCOPE_HMAC_PURPOSE ? "scope_hmac_secret_v1" : "execution_policy_hmac_secret_v1";
-      const encoded = this.getMeta(name);
+      const encoded = this.#securityMeta(name);
       if (encoded !== undefined) {
         const secret = Buffer.from(encoded, "base64url");
         if (secret.length !== 32 || secret.toString("base64url") !== encoded) {
@@ -4201,6 +4201,7 @@ export class BridgeStateStore {
    * alias, membership, Job, writer or dispatch authority is created here. */
   conversationScopeRouting(identity: CoGateScopeIdentity): CoGateScopeRoutingInspection | undefined {
     return this.#withSecurityReadSnapshot(() => {
+      this.#assertHmacStateSchema();
       if (!this.#hasVersionedSecurityHmacState()) {
         assertCoGateUnifiedRuntimeAdmission(this.database);
         return undefined;
@@ -4215,11 +4216,11 @@ export class BridgeStateStore {
       throw new Error("Invalid conversation scope id.");
     }
     return this.#withSecurityReadSnapshot(() => {
+      this.#assertHmacStateSchema();
       if (!this.#hasVersionedSecurityHmacState()) {
         assertCoGateUnifiedRuntimeAdmission(this.database);
         return scopeId;
       }
-      this.#assertHmacStateSchema();
       const ring = loadSecurityHmacKeyring(this.database, SCOPE_HMAC_PURPOSE);
       const canonical = this.database.prepare("SELECT scope_id FROM main.scopes WHERE scope_id=?").get(scopeId);
       const alias = this.database.prepare(`SELECT canonical_scope_id,key_generation,rotation_id
@@ -4238,8 +4239,13 @@ export class BridgeStateStore {
     });
   }
 
+  #securityMeta(key: string): string | undefined {
+    return (this.database.prepare("SELECT value FROM main.bridge_meta WHERE key=?").get(key) as
+      { value: string } | undefined)?.value;
+  }
+
   #hasVersionedSecurityHmacState(): boolean {
-    return this.getMeta(SECURITY_ROTATION_REQUIRED_META_KEY) !== undefined ||
+    return this.#securityMeta(SECURITY_ROTATION_REQUIRED_META_KEY) !== undefined ||
       Boolean(this.database.prepare("SELECT 1 FROM main.security_hmac_keys LIMIT 1").get());
   }
 
@@ -4250,7 +4256,7 @@ export class BridgeStateStore {
     const objects = this.database.prepare(`SELECT type,name,tbl_name AS tableName,sql
       FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
       ORDER BY type,name`).all();
-    if (this.getMeta("schema_version") !== "31" ||
+    if (this.#securityMeta("schema_version") !== "31" ||
       createHash("sha256").update(JSON.stringify(objects)).digest("hex") !==
       "2ced184f0b7de991be944c28fdf5219f16863ae69d645e7092b75aadd377e79a") {
       throw new Error("Runtime HMAC state requires the fixed unified31 schema.");
