@@ -126,9 +126,12 @@ and matching tree absence are both required. Fresh observation does not rewrite
 a retained timeout. These local bindings are correlation evidence, not external
 approval, authenticated IPC, or a replacement for the tree's birth observations.
 
-The actual execution service does not yet provide this local supervisor or
-propagate the policy across its controller/owner IPC. Its prior callbacks and
-recovery timers still require adaptation; the unsupported path returns uncertain.
+The execution owner now supplies a local registry supervisor from trusted worker
+spawn and actual-exit callbacks, using an immutable pool/worker/generation/PID/group
+binding in both callbacks. Registration records the root synchronously; a failed
+birth probe does not block ordinary admission but keeps nonforcing proof unknown.
+Controller/owner policy IPC, draining and recovery timers still need adaptation;
+the execution service's unsupported router path returns uncertain.
 No operator/runtime option enables nonforcing shutdown through the full system.
 A caller-supplied supervisor is trusted local code and must pin every associated
 cleanup continuation; an acknowledgement alone is not an independently measured
@@ -174,6 +177,15 @@ force-history uncertainty, partial ledgers and birth observations. The result
 counts only that tree's observed survivors; it does not prove all other workers
 exited or bind a worker generation. An execution supervisor still needs trusted
 spawn-time association and a separate all-tree check before whole-owner exit.
+
+The local worker supervisor never adopts a caller-supplied shutdown binding as
+spawn evidence. It requires an exact previously registered binding with a
+completed birth observation, shares the original registry fence, and returns
+only that worker tree's correlated receipt. Pending/failed/late registrations,
+owner/generation disagreement, reused numeric roots and callback association
+faults retain uncertainty. At most 4096 historical associations are retained;
+exceeding that bound keeps UNKNOWN while preserving the registry evidence.
+These callbacks do not authenticate parent IPC or enable full nonforcing close.
 
 The eligible pinned-tree map is captured before inspecting caller descriptors.
 A Proxy trap that registers another tree or first installs the pin cannot make

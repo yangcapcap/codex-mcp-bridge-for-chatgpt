@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Associate trusted owned worker spawn and exit callbacks with exact local shutdown bindings and registry-backed scoped tree receipts while retaining registration and lifetime uncertainty.",
+  "breaking": false,
+  "migration": null
+}

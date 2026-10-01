@@ -34,6 +34,14 @@ async function connected(capability?:WorkerShutdownSupervisor,onWorkerProcessExi
 }
 const policy={allowSigkillEscalation:false as const,graceMs:0};
 describe("App Server pool synchronous policy and generation-bound tree evidence",()=>{
+  test("trusted spawn and actual exit callbacks carry the same immutable shutdown binding",async()=>{
+    const started=vi.fn(),observed=vi.fn(),s=supervisor();
+    const pool=new CodexAppServerUpstreamPool("private-mock",1,{workerShutdownSupervisor:s.capability,
+      onWorkerProcessStarted:started,onWorkerProcessExitObserved:observed},dependencies);
+    await pool.listModels();const binding=started.mock.calls[0][1];
+    expect(Object.isFrozen(binding)).toBe(true);expect(binding).toMatchObject({workerId:"app-0",workerGeneration:1,pid:80001,processGroupId:80001});
+    await pool.closeNonforcing(policy);expect(observed.mock.calls[0][1]).toEqual(binding);expect(s.seen[0]).toEqual(binding);
+  });
   test("parent exit alone cannot approve absence of its tree",async()=>{
     const forcingCallback=vi.fn(),pool=await connected(undefined,forcingCallback);
     const retained=await pool.closeNonforcing(policy);expect(retained.outcome).toBe("uncertain");

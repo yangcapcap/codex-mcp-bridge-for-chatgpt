@@ -101,11 +101,11 @@ export type CodexAppServerProtocolOptions = {
    */
   onLateResponse?: (response: CodexAppServerLateResponse) => void;
   /** Records the owned spawn before protocol initialization; ps is not an admission gate. */
-  onWorkerProcessStarted?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
+  onWorkerProcessStarted?: (identity: JsonRpcProcessIdentity, binding: WorkerShutdownBinding) => Promise<void> | void;
   /** Resolves after cleanup of the retained owned tree; reserves only this worker until then. */
   onWorkerProcessExited?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
   /** Synchronous lifetime observation only; must never signal or release a tree. */
-  onWorkerProcessExitObserved?: (identity: JsonRpcProcessIdentity) => void;
+  onWorkerProcessExitObserved?: (identity: JsonRpcProcessIdentity, binding: WorkerShutdownBinding) => void;
   /** Optional local tree proof; absence cannot grant nonforcing success. */
   workerShutdownSupervisor?: WorkerShutdownSupervisor;
 };
@@ -118,10 +118,10 @@ type ResolvedCodexAppServerProtocolOptions = {
   initializeTimeoutMs: number;
   interruptTimeoutMs: number;
   onLateResponse?: (response: CodexAppServerLateResponse) => void;
-  onWorkerProcessStarted?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
+  onWorkerProcessStarted?: (identity: JsonRpcProcessIdentity, binding: WorkerShutdownBinding) => Promise<void> | void;
   onWorkerProcessExited?: (identity: JsonRpcProcessIdentity) => Promise<void> | void;
   /** Synchronous lifetime observation only; must never signal or release a tree. */
-  onWorkerProcessExitObserved?: (identity: JsonRpcProcessIdentity) => void;
+  onWorkerProcessExitObserved?: (identity: JsonRpcProcessIdentity, binding: WorkerShutdownBinding) => void;
   /** Optional local tree proof; absence cannot grant nonforcing success. */
   workerShutdownSupervisor?: WorkerShutdownSupervisor;
 };
@@ -1121,7 +1121,7 @@ class AppServerConnection {
     try {
       const identity = await this.rpc.start();
       this.registeredWorkerIdentity = identity;
-      await this.protocolOptions.onWorkerProcessStarted?.(identity);
+      await this.protocolOptions.onWorkerProcessStarted?.(identity,this.workerBinding(identity));
       this.workerRegistrationComplete=true;
       await this.initialize();
       return this;
@@ -1146,6 +1146,13 @@ class AppServerConnection {
 
   get identity(): JsonRpcProcessIdentity | undefined {
     return this.rpc.identity;
+  }
+
+  private workerBinding(identity:JsonRpcProcessIdentity):WorkerShutdownBinding {
+    const binding=snapshotWorkerShutdownBinding({ownerId:this.protocolOptions.shutdownOwnerId,
+      workerId:this.workerId,workerGeneration:this.generation,pid:identity.pid,processGroupId:identity.processGroupId});
+    if(!binding)throw new Error("WORKER_SHUTDOWN_BINDING_INVALID");
+    return binding;
   }
 
   waitForSupervisionRelease(): Promise<void> {
@@ -2283,7 +2290,7 @@ class AppServerConnection {
     const registeredIdentity = this.registeredWorkerIdentity;
     const ownedIdentity=registeredIdentity ?? this.rpc.identity;
     if (ownedIdentity) {
-      try { this.protocolOptions.onWorkerProcessExitObserved?.(ownedIdentity); }
+      try { this.protocolOptions.onWorkerProcessExitObserved?.(ownedIdentity,this.workerBinding(ownedIdentity)); }
       catch { this.nonforcingHistoryUncertain=true; }
     }
     if (registeredIdentity && !this.nonforcingClose) {
