@@ -75,6 +75,7 @@ function validate(config: OpenAiMcpAuthorizationConfig) {
   if (issuer.origin !== config.issuer) throw new Error("The authorization issuer must be a canonical HTTPS origin without a trailing slash or path.");
   httpsUrl(config.resource);
   const redirect = httpsUrl(config.connectorClient.redirectUri, true);
+  if (!/^[a-z0-9.:[\]-]+$/iu.test(redirect.hostname)) throw new Error("The registered callback hostname must be a literal HTTPS host, without CSP delimiters or wildcards.");
   if (["code", "state", "iss", "error"].some(name => redirect.searchParams.has(name))) throw new Error("The registered callback contains reserved authorization parameters.");
   for (const id of [config.openaiClientId, config.connectorClient.id]) {
     if (!/^[A-Za-z0-9_-]{8,200}$/u.test(id) || id === "dynamic_agent_client") throw new Error("Use issued OpenAI registration and an explicit connector client ID.");
@@ -97,11 +98,11 @@ function escapeHtml(value: string) { return value.replace(/[&<>"']/gu, c => ({ "
 function page(title: string, content: string) {
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>body{font:18px/1.6 -apple-system,sans-serif;margin:64px auto;max-width:680px;padding:24px;color:#17232b}button,a{font:inherit}button{padding:8px 20px}a{color:#2365a5}</style><h1>${escapeHtml(title)}</h1>${content}`;
 }
-function headers(res: ServerResponse) {
+function headers(res: ServerResponse, formRedirectOrigin?: string) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+  res.setHeader("Content-Security-Policy", `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formRedirectOrigin ? " " + formRedirectOrigin : ""}; frame-ancestors 'none'; base-uri 'none'`);
 }
 function json(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" }).end(JSON.stringify(body));
@@ -264,6 +265,9 @@ export async function createOpenAiMcpAuthorization(input: OpenAiMcpAuthorization
     if (req.method === "GET" && url.pathname === "/oauth/consent") {
       const transaction = browserTransaction(req, params.get("transaction"));
       if (transaction.phase !== "verified" || !transaction.consent) fail(403, "access_denied");
+      // Browsers also enforce form-action on redirects. Permit only the pinned
+      // callback origin; callback() still binds the complete registered URI.
+      headers(res, new URL(config.connectorClient.redirectUri).origin);
       // no-referrer makes a browser form POST send Origin: null. Keep the exact
       // issuer Origin check usable without sending referrers across origins.
       res.setHeader("Referrer-Policy", "same-origin");

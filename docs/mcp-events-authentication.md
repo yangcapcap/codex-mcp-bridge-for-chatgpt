@@ -12,14 +12,21 @@ Tunnel launcher path, with isolated synthetic acceptance. On 2026-10-01, the
 operator approved a temporary HTTPS authorization-only edge and a dedicated
 test Tunnel/ChatGPT connector. Actual ChatGPT OAuth discovery and connector
 creation succeeded through the product launcher after correcting its private
-metadata source. Safari subsequently completed the inner OpenAI sign-in and
-pinned operator verification. The separate Bridge consent was rejected by a
-browser Origin/header mismatch, now corrected without weakening consent checks.
-No composed Bridge access grant or real A/B execution has completed; a fresh
-Safari retry is waiting for the operator to unlock the Mac again.
+metadata source. The composed OpenAI/Bridge OAuth connection subsequently
+completed in the **Codex In-app Browser** after correcting consent Origin and
+form-redirect policies. ChatGPT shows the connected account, and its real code
+exchange returned HTTP 200. The app discovers `codex.job.terminal`, and an
+authenticated project query succeeded. Safari and a Mac unlock were not needed
+for this successful retry. One read-only A turn was admitted, but its result
+reported an unavailable command runner rather than fixture JSON. The actual
+existing chat and a fresh capability-only test chat reported no callable native
+Events subscription facility even after plugin rescan; no subscription or B
+was created. This observation does not establish the cause or global host
+support. These limits still prevent #213 acceptance.
 The [live discovery audit](audits/2026-10-01-issue-213-tunnel-oauth-discovery.md)
 records the first failure/fix; the [consent audit](audits/2026-10-01-issue-213-oauth-consent.md)
-records the later browser regression and observed boundary. An opt-in
+records the first browser regression; the [In-app audit](audits/2026-10-01-issue-213-inapp-oauth.md)
+records the successful composed grant and remaining execution/host boundaries. An opt-in
 [local OpenAI/Bridge authorization prototype](mcp-events-openai-authorization.md)
 now implements the separate token issuer with isolated HTTP integration tests.
 No permanent public HTTPS hosting has been selected. Issue #213 stays open. The default
@@ -336,9 +343,9 @@ and the [MCP Events contract](https://developers.openai.com/plugins/build/mcp-ev
    limitations; webhook `2xx` is not evidence of preserved mode or GPT review.
 
 The official connection design, JWT adapter and synthetic acceptance are complete.
-The separate OpenAI/Bridge issuer is configured in the approved temporary
-trial. Its completed composed grant and actual Events host acceptance remain
-pending, as does a permanent hosting choice. The
+The separate OpenAI/Bridge issuer and composed ChatGPT grant succeeded in the
+approved temporary trial. Actual Events subscription/resume and successful
+A-review → one B acceptance remain pending, as does permanent hosting. The
 [design investigation](audits/2026-10-01-issue-213-auth-connection.md) and
 [implementation audit](audits/2026-10-01-issue-213-oauth-http.md) separate
 source/synthetic evidence from installed-product acceptance.

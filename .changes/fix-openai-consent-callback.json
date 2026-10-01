@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Allow browser consent to return to the registered ChatGPT callback while keeping exact redirect and CSRF checks.",
+  "breaking": false,
+  "migration": null
+}

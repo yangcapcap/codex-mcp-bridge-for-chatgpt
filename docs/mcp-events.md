@@ -37,9 +37,10 @@ OAuth 2.1 over a private HTTP Tunnel, with a separately reachable public identit
 provider. OpenAI does not support customer-defined API keys for this ChatGPT
 connection. The access-JWT adapter and authenticated HTTP launcher are implemented
 and synthetically tested. A separate OpenAI/Bridge issuer is configured in an
-approved temporary HTTPS trial; actual ChatGPT discovery and inner OpenAI
-sign-in have succeeded. The composed Bridge grant and actual Events host
-acceptance remain pending. Conversation metadata and
+approved temporary HTTPS trial; actual ChatGPT discovery, composed OAuth
+connection and event catalog discovery succeeded in the In-app Browser.
+Actual Events subscription/resume and successful A-review → one B acceptance
+remain pending. Conversation metadata and
 callback verification cannot replace authentication. Enabling Events on the
 default No Auth connection still does not make the feature usable. Issue #213
 remains open.

@@ -292,6 +292,35 @@ describe("isolated OpenAI / Bridge authorization", () => {
     expect(f.service.diagnostics().codeExchanges).toBe(1);
   });
 
+  it("allows the pinned callback origin only on the consent page while preserving the exact redirect", async () => {
+    const redirectUri = "https://chatgpt.fixture.example:8443/oauth/callback/exact?mode=fixture";
+    const f = await start({ connectorClient: { ...client, redirectUri } }), login = await verified(f);
+    const consent = await publicRequest(f, "/oauth/consent?transaction=" + login.transaction, { headers: { cookie: login.cookie } });
+    const policy = consent.headers.get("content-security-policy")!;
+    expect(policy.match(/(?:^|;)\s*form-action\s+([^;]+)/u)?.[1]).toBe("'self' https://chatgpt.fixture.example:8443");
+    expect(policy).toContain("default-src 'none'");
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect(policy).toContain("base-uri 'none'");
+    expect(await consent.text()).toContain('method="post" action="/oauth/consent"');
+    const accepted = await approve(f, login), destination = new URL(accepted.headers.get("location")!);
+    expect(accepted.status).toBe(303);
+    expect(destination.origin + destination.pathname).toBe("https://chatgpt.fixture.example:8443/oauth/callback/exact");
+    expect(destination.searchParams.get("mode")).toBe("fixture");
+    expect(destination.searchParams.get("state")).toBe("outer-chatgpt-state");
+    expect(destination.searchParams.get("iss")).toBe(issuer);
+    expect(accepted.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(accepted.headers.get("content-security-policy")).not.toContain("chatgpt.fixture.example");
+    expect((await publicRequest(f, "/oauth/jwks")).headers.get("content-security-policy")).not.toContain("chatgpt.fixture.example");
+  });
+
+  it.each([
+    "https://chatgpt.fixture.example;form-action=*/callback",
+    "https://*.fixture.example/callback",
+    "https://chatgpt.fixture.example'unsafe-inline'/callback"
+  ])("rejects a callback hostname that could widen the browser form policy: %s", async redirectUri => {
+    await expect(start({ connectorClient: { ...client, redirectUri } })).rejects.toThrow("callback hostname");
+  });
+
   it("expires both pending browser transactions and issued authorization codes", async () => {
     const expiredLogin = await start(), login = await begin(expiredLogin); expiredLogin.advance(10 * 60_000 + 1);
     expect((await returnIdentity(expiredLogin, login)).status).toBe(403); expect(expiredLogin.tokenRequests()).toBe(0);

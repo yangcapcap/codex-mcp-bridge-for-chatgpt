@@ -66,3 +66,8 @@ The diagnostic HTML server/tab were closed after recording the reproduction.
 Existing operational SQLite, installed Tunnel profiles and Codex credentials
 were not changed. The active private test services still require their task
 checkout; worktree cleanup follows shutdown, without changing conversations.
+
+The [subsequent In-app Browser trial](2026-10-01-issue-213-inapp-oauth.md)
+completed the composed OAuth grant after also correcting the consent form's
+callback redirect policy. The Mac-lock boundary above describes this earlier
+trial stage, not the latest authentication status.

@@ -7,12 +7,16 @@ verification**, with no public HTTPS domain/server. This opt-in prototype
 implements the missing Bridge token issuer. The operator subsequently approved
 a temporary authorization-only HTTPS trial and a separate ChatGPT connector.
 Actual ChatGPT OAuth discovery and connector creation now succeed through the
-product launcher. Safari completed OpenAI sign-in and verified the pinned
-operator, but the separate Bridge consent failed because the page's
-`no-referrer` policy made a normal browser POST use an opaque Origin. The
-consent page now uses `same-origin`; exact issuer Origin, browser cookie and
-one-time consent checks remain enforced. A fresh retry awaits another manual
-Mac unlock. No Bridge grant, actual Events resume or A/B execution has completed. The service
+product launcher. The **Codex In-app Browser** subsequently completed OpenAI
+sign-in, operator verification, separate consent and ChatGPT's Bridge code
+exchange. The consent page uses `same-origin` referrers and allows the pinned
+callback origin for form redirects; exact issuer Origin, browser cookie,
+one-time consent and complete registered callback checks remain enforced.
+ChatGPT displays a connected account and the terminal event catalog. Actual
+Events resume and successful A/B execution remain unverified: the one admitted
+read-only A reported a command-runner failure, the tested chats reported no
+callable native subscription facility after plugin rescan, and B was not run.
+The cause of the host-side observation remains unconfirmed. The service
 is not selected by the default launcher or connected to the installed app.
 [Issue #213](https://github.com/menaje/codex-mcp-bridge-for-chatgpt/issues/213)
 remains open. The [successful OpenAI registration trial](mcp-events-authentication.md#openai-sign-in-trial)
@@ -194,6 +198,8 @@ The [live discovery audit](audits/2026-10-01-issue-213-tunnel-oauth-discovery.md
 records the subsequent approved HTTPS/Tunnel trial and current login boundary.
 The [consent audit](audits/2026-10-01-issue-213-oauth-consent.md) records the later
 successful OpenAI verification, browser POST regression and correction.
+The [In-app audit](audits/2026-10-01-issue-213-inapp-oauth.md) records the form
+redirect correction, completed composed grant and remaining acceptance limits.
 
 The isolated tests use a local HTTP OpenAI/JWKS fixture, real authorization
 handlers, actual Bridge HTTP MCP dispatch and a temporary SQLite database.
