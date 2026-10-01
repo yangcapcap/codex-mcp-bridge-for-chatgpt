@@ -554,3 +554,21 @@ an entry remains an ownership contradiction even if the original entry could be
 reconstructed. That contradiction retains the original outcome and prevents the
 assignment continuation, terminal ACK and persistence accounting retirement.
 These controls require fresh independent review and full runtime integration.
+
+
+Native producer Promise and recovered delegation
+------------------------------------------------
+
+The original Job Promise remains active through terminal persistence retries.
+Private completion evidence comes from that exact native Promise settling, not
+from entering a settlement routine or changing a display status. Loaded terminal
+Jobs remain passive until actual recovery is admitted. Proxy or unsupported
+Promises retain UNKNOWN without delegated traps.
+
+Recovery lookup, authentication and original invocation remain registered until
+the original return or error is captured. A reentrant pin retains those values
+and stops before property inspection, Promise chaining or Job Promise installation.
+Validated native returns use captured native Promise operations and an unchanged
+own data descriptor; original getters/setters never receive a post-pin call.
+Raw recovery errors remain retained and are rethrown unchanged. These checks do
+not retire durable writer evidence or grant whole-runtime acceptance.

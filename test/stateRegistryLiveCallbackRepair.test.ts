@@ -29,9 +29,9 @@ test('new application subscription model getter pin stops returned registration 
  const {state,jobs,catalog,registered}=application();let reads=0,calls=0,unsubscribe:any;Object.defineProperty(catalog,'subscribe',{get(){reads++;jobs.pinNonforcingShutdown();return ()=>{calls++;return ()=>{};};}});
  try{let error:any;try{unsubscribe=registered.applicationService.subscribeChanges!(()=>{});}catch(e){error=e;}record('application-subscribe-getter',{reads,calls,errorType:typeof error,resource:jobs.observeNonforcingExit()});expect(calls).toBe(0);}finally{unsubscribe?.();registered.dispose();state.close();}
 });
-test.each(['own-descriptor','prototype'])('new ACK proxy %s pin stops further inspection and native delegation',async kind=>{
+test.each(['own-descriptor','prototype'])('new ACK proxy %s is rejected without trap delegation',async kind=>{
  const {state,jobs}=fixture();let prototypes=0;const p=new Proxy(Promise.resolve(),{getOwnPropertyDescriptor(t,k){if(kind==='own-descriptor')jobs.pinNonforcingShutdown();return Reflect.getOwnPropertyDescriptor(t,k);},getPrototypeOf(t){prototypes++;if(kind==='prototype')jobs.pinNonforcingShutdown();return Reflect.getPrototypeOf(t);}});jobs.attachUpstream(upstream(()=>p));
- try{const job=jobs.start(input(),async()=>result);await job.promise;expect(prototypes).toBe(kind==='own-descriptor'?0:1);expect((jobs as any).executionAcknowledgements.get(job)?.value).toBe(p);expect(jobs.observeNonforcingExit().outcome).toBe('uncertain');}finally{state.close();}
+ try{const job=jobs.start(input(),async()=>result);await job.promise;expect(prototypes).toBe(0);expect((jobs as any).executionAcknowledgements.get(job)?.value).toBe(p);jobs.pinNonforcingShutdown();expect(jobs.observeNonforcingExit().outcome).toBe('uncertain');}finally{state.close();}
 });
 test('new intrinsic native ACK observation never reads own then accessor',async()=>{
  const {state,jobs}=fixture();let reads=0;const p=Promise.resolve();Object.defineProperty(p,'then',{get(){reads++;throw Error('no lookup');}});jobs.attachUpstream(upstream(()=>p));
