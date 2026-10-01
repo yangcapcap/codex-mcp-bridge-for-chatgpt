@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createSchema18Fixture } from "./helpers/stateSchemaFixtures.js";
 import type Database from "better-sqlite3";
 import { describe, expect, test, vi } from "vitest";
 import { BridgeStateStore } from "../src/stateStore.js";
@@ -49,6 +54,24 @@ describe("HMAC routing in the current single state owner", () => {
       expect(store.activeSecurityHmacKey("execution-policy")).toEqual({ generation: 1, secret: Buffer.alloc(32, 2) });
       expect(store.conversationScopeRouting(identity)).toBeUndefined();
       expect(dbOf(store).prepare("SELECT COUNT(*) AS n FROM security_hmac_keys").get()).toEqual({ n: 0 });
+    } finally { store.close(); }
+  });
+  test("keeps ordinary schema18-to31 migration compatible with generation-one HMAC composition", () => {
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "hmac-migrated-baseline-")), "state.sqlite");
+    createSchema18Fixture(file);
+    const store = new BridgeStateStore({ file });
+    try {
+      const objects = dbOf(store).prepare(`SELECT type,name,tbl_name AS tableName,sql
+        FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
+        ORDER BY type,name`).all();
+      expect(store.getMeta("schema_version")).toBe("31");
+      expect(createHash("sha256").update(JSON.stringify(objects)).digest("hex"))
+        .not.toBe("2ced184f0b7de991be944c28fdf5219f16863ae69d645e7092b75aadd377e79a");
+      const settings = new UserSettingsStore(config(), { stateStore: store });
+      expect(settings.executionPolicyKeyGeneration).toBe(1);
+      expect(settings.executionPolicyRef()).toMatch(/^[0-9a-f]{64}$/);
+      expect(new ScopeResolver({ stateStore: store }).resolve(metadata)?.keyVersion).toBe(1);
+      expect(store.conversationScopeRouting(identity)).toBeUndefined();
     } finally { store.close(); }
   });
   test("routes an existing resolver through the newly observed active generation and retained namespace", () => {
@@ -135,7 +158,7 @@ describe("HMAC routing in the current single state owner", () => {
       seedSyntheticRotation(store);
       const shadow = vi.fn(() => { throw new Error("caller helper invoked"); });
       const object = store as unknown as Record<string, unknown>;
-      for (const name of ["hasVersionedSecurityHmacState", "assertHmacStateSchema", "withSecurityReadSnapshot", "securityMeta"]) object[name] = shadow;
+      for (const name of ["hasVersionedSecurityHmacState", "assertHmacStateSchema", "withSecurityReadSnapshot", "securityMeta", "assertHmacReadBoundary"]) object[name] = shadow;
       expect(store.activeSecurityHmacKey("execution-policy").generation).toBe(2);
       expect(store.conversationScopeRouting(identity)?.activeGeneration).toBe(2);
       expect(shadow).not.toHaveBeenCalled();

@@ -4171,8 +4171,9 @@ export class BridgeStateStore {
       throw new Error("Invalid runtime HMAC purpose.");
     }
     const readOrCreate = () => {
-      this.#assertHmacStateSchema();
+      this.#assertHmacReadBoundary();
       if (this.#hasVersionedSecurityHmacState()) {
+        this.#assertHmacStateSchema();
         const key = loadSecurityHmacKeyring(this.database, purpose).active;
         return { generation: key.generation, secret: Buffer.from(key.secret) };
       }
@@ -4201,7 +4202,7 @@ export class BridgeStateStore {
    * alias, membership, Job, writer or dispatch authority is created here. */
   conversationScopeRouting(identity: CoGateScopeIdentity): CoGateScopeRoutingInspection | undefined {
     return this.#withSecurityReadSnapshot(() => {
-      this.#assertHmacStateSchema();
+      this.#assertHmacReadBoundary();
       if (!this.#hasVersionedSecurityHmacState()) {
         assertCoGateUnifiedRuntimeAdmission(this.database);
         return undefined;
@@ -4216,11 +4217,12 @@ export class BridgeStateStore {
       throw new Error("Invalid conversation scope id.");
     }
     return this.#withSecurityReadSnapshot(() => {
-      this.#assertHmacStateSchema();
+      this.#assertHmacReadBoundary();
       if (!this.#hasVersionedSecurityHmacState()) {
         assertCoGateUnifiedRuntimeAdmission(this.database);
         return scopeId;
       }
+      this.#assertHmacStateSchema();
       const ring = loadSecurityHmacKeyring(this.database, SCOPE_HMAC_PURPOSE);
       const canonical = this.database.prepare("SELECT scope_id FROM main.scopes WHERE scope_id=?").get(scopeId);
       const alias = this.database.prepare(`SELECT canonical_scope_id,key_generation,rotation_id
@@ -4249,10 +4251,17 @@ export class BridgeStateStore {
       Boolean(this.database.prepare("SELECT 1 FROM main.security_hmac_keys LIMIT 1").get());
   }
 
-  #assertHmacStateSchema(): void {
+  #assertHmacReadBoundary(): void {
     if (this.database.prepare("SELECT 1 FROM temp.sqlite_master LIMIT 1").get()) {
       throw new Error("Runtime HMAC state rejects TEMP objects.");
     }
+    if (this.#securityMeta("schema_version") !== "31") {
+      throw new Error("Runtime HMAC state requires current schema31.");
+    }
+  }
+
+  #assertHmacStateSchema(): void {
+    this.#assertHmacReadBoundary();
     const objects = this.database.prepare(`SELECT type,name,tbl_name AS tableName,sql
       FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
       ORDER BY type,name`).all();

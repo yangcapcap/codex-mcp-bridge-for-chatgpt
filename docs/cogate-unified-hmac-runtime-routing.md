@@ -10,7 +10,10 @@ disabled baseline. Existing canonical generation-one meta secrets and policy
 reference encodings are retained. Missing secrets can be initialized only by
 an existing writable owner, at construction; subsequent reference generation
 requires an existing key. Before any HMAC metadata read, both baseline and versioned paths reject TEMP
-objects and require the fixed full schema31. HMAC metadata reads explicitly
+objects and require the owner to be at schema31. The ordinary upstream baseline
+retains its existing supported-migration validation; its historical ALTER TABLE
+DDL is not relabeled as the fixed conversion schema. The versioned branch still
+requires the exact full unified31 object digest. HMAC metadata reads explicitly
 address `main.bridge_meta`. Any CoGate marker or partial content prohibits
 fallback or replacement with a fresh legacy secret.
 
