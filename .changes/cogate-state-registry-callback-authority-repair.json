@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Validate every original Job authority field across application callbacks, permit correlated thread metadata only, and prevent terminal writeback from invoking inherited setters.",
+  "breaking": false,
+  "migration": null
+}

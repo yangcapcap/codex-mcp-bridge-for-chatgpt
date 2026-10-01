@@ -474,3 +474,15 @@ Subscription cleanup attempts each original capability after an ordinary error;
 if an explicit pin intervenes, later capabilities remain retained and uncalled.
 These are registry resource guarantees; independent review and complete runtime
 integration remain separate requirements.
+
+Callbacks also preserve the complete admitted Job envelope, including execution
+receipt ownership, authentication boundary, worker generation, request and
+project identity, and execution selection. Correlated thread ID metadata may
+change; all other own data must match its pre-callback snapshot. A mismatch keeps
+the original producer outcome reserved under its admission ID and retains both
+snapshots and the original live object as `UNKNOWN`; it cannot commit a terminal
+receipt or acknowledge a replacement owner. The original Job prototype is owned
+at registration. Replacing it is rejected without invoking inherited setters.
+Terminal writeback rechecks the pin and native data shape, then defines own data
+properties directly. This resource contract does not repair or approve durable
+writer reconciliation.
