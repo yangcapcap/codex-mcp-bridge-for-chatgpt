@@ -3,6 +3,8 @@ import {isDeepStrictEqual} from 'node:util';
 const observerMapPrototype=Map.prototype;
 const observerMapEntries=Map.prototype.entries;
 const observerMapGet=Map.prototype.get;
+const observerMapSet=Map.prototype.set;
+const observerMapDelete=Map.prototype.delete;
 const observerMapNext=Object.getPrototypeOf(Reflect.apply(observerMapEntries,new Map(),[])).next;
 function observerMapInventory<K,V>(map:Map<K,V>):Array<[K,V]> {
   const iterator=Reflect.apply(observerMapEntries,map,[]),entries:Array<[K,V]>=[];
@@ -2201,6 +2203,7 @@ export class CodexJobRegistry {
   private readonly authBoundary?: () => string | null;
   private readonly jobs = new Map<string, CodexJob>();
   readonly #observerJobs=this.jobs;
+  readonly #admittedJobOwners=new Map<string,CodexJob>();
   private readonly ownedJobIds = new WeakMap<CodexJob,string>();
   private readonly ownedJobPromises = new WeakMap<CodexJob,Promise<void>>();
   private readonly ownedJobPrototypes = new WeakMap<CodexJob,object|null>();
@@ -2299,6 +2302,7 @@ export class CodexJobRegistry {
       if (!this.nonforcingFenceComplete || this.nonforcingFenceFailed) throw new Error("NONFORCING_SHUTDOWN_PIN_UNCONFIRMED");
       return true;
     }
+    this.indexedJobOwnersConfirmed();
     this.nonforcingUnknown ||= this.stateMaintenanceClosed;
     this.nonforcingUnknown ||= this.registryTransactionsInFlight > 0;
     this.nonforcingUnknown ||= this.executionAcknowledgements.size > 0;
@@ -2325,6 +2329,7 @@ export class CodexJobRegistry {
   }
 
   observeNonforcingExit(): ShutdownResult {
+    this.indexedJobOwnersConfirmed();
     if (!this.nonforcingPinned || !this.nonforcingFenceComplete || this.nonforcingFenceFailed || this.nonforcingUnknown || this.progressPersistenceQueue.nonforcingHistoryUncertain)
       return shutdownResult("uncertain");
     if (this.nonforcingConstructions.size) return shutdownResult("timeout",this.nonforcingConstructions.size);
@@ -2485,6 +2490,33 @@ export class CodexJobRegistry {
     return () => { this.changeListeners.delete(listener); };
   }
 
+  /** Original admissions survive unauthorized index deletion or replacement. */
+  private indexedJobOwnersConfirmed():boolean {
+    let confirmed=true;
+    const descriptor=Object.getOwnPropertyDescriptor(this,'jobs');
+    if(!descriptor || !('value' in descriptor) || descriptor.value!==this.#observerJobs ||
+      Object.getPrototypeOf(this.#observerJobs)!==observerMapPrototype || Reflect.ownKeys(this.#observerJobs).length!==0){
+      this.nonforcingUnknown=true;confirmed=false;
+      this.retainNonforcingObservation('registry','admission-index-capability',{map:this.#observerJobs,descriptor,
+        descriptors:Object.getOwnPropertyDescriptors(this.#observerJobs)});
+    }
+    for(const [id,job] of observerMapInventory(this.#admittedJobOwners)) {
+      const indexed=Reflect.apply(observerMapGet,this.#observerJobs,[id]);
+      if(indexed!==job || !confirmed){
+        this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);confirmed=false;
+        this.retainNonforcingObservation(id,'admission-original-owner',{job,indexed});
+      }
+    }
+    for(const [id,indexed] of observerMapInventory(this.#observerJobs)) {
+      if(Reflect.apply(observerMapGet,this.#admittedJobOwners,[id])!==indexed){
+        this.nonforcingUnknown=true;confirmed=false;
+        if(indexed&&typeof indexed==='object')this.unconfirmedJobCallbacks.add(indexed);
+        this.retainNonforcingObservation(id,'admission-index-replacement',indexed);
+      }
+    }
+    return confirmed;
+  }
+
   /** Observers may inspect Jobs, but cannot acquire or replace their authority. */
   private invokeJobObserver(listener:()=>unknown,kind:string,allowCleanup=false):unknown {
     this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
@@ -2508,7 +2540,8 @@ export class CodexJobRegistry {
     };
     let result:unknown;
     try {
-      owners=observerMapInventory(this.#observerJobs);
+      owners=observerMapInventory(this.#admittedJobOwners);
+      if(!this.indexedJobOwnersConfirmed())throw new Error('STATE_OBSERVER_INDEX_AUTHORITY_UNCONFIRMED');
       validateInventory();
       for(const [id,job] of owners) {
         if(this.unconfirmedJobCallbacks.has(job))continue;
@@ -2527,6 +2560,7 @@ export class CodexJobRegistry {
         uncertainOwners();return;
       }
       validateInventory();
+      if(!this.indexedJobOwnersConfirmed())throw new Error('STATE_OBSERVER_INDEX_AUTHORITY_UNCONFIRMED');
       let stable=true;
       for(const [id,job] of owners) {
         if(Reflect.apply(observerMapGet,this.#observerJobs,[id])!==job) {
@@ -2718,6 +2752,7 @@ export class CodexJobRegistry {
   }
 
   private acknowledgeSettledExecution(job: CodexJob): void {
+    this.indexedJobOwnersConfirmed();
     if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job) || this.executionAcknowledgements.has(job)) return;
     const jobId=this.ownedJobId(job);
     const before=this.terminalJobData(job,jobId);
@@ -2791,6 +2826,7 @@ export class CodexJobRegistry {
   }
 
   private async settleExecution(job: CodexJob, settlement: DeferredJobSettlement): Promise<void> {
+    this.indexedJobOwnersConfirmed();
     const jobId=this.ownedJobId(job);
     const originalSettlement=settlement;
     if(!this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job)) {
@@ -3011,7 +3047,14 @@ export class CodexJobRegistry {
     if (!this.ownedJobIds.has(job)) this.ownedJobIds.set(job,job.jobId);
     if (!this.ownedJobPrototypes.has(job)) this.ownedJobPrototypes.set(job,Object.getPrototypeOf(job));
     if (!this.ownedJobPromises.has(job)) this.ownJobPromise(job);
-    this.jobs.set(this.ownedJobId(job), job);
+    const jobId=this.ownedJobId(job),original=Reflect.apply(observerMapGet,this.#admittedJobOwners,[jobId]);
+    if(original&&original!==job){
+      this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(original);this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(jobId,'admission-owner-reindex',{job,original});
+      throw new Error('STATE_JOB_INDEX_OWNER_UNCONFIRMED');
+    }
+    Reflect.apply(observerMapSet,this.#admittedJobOwners,[jobId,job]);
+    Reflect.apply(observerMapSet,this.#observerJobs,[jobId,job]);
     const previousAgent = this.indexedJobAgent.get(job.jobId);
     if (previousAgent && previousAgent !== job.agentId) {
       const ids = this.jobsByAgent.get(previousAgent);
@@ -3038,7 +3081,11 @@ export class CodexJobRegistry {
   }
 
   private deleteIndexedJob(jobId: string): void {
-    this.jobs.delete(jobId);
+    if(!this.indexedJobOwnersConfirmed())return;
+    const original=Reflect.apply(observerMapGet,this.#admittedJobOwners,[jobId]);
+    if(original&&this.unconfirmedJobCallbacks.has(original))return;
+    Reflect.apply(observerMapDelete,this.#observerJobs,[jobId]);
+    Reflect.apply(observerMapDelete,this.#admittedJobOwners,[jobId]);
     const agentId = this.indexedJobAgent.get(jobId);
     if (agentId) {
       const ids = this.jobsByAgent.get(agentId);
