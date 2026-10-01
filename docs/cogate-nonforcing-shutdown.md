@@ -409,3 +409,23 @@ This registry component does not close the state database, retire a durable writ
 or approve the complete runtime. The full runtime owner must additionally fence
 in-flight application RPCs and frontends before closing resources and authenticating
 its generation-bound shutdown receipts. Production policy remains unchanged.
+
+
+## Pending registry callback and result repair
+
+The initial registry candidate `3220b2a` remains unapproved. Its independent
+review found ignored assignment callback returns, deferred identity deletion
+following an authentication callback pin, retained-ownership getter delegation
+after pin, and malformed data interpreted as a successful terminal result.
+The successor captures both ownership capabilities before delegation, checks
+admission again after authentication, and fences the deferred finish closure.
+Unsupported assignment returns and exceptions retain their original callback
+observation and resolved owner outcome without a terminal commit or ACK.
+
+Data snapshots alone are not terminal-result authority. The successor validates
+the captured value against the installed SDK v2 `CallToolResultSchema`, preserving
+additional captured fields and the SDK's empty-content default for structured-only
+results. Invalid results remain reserved at their original owner. The already
+locked SDK core package is now an explicit runtime dependency; package versions
+and installed dependency bytes are unchanged. These repairs require a new exact
+head review; the database and complete runtime have separate pending reviews.

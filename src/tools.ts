@@ -1,3 +1,4 @@
+import {CallToolResultSchema} from "@modelcontextprotocol/core";
 import {combineShutdown, shutdownResult, type ShutdownResult} from "./shutdown.js";
 import {snapshotNonforcingData} from "./nonforcingData.js";
 import { withExecutionIdentity } from "./executionIdentity.js";
@@ -2265,7 +2266,7 @@ export class CodexJobRegistry {
   private readonly nonforcingConstructions = new Set<string>();
   private registryCallbacksInFlight = 0;
   private registryTransactionsInFlight = 0;
-  private readonly unconfirmedCompletionCallbacks = new WeakSet<CodexJob>();
+  private readonly unconfirmedJobCallbacks = new WeakSet<CodexJob>();
   private readonly nonforcingLateObservations = new Map<string, Array<{kind: string; value: unknown}>>();
   private nonforcingLateObservationCount = 0;
 
@@ -2597,11 +2598,17 @@ export class CodexJobRegistry {
   }
 
   private acknowledgeSettledExecution(job: CodexJob): void {
-    if (this.nonforcingPinned) return;
+    if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) return;
     const assignment = this.jobAssignment(job);
-    if (this.authBoundary && job.authBoundary !== this.authBoundary() &&
-        (!assignment || this.upstream?.ownsRetainedResult?.(job.jobId, assignment) !== true)) return;
+    const currentBoundary = this.authBoundary?.();
     if (this.nonforcingPinned) return;
+    if (this.authBoundary && job.authBoundary !== currentBoundary) {
+      if (!assignment) return;
+      const owns = this.upstream?.ownsRetainedResult;
+      if (this.nonforcingPinned || typeof owns !== "function") return;
+      const owned = Reflect.apply(owns,this.upstream,[job.jobId,assignment]);
+      if (this.nonforcingPinned || owned !== true) return;
+    }
     if (job.executionReceipt && isTerminalActivityJobStatus(job.status) && job.terminalOrigin) {
       const acknowledge = this.upstream?.acknowledgeExecution;
       if (this.nonforcingPinned) return;
@@ -2626,7 +2633,14 @@ export class CodexJobRegistry {
         else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
         return;
       }
-      settlement = {...settlement,result:captured.value};
+      const validated = CallToolResultSchema.safeParse(captured.value);
+      if (!validated.success) {
+        this.nonforcingUnknown = true;
+        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
+        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        return;
+      }
+      settlement = {...settlement,result:{...captured.value,content:validated.data.content}};
     }
     if (!this.nonforcingPinned && settlement.kind === "rejected") {
       const captured = this.capturedExecutionError(settlement.error);
@@ -2638,7 +2652,7 @@ export class CodexJobRegistry {
       }
       settlement = {...settlement,error:captured.error};
     }
-    while (!this.stateMaintenanceClosed) {
+    while (!this.stateMaintenanceClosed && !this.unconfirmedJobCallbacks.has(job)) {
       if (job.status === "terminating") {
         this.deferredSettlements.set(job.jobId, settlement);
         return;
@@ -2650,7 +2664,7 @@ export class CodexJobRegistry {
         return;
       }
       catch (error) {
-        if (this.nonforcingPinned || this.unconfirmedCompletionCallbacks.has(job)) break;
+        if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) break;
         if (!job.executionReceipt || !(error instanceof JobTerminalCommitError)) throw error;
         if (settlement.kind === "resolved" && !this.pendingTerminalCommits.has(job)) {
           const turnStatus = extractResultTurnStatus(settlement.result);
@@ -2666,7 +2680,7 @@ export class CodexJobRegistry {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
-    if (this.nonforcingPinned || this.unconfirmedCompletionCallbacks.has(job)) {
+    if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) {
       if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId, settlement);
       else this.retainNonforcingObservation(job.jobId, "terminal-settlement", settlement);
       return;
@@ -2724,9 +2738,11 @@ export class CodexJobRegistry {
   }
 
   private assertCurrentJobOwner(job: CodexJob): void {
-    if (this.authBoundary && job.authBoundary !== this.authBoundary()) {
+    this.assertNonforcingAdmission();
+    const boundary = this.authBoundary?.();
+    this.assertNonforcingAdmission();
+    if (this.authBoundary && job.authBoundary !== boundary)
       throw new Error("CODEX_AUTH_JOB_BOUNDARY: This Job belongs to another or unverified authentication connection.");
-    }
   }
 
   private jobAssignment(job: CodexJob): UpstreamWorkerAssignment | null {
@@ -2739,10 +2755,20 @@ export class CodexJobRegistry {
 
   /** Existing controls must still target the original live request after login changes. */
   private assertOriginalJobControl(job: CodexJob): void {
-    if (!this.authBoundary || job.authBoundary === this.authBoundary()) return;
+    this.assertNonforcingAdmission();
+    const boundary = this.authBoundary?.();
+    this.assertNonforcingAdmission();
+    if (!this.authBoundary || job.authBoundary === boundary) return;
     const assignment = this.jobAssignment(job);
-    if (isActiveActivityJobStatus(job.status) && job.trackingState === "connected" && assignment &&
-        this.upstream?.ownsActiveExecution?.(job.jobId, assignment) === true) return;
+    if (isActiveActivityJobStatus(job.status) && job.trackingState === "connected" && assignment) {
+      const owns = this.upstream?.ownsActiveExecution;
+      this.assertNonforcingAdmission();
+      if (typeof owns === "function") {
+        const owned = Reflect.apply(owns,this.upstream,[job.jobId,assignment]);
+        this.assertNonforcingAdmission();
+        if (owned === true) return;
+      }
+    }
     throw new Error("CODEX_AUTH_JOB_BOUNDARY: This Job belongs to another or unverified authentication connection.");
   }
 
@@ -3584,7 +3610,20 @@ export class CodexJobRegistry {
           (assignment) => {
             const captured = this.recordWorkerAssignment(job, assignment);
             if (!captured || this.nonforcingPinned) return;
-            onAssigned?.(captured, job);
+            if (!onAssigned) return;
+            this.registryCallbacksInFlight++;
+            try {
+              const returned = Reflect.apply(onAssigned,undefined,[captured,job]);
+              if (returned !== undefined) {
+                this.nonforcingUnknown = true;
+                this.unconfirmedJobCallbacks.add(job);
+                this.retainNonforcingObservation(job.jobId,"assignment-callback-result",returned);
+              }
+            } catch (error) {
+              this.nonforcingUnknown = true;
+              this.unconfirmedJobCallbacks.add(job);
+              this.retainNonforcingObservation(job.jobId,"assignment-callback-error",error);
+            } finally {this.registryCallbacksInFlight--;}
           }
         ));
       })
@@ -3606,6 +3645,7 @@ export class CodexJobRegistry {
       job.promise = new Promise<void>((resolve, reject) => {
         let settled = false;
         const finish = (operation?: () => Promise<void>) => {
+          this.assertNonforcingAdmission();
           if (settled) return;
           settled = true;
           this.deferredExecutions.delete(job.jobId);
@@ -3627,6 +3667,7 @@ export class CodexJobRegistry {
     this.assertNonforcingAdmission();
     const job = this.jobs.get(jobId);
     if (job) this.assertCurrentJobOwner(job);
+    this.assertNonforcingAdmission();
     this.deferredExecutions.get(jobId)?.launch();
   }
 
@@ -3655,7 +3696,7 @@ export class CodexJobRegistry {
       if (returned === undefined) return undefined;
       if (typeof returned === "function") return returned;
       this.nonforcingUnknown = true;
-      this.unconfirmedCompletionCallbacks.add(job);
+      this.unconfirmedJobCallbacks.add(job);
       this.retainNonforcingObservation(job.jobId,"completion-callback-result",returned);
       throw new Error("STATE_COMPLETION_CALLBACK_UNCONFIRMED");
     } finally {this.registryCallbacksInFlight--;}

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Retain unsupported assignment callbacks and validate SDK v2 terminal results while fencing deferred activation and ownership callbacks.","breaking":false,"migration":null}
