@@ -744,14 +744,22 @@ export class IsolatedRuntimeController {
     ordinarySlotReserved: boolean;
 }): void {
     try {
-        if (this.nonforcingPinned) {
-            this.proxyWriteJson(outgoing, 503, { error: 'RUNTIME_NONFORCING_PINNED' });
-            return;
+        if (this.retainProxyContinuation(bufferedRequest))return;
+        let bufferedOwner: {incoming:Readable;outgoing:Writable;capture:McpRequestIdCapture;freeze:()=>void;buffered:unknown}|undefined;
+        if(bufferedRequest){
+            const original=bufferedRequest,capture=this.proxyRead<McpRequestIdCapture>(original,'capture');
+            bufferedOwner={incoming,outgoing,capture,freeze:()=>{},buffered:original};
+            this.proxyEdges.add(bufferedOwner);
+            bufferedRequest={capture,body:this.proxyRead<Buffer>(original,'body'),
+                priority:this.proxyRead<boolean>(original,'priority'),ordinarySlotReserved:this.proxyRead<boolean>(original,'ordinarySlotReserved')};
         }
         if (this.port === undefined || !this.child?.connected) {
             if (bufferedRequest) {
+                const id=this.proxyCall<string|number|undefined>(bufferedRequest.capture,'id',[]);
+                this.proxyUnavailable(outgoing, this.readiness(), "not-observed", {}, id);
+                if(this.retainProxyContinuation())return;
                 this.activeProxyRequests -= 1;
-                this.proxyUnavailable(outgoing, this.readiness(), "not-observed", {}, bufferedRequest.capture.id());
+                if(bufferedOwner)this.proxyEdges.delete(bufferedOwner);
             }
             else
                 this.proxyMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed");
@@ -759,14 +767,15 @@ export class IsolatedRuntimeController {
         }
         const declaredLength = this.proxyEffect(()=>requestContentLength(this.proxyRead(incoming, "headers")));
         if (declaredLength !== undefined && declaredLength > MAX_RPC_BYTES) {
-            bufferedRequest?.capture.dispose();
-            if (bufferedRequest)
-                this.activeProxyRequests -= 1;
+            if(bufferedRequest)this.proxyCall(bufferedRequest.capture,'dispose',[]);
             this.proxyWriteJson(outgoing, 413, {
                 ok: false,
                 code: "RUNTIME_REQUEST_TOO_LARGE",
                 reason: "request-bytes"
             });
+            if(this.retainProxyContinuation())return;
+            if(bufferedRequest)this.activeProxyRequests -= 1;
+            if(bufferedOwner)this.proxyEdges.delete(bufferedOwner);
             return;
         }
         if (!bufferedRequest && declaredLength !== undefined &&
@@ -803,14 +812,17 @@ export class IsolatedRuntimeController {
             return;
         }
         const bufferedOrdinaryOverCapacity = bufferedRequest && !bufferedRequest.priority && ((!bufferedRequest.ordinarySlotReserved && this.activeProxyRequests > MAX_PROXY_REQUESTS) ||
-            this.activeProxyBytes + bufferedRequest.body.length > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT);
+            this.activeProxyBytes + this.proxyRead<number>(bufferedRequest.body,'length') > MAX_ORDINARY_PROXY_BYTES_IN_FLIGHT);
         if (bufferedOrdinaryOverCapacity ||
             (declaredLength !== undefined || bufferedRequest) &&
-                this.activeProxyBytes + (bufferedRequest?.body.length ?? declaredLength ?? 0) > MAX_PROXY_BYTES_IN_FLIGHT) {
+                this.activeProxyBytes + ((bufferedRequest?this.proxyRead<number>(bufferedRequest.body,'length'):undefined) ?? declaredLength ?? 0) > MAX_PROXY_BYTES_IN_FLIGHT) {
             const failure = { reason: "state-capacity" as const, limitations: ["state-capacity"] };
             if (bufferedRequest) {
+                const id=this.proxyCall<string|number|undefined>(bufferedRequest.capture,'id',[]);
+                this.proxyUnavailable(outgoing, this.readiness(), "not-observed", failure, id);
+                if(this.retainProxyContinuation())return;
                 this.activeProxyRequests -= 1;
-                this.proxyUnavailable(outgoing, this.readiness(), "not-observed", failure, bufferedRequest.capture.id());
+                if(bufferedOwner)this.proxyEdges.delete(bufferedOwner);
             }
             else
                 this.proxyMcpUnavailable(incoming, outgoing, this.readiness(), "not-observed", failure);
@@ -819,7 +831,7 @@ export class IsolatedRuntimeController {
         const port = this.port;
         if (!bufferedRequest)
             this.activeProxyRequests += 1;
-        let requestBytes = bufferedRequest?.body.length ?? declaredLength ?? 0;
+        let requestBytes = (bufferedRequest?this.proxyRead<number>(bufferedRequest.body,'length'):undefined) ?? declaredLength ?? 0;
         this.activeProxyBytes += requestBytes;
         let responseStarted = false;
         let settled = false;
@@ -833,6 +845,7 @@ export class IsolatedRuntimeController {
                 }
             }, proxied: undefined as Writable | undefined, response: undefined as Readable | undefined };
         this.proxyEdges.add(edge);
+        if(bufferedOwner)this.proxyEdges.delete(bufferedOwner);
         const finish = () => {
             try {
                 if (this.retainProxyContinuation())
