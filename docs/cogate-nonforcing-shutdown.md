@@ -405,6 +405,18 @@ commit after a reentrant fence. Notification dispatch stops before later listene
 when one listener pins. Retained observation samples are bounded at 128 and
 sample overflow remains `UNKNOWN`.
 
+Execution acknowledgements register their owner before reading or invoking the
+upstream callback. Synchronous failures and unsupported results remain `UNKNOWN`;
+a native Promise stays registered until it resolves before pinning. Pinning while
+an acknowledgement is pending permanently retains uncertainty and its original
+identity, even if it later resolves. Throwing change listeners are retained with
+their original error. Invalid progress or worker identity inputs preserve the
+last valid Job and original producer outcome without terminal commit or ACK.
+Interaction input checks admission before lookup, before delegation and before
+returning captured data. Cancellation, steering and persistence errors inspect
+own message data without invoking accessor messages or writing after pinning.
+Explicit retained-Job maintenance also rejects after the permanent pin.
+
 This registry component does not close the state database, retire a durable writer
 or approve the complete runtime. The full runtime owner must additionally fence
 in-flight application RPCs and frontends before closing resources and authenticating
