@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Retain Events timer ownership through deadline reads and preserve raw synchronous delegate outcomes across nonforcing pin while retaining ordinary retries.",
+  "breaking": false,
+  "migration": null
+}

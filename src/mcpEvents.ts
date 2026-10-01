@@ -1,3 +1,4 @@
+import {types} from 'node:util';
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer, ProtocolError, type ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -86,12 +87,14 @@ export class McpEventsController {
   private readonly retainedErrors=new Map<string,unknown>();
   private readonly senderFence=new RuntimeOperationFence();
   private readonly requestFence=new RuntimeOperationFence();
+  private readonly delegateFence=new RuntimeOperationFence();
 
   pinNonforcingShutdown():true {
     if(this.nonforcingPinned)return true;
     this.nonforcingPinned=true;this.nonforcingUnknown ||= this.ordinaryClose;
     this.senderFence.pinNonforcingShutdown();
     this.requestFence.pinNonforcingShutdown();
+    this.delegateFence.pinNonforcingShutdown();
     this.stop.abort();
     try{this.unsubscribe();}catch(error){this.nonforcingUnknown=true;this.retainedErrors.set('unsubscribe',error);}
     if(this.timer)clearTimeout(this.timer);this.timer=undefined;
@@ -100,7 +103,7 @@ export class McpEventsController {
   observeNonforcingExit():ShutdownResult {
     if(!this.nonforcingPinned || this.nonforcingUnknown)return shutdownResult('uncertain');
     const active=this.verifying.size+(this.running?1:0);
-    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit(),this.requestFence.observeNonforcingExit()]);
+    return combineShutdown([active ? shutdownResult('timeout',active) : shutdownResult('exited'),this.senderFence.observeNonforcingExit(),this.requestFence.observeNonforcingExit(),this.delegateFence.observeNonforcingExit()]);
   }
   async closeNonforcing():Promise<ShutdownResult>{
     this.pinNonforcingShutdown();
@@ -137,15 +140,12 @@ export class McpEventsController {
       const state=this.jobs.admissionStateStore;this.assertAdmission();
       const ledger = state.mcpEvents;
       this.assertAdmission();
-      const transaction=this.ownedMethod(this.jobs,'activityTransaction');
-      Reflect.apply(transaction,this.jobs,[() => {
-        const get=this.ownedMethod(ledger,'get');
-        const record=this.ownedData(Reflect.apply(get,ledger,[params.arguments.jobId,id]),'unsubscribe-record');
+      this.ownedCall(this.jobs,'activityTransaction',[() => {
+        const record=this.ownedData(this.ownedCall(ledger,'get',[params.arguments.jobId,id]),'unsubscribe-record');
         this.assertAdmission();
         if (!record) return;
         if (record.scopeId !== scopeId || record.principal !== principal) throw this.denied();
-        const save=this.ownedMethod(ledger,'save');
-        const saved=Reflect.apply(save,ledger,[{...record,revision:record.revision+1,disabled:'unsubscribed'},record.revision]);
+        const saved=this.ownedCall(ledger,'save',[{...record,revision:record.revision+1,disabled:'unsubscribed'},record.revision]);
         this.assertAdmission();
         if(!saved) {
           throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
@@ -172,11 +172,18 @@ export class McpEventsController {
     this.assertAdmission();return method;
   }
   private ownedCall<T extends object,K extends keyof T>(owner:T,key:K,args:unknown[]):ReturnType<Extract<T[K],(...args:any[])=>any>> {
-    const method=this.ownedMethod(owner,key);
-    let value:unknown;
-    try{value=Reflect.apply(method as (...args:any[])=>any,owner,args);}
-    catch(error){this.retainedErrors.set('call-error:'+String(key),error);throw error;}
-    if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('call-result:'+String(key),value);}
+    this.assertAdmission();let value:unknown,failed=false,originalError:unknown;
+    const observed=this.delegateFence.run(()=>{
+      try{const method=this.ownedMethod(owner,key);value=Reflect.apply(method as (...args:any[])=>any,owner,args);return value;}
+      catch(error){failed=true;originalError=error;this.nonforcingUnknown=true;this.retainedErrors.set('call-error:'+String(key),error);throw error;}
+    });
+    void observed.catch(error=>{this.nonforcingUnknown=true;this.retainedErrors.set('delegate-error:'+String(key),error);});
+    if(failed)throw originalError;
+    if(this.nonforcingPinned || types.isPromise(value) || types.isProxy(value) ||
+      key==='save' && typeof value!=='boolean' || (key==='maintain'||key==='enqueue') && value!==undefined){
+      this.nonforcingUnknown=true;this.retainedErrors.set('call-result:'+String(key),value);
+      if(!this.nonforcingPinned)throw new Error('MCP_EVENTS_SYNC_RESULT_UNCONFIRMED');
+    }
     this.assertAdmission();return value as ReturnType<Extract<T[K],(...args:any[])=>any>>;
   }
   private ownedData<T>(value:T,label:string):T {
@@ -211,8 +218,7 @@ export class McpEventsController {
   private requireOwnedScope(context:ServerContext,label:string):string {
     const request=context.mcpReq;this.assertAdmission();
     const metadata=request._meta;this.assertAdmission();
-    const require=this.ownedMethod(this.scopes,'require');
-    const scope=Reflect.apply(require,this.scopes,[metadata as ToolCallMetadata,undefined,label]);this.assertAdmission();
+    const scope=this.ownedCall(this.scopes,'require',[metadata as ToolCallMetadata,undefined,label]);this.assertAdmission();
     const scopeId=scope.scopeId;this.assertAdmission();return scopeId;
   }
 
@@ -228,10 +234,9 @@ export class McpEventsController {
     const state=this.jobs.admissionStateStore;this.assertAdmission();
     const ledger=state.mcpEvents;
     this.assertAdmission();
-    const maintain=ledger.maintain;this.assertAdmission();Reflect.apply(maintain,ledger,[]);
+    this.ownedCall(ledger,'maintain',[]);
     this.assertAdmission();
-    const get=ledger.get;this.assertAdmission();
-    const old = this.ownedData(Reflect.apply(get,ledger,[params.arguments.jobId,id]),'subscribe-old-record');
+    const old = this.ownedData(this.ownedCall(ledger,'get',[params.arguments.jobId,id]),'subscribe-old-record');
     this.assertAdmission();
     if (this.verifying.has(id) || this.verifying.size >= 8) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "verification_busy" });
     this.verifying.set(id, 0);
@@ -276,10 +281,8 @@ export class McpEventsController {
       const auth=this.authorizedAuth(context); // Validate expiry again after network verification.
       const expiresAt = Math.min(verifiedAt + Math.min(params.ttlMs ?? SUBSCRIPTION_TTL_MS, MAX_TTL_MS),
         auth.expiresAt!==undefined?auth.expiresAt*1000:Infinity);
-      const transaction=this.ownedMethod(this.jobs,'activityTransaction');
-      Reflect.apply(transaction,this.jobs,[() => {
-        const get=this.ownedMethod(ledger,'get');
-        const current=this.ownedData(Reflect.apply(get,ledger,[params.arguments.jobId,id]),'subscribe-current-record');
+      this.ownedCall(this.jobs,'activityTransaction',[() => {
+        const current=this.ownedData(this.ownedCall(ledger,'get',[params.arguments.jobId,id]),'subscribe-current-record');
         this.assertAdmission();
         if (this.verifying.get(id) !== 0) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
         if ((current?.revision || 0) !== (old?.revision || 0)) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
@@ -289,8 +292,7 @@ export class McpEventsController {
         const rotating = destination && destination.secret !== params.delivery.secret;
         // Delivery can advance without changing the grant revision while the
         // challenge awaits. Preserve its event, ACK, attempts and retry state.
-        const save=this.ownedMethod(ledger,'save');
-        const saved = Reflect.apply(save,ledger,[{
+        const saved = this.ownedCall(ledger,'save',[{
           ...current,
           id, jobId: job.jobId, scopeId, principal, verifiedAt, expiresAt, revision: (current?.revision || 0) + 1,
           disabled: undefined,
@@ -301,8 +303,7 @@ export class McpEventsController {
         }, current?.revision ?? 0]);
         this.assertAdmission();
         if (!saved) throw new ProtocolError(-32015, "CallbackEndpointError", { reason: "subscription_changed" });
-        const enqueue=this.ownedMethod(ledger,'enqueue');
-        Reflect.apply(enqueue,ledger,[job]);this.assertAdmission();
+        this.ownedCall(ledger,'enqueue',[job]);this.assertAdmission();
       }]);
       this.assertAdmission();
       this.wake();
@@ -330,17 +331,17 @@ export class McpEventsController {
   private denied() { return new ProtocolError(-32001, "Events require an authenticated connection and the original conversation's owned Job."); }
 
   private requireJob(jobId: string, scopeId: string, principal: string): EventJob {
-    const get=this.ownedMethod(this.jobs,'get');const original=Reflect.apply(get,this.jobs,[jobId]);this.assertAdmission();
+    const original=this.ownedCall(this.jobs,'get',[jobId]);this.assertAdmission();
     if(!original)throw this.denied();
     const job=this.ownedFields<EventJob>(original,['jobId','scopeId','activityId','agentId','projectId','mcpPrincipal','status','version','updatedAt','approvedFollowups'],'event-job');
     if(job.jobId!==jobId || job.scopeId!==scopeId || job.mcpPrincipal!==principal || !job.activityId || !job.agentId)throw this.denied();
-    const getActivity=this.ownedMethod(this.jobs,'getActivity');const activity=Reflect.apply(getActivity,this.jobs,[job.activityId]);this.assertAdmission();
+    const activity=this.ownedCall(this.jobs,'getActivity',[job.activityId]);this.assertAdmission();
     if(!activity || this.ownedFields<{scopeId:string}>(activity,['scopeId'],'event-activity').scopeId!==scopeId)throw this.denied();
-    const getAgent=this.ownedMethod(this.jobs,'getAgent');const agent=Reflect.apply(getAgent,this.jobs,[job.agentId]);this.assertAdmission();
+    const agent=this.ownedCall(this.jobs,'getAgent',[job.agentId]);this.assertAdmission();
     if(!agent || this.ownedFields<{scopeId:string}>(agent,['scopeId'],'event-agent').scopeId!==scopeId)throw this.denied();
     const state=this.jobs.admissionStateStore;this.assertAdmission();
-    if(job.projectId){const available=this.ownedMethod(state,'isEventProjectAvailable');const allowed=Reflect.apply(available,state,[job.projectId]);this.assertAdmission();if(!allowed)throw this.denied();}
-    const completionRead=this.ownedMethod(state,'getJobCompletionDelivery');const rawCompletion=Reflect.apply(completionRead,state,[jobId,scopeId]);this.assertAdmission();
+    if(job.projectId){const allowed=this.ownedCall(state,'isEventProjectAvailable',[job.projectId]);this.assertAdmission();if(!allowed)throw this.denied();}
+    const rawCompletion=this.ownedCall(state,'getJobCompletionDelivery',[jobId,scopeId]);this.assertAdmission();
     const completion=rawCompletion?this.ownedFields<{terminalVersion:number;createdAt:number}>(rawCompletion,['terminalVersion','createdAt'],'event-completion'):undefined;
     return {...job,terminalVersion:completion?.terminalVersion,updatedAt:completion?.createdAt||job.updatedAt};
   }
@@ -350,37 +351,29 @@ export class McpEventsController {
   }
 
   wake(): void {
-    if (this.stop.signal.aborted || this.running) return;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      let deliveryFailed = false;
-      this.running = Promise.resolve().then(()=>this.deliver()).catch(error => {
-        deliveryFailed = true;this.nonforcingUnknown=true;this.retainedErrors.set('delivery',error);
-      }).finally(() => {
-        this.running = undefined;
-        if (!this.stop.signal.aborted) {
-          try {
-            const now = Date.now();
-            const state=this.jobs.admissionStateStore;this.assertAdmission();
-            const ledger=state.mcpEvents;this.assertAdmission();
-            const deadlines = this.ownedData(this.ownedCall(ledger,'list',[]),'event-timer-records').flatMap(record => [
-              Math.max(record.expiresAt, record.recoverUntil || 0),
-              ...(!record.disabled && record.expiresAt > now && record.event && record.delivery === "pending" ? [record.nextAttemptAt] : [])
-            ]);
-            if (deadlines.length) {
-              this.timer = setTimeout(() => { this.timer = undefined; this.wake(); }, Math.max(deliveryFailed ? 10_000 : 100, Math.min(...deadlines) - now));
-              this.timer.unref();
-            }
-          } catch {
-            // A state failure delays only delivery. No execution is inferred.
-            this.timer = setTimeout(() => { this.timer = undefined; this.wake(); }, 10_000);
-            this.timer.unref();
-          }
-        }
-      });
-    }, 0);
-    this.timer.unref();
+    if(this.stop.signal.aborted || this.running)return;
+    if(this.timer)clearTimeout(this.timer);
+    this.timer=setTimeout(()=>{
+      this.timer=undefined;
+      // The owner stays registered through delivery AND its next-deadline read.
+      this.running=Promise.resolve().then(()=>this.deliver()).then(()=>{
+        if(this.stop.signal.aborted)return;
+        const now=Date.now(),state=this.jobs.admissionStateStore;this.assertAdmission();
+        const ledger=state.mcpEvents;this.assertAdmission();
+        const deadlines=this.ownedData(this.ownedCall(ledger,'list',[]),'event-timer-records').flatMap(record=>[
+          Math.max(record.expiresAt,record.recoverUntil||0),
+          ...(!record.disabled&&record.expiresAt>now&&record.event&&record.delivery==='pending'?[record.nextAttemptAt]:[])
+        ]);
+        this.assertAdmission();
+        if(deadlines.length){this.timer=setTimeout(()=>{this.timer=undefined;this.wake();},Math.max(100,Math.min(...deadlines)-now));this.timer.unref();}
+      }).catch(error=>{
+        this.nonforcingUnknown=true;this.retainedErrors.set('delivery',error);
+        // Ordinary delivery failures retain the existing bounded retry. Pin
+        // permanently prevents installing another timer from this continuation.
+        if(!this.stop.signal.aborted){this.timer=setTimeout(()=>{this.timer=undefined;this.wake();},10_000);this.timer.unref();}
+      })
+        .finally(()=>{this.running=undefined;});
+    },0);this.timer.unref();
   }
 
   private async deliver(): Promise<void> {

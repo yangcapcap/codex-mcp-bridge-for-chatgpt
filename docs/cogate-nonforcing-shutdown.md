@@ -533,3 +533,14 @@ signal lookup and delivery/timer ledger stages observe the same permanent pin.
 Expiry after network verification uses a newly validated own-data auth snapshot.
 Initial resource receipts remain immutable. Whole private-runtime and durable
 writer admission still require independent evidence.
+
+Events timer and synchronous delegate ownership
+------------------------------------------------
+
+The Events worker remains registered through delivery, next-deadline lookup and
+retry scheduling. A permanent nonforcing pin forbids new timers. Original
+lookup/body errors remain retained and UNKNOWN; ordinary pre-pin failures keep
+the existing ten-second retry. Synchronous scope, Job, transaction and ledger
+calls register their original delegate before method lookup and preserve raw
+unsupported Promise/Proxy/results before pin checks. A delayed result is not a
+synchronous save acknowledgement or evidence of completed writer cleanup.
