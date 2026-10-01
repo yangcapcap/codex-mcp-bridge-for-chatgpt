@@ -165,3 +165,17 @@ the queue. Caller mutation, accessors and `toJSON` cannot change the transmitted
 representation after acceptance. An ordinary serialization that reentrantly
 installs the nonforcing fence is rejected before enqueueing. Prior serialized
 ordinary shutdown history remains unknown even after actual owned-child exit.
+
+Scoped tree observation copies an exact PID/original-group selector before any
+queue yield and requires that tree to already exist in the pinned ledger. A
+missing selector, later registration or malformed data cannot approve absence.
+It reads that retained tree in the same serialized registry, preserving active
+force-history uncertainty, partial ledgers and birth observations. The result
+counts only that tree's observed survivors; it does not prove all other workers
+exited or bind a worker generation. An execution supervisor still needs trusted
+spawn-time association and a separate all-tree check before whole-owner exit.
+
+The eligible pinned-tree map is captured before inspecting caller descriptors.
+A Proxy trap that registers another tree or first installs the pin cannot make
+that new evidence eligible for the observation already in progress. Original
+retained tree objects still supply serialized lifetime/history observations.

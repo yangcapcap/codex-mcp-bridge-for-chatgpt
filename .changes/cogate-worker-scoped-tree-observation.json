@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Observe exact already retained worker trees without duplicating registry-wide survivor counts or discarding nonforcing history and incomplete evidence.",
+  "breaking": false,
+  "migration": null
+}
