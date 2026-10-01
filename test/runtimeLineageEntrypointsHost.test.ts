@@ -57,7 +57,7 @@ for (const claim of claims) it.each(["cli", "stdio"])(
       const exited = new Promise<{code: number | null; signal: NodeJS.Signals | null}>(resolve => {
         child.once("exit", (code, signal) => resolve({ code, signal }));
       });
-      expect(await exited, output.toEqual({ code: 1, signal: null });
+      expect(await exited, output).toEqual({ code: 1, signal: null });
       expect(output).toContain("COGATE_STATE_ACTIVATION_UNAVAILABLE");
       expect(output).not.toMatch(/listening on http:\/\/|persistent stdio ready/);
       expect(database.prepare("SELECT * FROM bridge_instances ORDER BY instance_id").all()).toEqual(owners);
