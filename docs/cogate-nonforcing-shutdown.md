@@ -519,3 +519,17 @@ fixtures and ordinary recovery regressions cannot establish that contract.
 This component also inherits an independently rejected registry and ingress
 predecessor; their successors require separate review and integration before any
 whole-runtime acceptance claim.
+
+Parent proxy continuation evidence
+-----------------------------------
+
+The private runtime parent retains each original proxy/classification edge and
+request-ID capture before dispatch. Pin unpipes and pauses incoming bodies and
+outgoing response sources with captured native stream operations; classification
+timers are cancelled without releasing slots or bytes. Late response, error,
+finish, timeout and classification callbacks retain the raw observation and
+original accounting instead of completing an ordinary response or disposing its
+capture. Active edges stay UNKNOWN. Ordinary close after pin requires a fresh
+original-owner observation and the lower owner close-after-pin check; a cached
+initial EXIT cannot override sticky PID uncertainty. No edge or process receipt
+retires a database writer.

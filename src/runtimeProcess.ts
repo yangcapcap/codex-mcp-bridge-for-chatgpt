@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
-import type { Readable, Writable } from "node:stream";
+import { Readable, type Writable } from "node:stream";
+const ownedReadableUnpipe=Readable.prototype.unpipe;
+const ownedReadablePause=Readable.prototype.pause;
 import type { BridgeConfig } from "./config.js";
 import { loadConfig } from "./config.js";
 import { createExecutionRuntime } from "./executionRuntime.js";
@@ -420,6 +422,26 @@ export class IsolatedRuntimeController {
   private readonly changeListeners = new Set<
     (topic: "dashboard" | "settings" | "enrichment") => void
   >();
+  private readonly proxyEdges=new Set<{
+    incoming:Readable;outgoing:Writable;proxied?:Writable;response?:Readable;
+    capture:McpRequestIdCapture;freeze:()=>void;
+  }>();
+  private retainProxyContinuation(value?:unknown):boolean {
+    if(!this.nonforcingPinned)return false;
+    this.nonforcingUnknown=true;
+    if(value!==undefined)this.retainedNonforcingMessages.push(value);
+    return true;
+  }
+  private freezeProxyEdges():void {
+    for(const edge of this.proxyEdges) {
+      try {
+        Reflect.apply(ownedReadableUnpipe,edge.incoming,edge.proxied?[edge.proxied]:[]);
+        Reflect.apply(ownedReadablePause,edge.incoming,[]);
+        if(edge.response){Reflect.apply(ownedReadableUnpipe,edge.response,[edge.outgoing]);Reflect.apply(ownedReadablePause,edge.response,[]);}
+        edge.freeze();
+      }catch(error){this.nonforcingUnknown=true;this.retainedNonforcingMessages.push(error);}
+    }
+  }
   private activeProxyRequests = 0;
   private activeProxyBytes = 0;
   private closed = false;
@@ -720,14 +742,19 @@ export class IsolatedRuntimeController {
     let settled = false;
     let requestOutcome: ProxyRequestOutcome = "not-observed";
     const requestIdCapture = bufferedRequest?.capture || new McpRequestIdCapture();
+    const edge={incoming,outgoing,capture:requestIdCapture,freeze:()=>{},proxied:undefined as Writable|undefined,response:undefined as Readable|undefined};
+    this.proxyEdges.add(edge);
     const finish = () => {
+      if(this.retainProxyContinuation())return;
       if (settled) return;
+      this.proxyEdges.delete(edge);
       settled = true;
       requestIdCapture.dispose();
       this.activeProxyRequests = Math.max(0, this.activeProxyRequests - 1);
       this.activeProxyBytes = Math.max(0, this.activeProxyBytes - requestBytes);
     };
     const rejectBody = (reason: "request-bytes" | "state-capacity") => {
+      if(this.retainProxyContinuation(reason))return;
       proxied.destroy(new Error(
         reason === "request-bytes" ? "RUNTIME_REQUEST_TOO_LARGE" : "RUNTIME_CAPACITY"
       ));
@@ -756,6 +783,8 @@ export class IsolatedRuntimeController {
       path: incoming.url,
       headers: requestHeaders(incoming.headers)
     }, response => {
+      edge.response=response;
+      if(this.retainProxyContinuation(response)){this.freezeProxyEdges();return;}
       responseStarted = true;
       if (outgoing.destroyed) {
         response.destroy();
@@ -766,16 +795,21 @@ export class IsolatedRuntimeController {
       response.pipe(outgoing);
       response.once("end", finish);
       response.once("error", error => {
+        if(this.retainProxyContinuation(error))return;
         if (!outgoing.destroyed) outgoing.destroy(error);
         finish();
       });
     });
+    edge.proxied=proxied;
+    if(this.retainProxyContinuation(proxied)){this.freezeProxyEdges();return;}
     proxied.once("finish", () => {
+      if(this.retainProxyContinuation())return;
       // The full request crossed the supervisor boundary. The child may have
       // acted even if its response or next heartbeat is never observed.
       requestOutcome = "unknown";
     });
     proxied.setTimeout(PROXY_IDLE_TIMEOUT_MS, () => {
+      if(this.retainProxyContinuation())return;
       proxied.destroy(new Error("RUNTIME_RESPONSE_UNCONFIRMED"));
       if (!responseStarted && !outgoing.headersSent) {
         writeUnavailable(outgoing, this.readiness(), requestOutcome, {}, requestIdCapture.id());
@@ -785,6 +819,7 @@ export class IsolatedRuntimeController {
       finish();
     });
     proxied.once("error", error => {
+      if(this.retainProxyContinuation(error))return;
       if (!outgoing.headersSent) {
         writeUnavailable(
           outgoing,
@@ -802,10 +837,12 @@ export class IsolatedRuntimeController {
       finish();
     });
     incoming.once("aborted", () => {
+      if(this.retainProxyContinuation())return;
       proxied.destroy();
       finish();
     });
     outgoing.once("close", () => {
+      if(this.retainProxyContinuation())return;
       if (outgoing.writableEnded) return;
       // A completed request body does not emit IncomingMessage.aborted when
       // its caller disconnects while waiting for the response.
@@ -813,11 +850,13 @@ export class IsolatedRuntimeController {
       finish();
     });
     if (!bufferedRequest) incoming.on("data", chunk => {
+      if(this.retainProxyContinuation(chunk))return;
       requestIdCapture.append(chunk);
     });
-    if (!bufferedRequest) incoming.once("end", () => requestIdCapture.complete());
+    if (!bufferedRequest) incoming.once("end", () => {if(!this.retainProxyContinuation())requestIdCapture.complete();});
     if (declaredLength === undefined && !bufferedRequest) {
       incoming.on("data", chunk => {
+        if(this.retainProxyContinuation(chunk))return;
         if (settled) return;
         const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
         requestBytes += bytes;
@@ -843,18 +882,25 @@ export class IsolatedRuntimeController {
     const capture = new McpRequestIdCapture();
     let settled = false;
     let reservedBytes = 0;
+    let timer:NodeJS.Timeout|undefined;
+    const edge={incoming,outgoing,capture,freeze:()=>{if(timer)clearTimeout(timer);}};
+    this.proxyEdges.add(edge);
     const releaseBytes = () => {
+      if(this.retainProxyContinuation())return;
       this.activeProxyBytes = Math.max(0, this.activeProxyBytes - reservedBytes);
       reservedBytes = 0;
     };
     const cleanup = () => {
-      clearTimeout(timer);
+      if(this.retainProxyContinuation())return;
+      this.proxyEdges.delete(edge);
+      if(timer)clearTimeout(timer);
       incoming.off("data", onData);
       incoming.off("end", onEnd);
       incoming.off("close", onClose);
       outgoing.off("close", onClose);
     };
     const reject = (reason: "state-capacity" | "request-bytes" = "state-capacity") => {
+      if(this.retainProxyContinuation())return;
       if (settled) return;
       settled = true;
       cleanup();
@@ -871,8 +917,10 @@ export class IsolatedRuntimeController {
       }
     };
     const onData = (chunk: Buffer | string) => {
+      if(this.retainProxyContinuation(chunk))return;
+      if(this.retainProxyContinuation())return;
       if (settled) return;
-      if (reservation.normalAdmission) timer.refresh();
+      if (reservation.normalAdmission) timer?.refresh();
       const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
       if (reservedBytes + bytes > MAX_RPC_BYTES) { reject("request-bytes"); return; }
       if (this.activeProxyBytes + bytes > MAX_PROXY_BYTES_IN_FLIGHT ||
@@ -881,6 +929,7 @@ export class IsolatedRuntimeController {
       this.activeProxyBytes += bytes;
     };
     const onEnd = () => {
+      if(this.retainProxyContinuation())return;
       if (settled) return;
       capture.complete();
       const body = capture.body();
@@ -899,7 +948,7 @@ export class IsolatedRuntimeController {
         ordinarySlotReserved: reservation.ordinarySlotReserved });
     };
     const onClose = () => reject();
-    const timer = setTimeout(reject,
+    timer = setTimeout(reject,
       reservation.normalAdmission ? PROXY_IDLE_TIMEOUT_MS : MCP_REJECTION_BODY_WAIT_MS);
     timer.unref();
     incoming.on("data", onData);
@@ -911,7 +960,10 @@ export class IsolatedRuntimeController {
 
   async close(): Promise<void> {
     if(this.nonforcingPinned){
-      if(!this.nonforcingClose || !(await this.nonforcingClose).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');
+      if(!this.nonforcingClose || !(await this.nonforcingClose).exited ||
+        !(await this.observeNonforcingExit()).exited || !this.shutdown)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');
+      await this.shutdown.closeAfterPin();
+      if(!(await this.observeNonforcingExit()).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');
       return;
     }
     if (this.closed) return;
@@ -946,6 +998,7 @@ export class IsolatedRuntimeController {
     this.nonforcingPinned=true;
     this.nonforcingUnknown ||= this.closed || !this.generation || this.outstanding>0;
     this.closed=true;this.requestFence.pinNonforcingShutdown();
+    this.freezeProxyEdges();
     if(this.restartTimer)clearTimeout(this.restartTimer);
     if(this.stableTimer)clearTimeout(this.stableTimer);
     if(this.startupTimer)clearTimeout(this.startupTimer);
