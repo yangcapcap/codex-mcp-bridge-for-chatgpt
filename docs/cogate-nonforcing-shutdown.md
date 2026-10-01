@@ -249,3 +249,19 @@ the owner uses a fresh bounded read-only pool observation for its own receipt.
 This avoids reporting an early live-worker snapshot after actual owned-worker
 exit. It preserves initial UNKNOWN and still reports a surviving detached child.
 Finalization and controller actual owned-exit checks remain mandatory.
+
+### Pending telemetry private IPC adaptation
+
+The telemetry controller captures a private spawn UUID and the child generation
+advertised at startup. Explicit nonforcing close pins the original owned child,
+stops new telemetry admission, restart, drop retry and force continuations, and
+retains queue, in-flight delivery IDs, drop counters and byte accounting. Late
+ordinary ACK and send-error callbacks cannot erase this unconfirmed evidence.
+The owner closes its own SQLite connection before a strict resource receipt;
+fresh observation checks retained closure state without retrying resource close.
+A closure error remains UNKNOWN. Receipt write/finalization and actual original
+owned-child exit are required before EXIT. Unsent diagnostics stay unconfirmed;
+EXIT describes resource/process closure and does not certify their persistence.
+Existing ordinary diagnostic flush/recovery remains the default. This draft still
+requires actual-host verification and a new independent exact-head review and
+does not expose a production shutdown policy switch.

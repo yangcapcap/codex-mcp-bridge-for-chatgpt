@@ -10,6 +10,11 @@ import {
   type TransportObservationRecord
 } from "./stateStore.js";
 
+import {OwnedProcessShutdown,beginOrdinaryOwnedProcessStop,isOwnedProcessNonforcing} from "./ownedProcessShutdown.js";
+import {ExecutionShutdownOwner} from "./executionShutdownOwner.js";
+import {snapshotExecutionShutdownRequest} from "./executionShutdownProtocol.js";
+import {snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
+
 const CHILD_FLAG = "--bridge-telemetry-child";
 const FREEZE_PAGE_COUNT_FLAG = "--test-freeze-page-count";
 const RETENTION_LIMIT = 1_000;
@@ -165,6 +170,7 @@ type CloseMessage = { type: "close" };
 type ParentMessage = RecordMessage | DropMessage | CloseMessage;
 type ReadyMessage = {
   type: "ready";
+  generation:string;
   records: TransportObservationRecord[];
   nextRecordId: number;
   dropCounters: DropCounterRecord[];
@@ -189,6 +195,11 @@ type ChildMessage = ReadyMessage | AckMessage | DropAckMessage | FatalMessage;
  */
 export class ChildProcessTelemetryService implements BridgeTelemetryService {
   private child?: ChildProcess;
+  private generation?:string;
+  private shutdown?:OwnedProcessShutdown;
+  private nonforcingClose?:Promise<ShutdownResult>;
+  private startupTimer?:NodeJS.Timeout;
+  private closeWait?:()=>void;
   private readonly records: TransportObservationRecord[] = [];
   private readonly queue: QueuedEntry[] = [];
   private queueBytes = 0;
@@ -291,6 +302,7 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
       this.failed += 1;
       return undefined;
     }
+    if(this.closed || this.closing)return undefined;
     this.records.push(record);
     trimRecords(this.records);
     this.enqueue({
@@ -342,7 +354,7 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
 
   status(): TelemetryServiceStatus {
     return {
-      connected: Boolean(this.ready && this.child?.connected && this.child.exitCode === null),
+      connected: Boolean(!this.closed && !this.closing && this.ready && this.child?.connected && this.child.exitCode === null),
       queued: this.queue.length,
       inFlight: this.inFlight ? 1 : 0,
       retained: this.records.length,
@@ -352,7 +364,21 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
     };
   }
 
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult>{
+    const snapshot=snapshotShutdownPolicy(policy);
+    if(snapshot.allowSigkillEscalation!==false)throw new Error("NONFORCING_SHUTDOWN_POLICY_REQUIRED");
+    if(this.nonforcingClose)return this.nonforcingClose;
+    if(this.shutdown)return this.nonforcingClose=this.shutdown.closeNonforcing(snapshot);
+    this.closed=true;this.closing=true;this.ready=false;
+    if(this.restartTimer)clearTimeout(this.restartTimer);
+    if(this.dropRetryTimer)clearTimeout(this.dropRetryTimer);
+    return this.nonforcingClose=Promise.resolve(shutdownResult("uncertain"));
+  }
+  observeNonforcingExit():Promise<ShutdownResult>{
+    return this.shutdown?.observeNonforcingExit() ?? Promise.resolve(shutdownResult("uncertain"));
+  }
   close(): Promise<void> {
+    if(this.nonforcingClose)return this.shutdown ? this.shutdown.closeAfterPin() : Promise.reject(new Error("NONFORCING_SHUTDOWN_UNCONFIRMED"));
     if (!this.closePromise) this.closePromise = this.closeChild();
     return this.closePromise;
   }
@@ -364,6 +390,7 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
 
   private enqueue(value: QueuedTelemetryRecord): boolean {
     const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+    if(this.closed || this.nonforcingClose || this.shutdown?.pinned)return false;
     if (bytes > MAX_MESSAGE_BYTES) {
       this.failed += 1;
       this.noteDrop(`${value.recordType}.record-too-large`);
@@ -397,10 +424,12 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
     if (this.closed) {
       return Promise.reject(new Error("TELEMETRY_CLOSED: Telemetry service closed."));
     }
+    const controllerId=randomUUID();
     const modulePath = fileURLToPath(import.meta.url);
     const args = modulePath.endsWith(".ts")
       ? ["--import", "tsx", modulePath, CHILD_FLAG, this.file, this.sourceStateDatabaseId || "-"]
       : [modulePath, CHILD_FLAG, this.file, this.sourceStateDatabaseId || "-"];
+    args.push(controllerId);
     if (this.freezePageCountAfterStartup) args.push(FREEZE_PAGE_COUNT_FLAG);
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
@@ -408,6 +437,18 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
       stdio: ["ignore", "ignore", "pipe", "ipc"]
     });
     this.child = child;
+    this.generation=undefined;
+    this.shutdown=new OwnedProcessShutdown(child,{
+      generation:()=>this.generation,
+      pin:()=>{
+        this.closed=true;this.closing=true;this.ready=false;
+        if(this.restartTimer)clearTimeout(this.restartTimer);
+        if(this.dropRetryTimer)clearTimeout(this.dropRetryTimer);
+        if(this.startupTimer)clearTimeout(this.startupTimer);
+        this.closeWait?.();
+        return true;
+      }
+    },controllerId);
     this.ready = false;
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -415,14 +456,16 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.startupTimer=undefined;
         if (error) reject(error);
         else resolve();
       };
       const timer = setTimeout(() => {
         const error = new Error("TELEMETRY_START_TIMEOUT: Telemetry process did not become ready.");
         finish(error);
-        child.kill("SIGKILL");
+        if(beginOrdinaryOwnedProcessStop(child))child.kill("SIGKILL");
       }, STARTUP_TIMEOUT_MS);
+      this.startupTimer=timer;
       timer.unref();
       child.once("error", error => {
         finish(error);
@@ -436,13 +479,14 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
         if (process.env.CODEX_MCP_BRIDGE_DEBUG === "1") process.stderr.write(chunk);
       });
       child.on("message", value => {
-        if (this.child !== child) return;
+        if (this.child !== child || isOwnedProcessNonforcing(child)) return;
         if (!isChildMessage(value)) return;
         if (value.type === "fatal") {
           finish(new Error(`TELEMETRY_START_FAILED: ${value.message}`));
           return;
         }
         if (value.type === "ready") {
+          this.generation=value.generation;
           if (!this.initialized) {
             const hadLocalDrops = this.dropCounters.size > 0;
             this.rebasePendingRecordIds(value.nextRecordId);
@@ -532,6 +576,7 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
 
   private onExit(child: ChildProcess): void {
     if (this.child !== child) return;
+    if(isOwnedProcessNonforcing(child)){this.ready=false;return;}
     this.child = undefined;
     this.ready = false;
     if (this.inFlight) {
@@ -584,7 +629,7 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
       this.dropsDirty = false;
       this.inFlight = { drops: true };
       child.send(message, error => {
-        if (!error || this.child !== child || !this.inFlight ||
+        if (isOwnedProcessNonforcing(child) || !error || this.child !== child || !this.inFlight ||
             !("drops" in this.inFlight)) return;
         this.inFlight = undefined;
         this.failed += 1;
@@ -607,7 +652,7 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
     this.inFlight = entry;
     child.send(message, error => {
       if (
-        !error || this.child !== child ||
+        isOwnedProcessNonforcing(child) || !error || this.child !== child ||
         !this.inFlight || "drops" in this.inFlight ||
         this.inFlight.value.recordType !== entry.value.recordType ||
         this.inFlight.value.deliveryId !== entry.value.deliveryId
@@ -634,6 +679,8 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
   }
 
   private async closeChild(): Promise<void> {
+    const owned=this.child;
+    if(owned && !beginOrdinaryOwnedProcessStop(owned))return this.shutdown?.closeAfterPin();
     this.closing = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (this.dropRetryTimer) clearTimeout(this.dropRetryTimer);
@@ -642,8 +689,10 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
     const deadline = Date.now() + CLOSE_FLUSH_MS;
     while ((this.inFlight || this.queue.length > 0 || this.dropsDirty) && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 20));
+      if(owned && isOwnedProcessNonforcing(owned))return this.shutdown?.closeAfterPin();
       this.pump();
     }
+    if(owned && isOwnedProcessNonforcing(owned))return this.shutdown?.closeAfterPin();
     for (const entry of this.queue) this.noteDrop(`${entry.value.recordType}.close-timeout`);
     if (this.inFlight && !("drops" in this.inFlight)) {
       this.noteDrop(`${this.inFlight.value.recordType}.close-timeout`);
@@ -656,33 +705,66 @@ export class ChildProcessTelemetryService implements BridgeTelemetryService {
     this.child = undefined;
     this.ready = false;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    if(!beginOrdinaryOwnedProcessStop(child))return this.shutdown?.closeAfterPin();
     if (child.connected) child.send({ type: "close" } satisfies CloseMessage);
+    if(isOwnedProcessNonforcing(child))return this.shutdown?.closeAfterPin();
     await new Promise<void>(resolve => {
       let settled = false;
-      const force = setTimeout(() => child.kill("SIGKILL"), FORCE_CLOSE_MS);
+      const force = setTimeout(() => {if(beginOrdinaryOwnedProcessStop(child))child.kill("SIGKILL");}, FORCE_CLOSE_MS);
       const finish = () => {
         if (settled) return;
         settled = true;
         clearTimeout(force);
+        this.closeWait=undefined;
         resolve();
       };
+      this.closeWait=finish;
       child.once("exit", finish);
       if (child.exitCode !== null || child.signalCode !== null) finish();
     });
+    if(isOwnedProcessNonforcing(child))return this.shutdown?.closeAfterPin();
   }
 }
 
 async function runChild(
   file: string,
   freezePageCountAfterStartup: boolean,
-  sourceStateDatabaseId?: string
+  sourceStateDatabaseId: string|undefined,
+  controllerId:string
 ): Promise<void> {
+  const generation=randomUUID();
   let database: Database.Database | undefined;
   const send = (message: ChildMessage) => {
     if (!process.connected || !process.send) return;
     try { process.send(message, () => {}); } catch { /* Parent owns recovery. */ }
   };
+  let resourceCloseUncertain=false;
+  const closeResources=async()=>{
+    try{database?.close();database=undefined;}catch{resourceCloseUncertain=true;}
+    return database || resourceCloseUncertain ? shutdownResult("uncertain") : shutdownResult("exited");
+  };
+  const shutdownOwner=new ExecutionShutdownOwner(generation,process.pid,{
+    pin(){return true;},close:closeResources,
+    observe:async()=>database || resourceCloseUncertain ? shutdownResult("uncertain") : shutdownResult("exited")
+  });
+  const handleShutdown=async(value:unknown)=>{
+    const receipt=await shutdownOwner.handle(value,controllerId);
+    if(!receipt || !process.connected || !process.send)return;
+    await new Promise<void>(resolve=>{
+      let settled=false;
+      const finish=(error?:Error|null)=>{
+        if(settled)return;settled=true;clearTimeout(timer);
+        if(error)shutdownOwner.invalidateObservation();
+        else if(receipt.operation==="finalize-nonforcing" && receipt.result.exited && shutdownOwner.finalizationAllowed && process.connected)process.disconnect();
+        resolve();
+      };
+      const timer=setTimeout(()=>finish(new Error("TELEMETRY_SHUTDOWN_RECEIPT_TIMEOUT")),6000);
+      try{process.send!(receipt,finish);}catch{finish(new Error("TELEMETRY_SHUTDOWN_RECEIPT_FAILED"));}
+    });
+  };
   const close = () => {
+    if(shutdownOwner.pinned)return;
+    shutdownOwner.markOrdinaryShutdown();
     try { database?.close(); } finally {
       database = undefined;
       if (process.connected) process.disconnect();
@@ -774,8 +856,11 @@ async function runChild(
         UNION ALL SELECT COALESCE(MAX(event_id), 0) FROM diagnostic_events
       )
     `).get() as { value?: number } | undefined)?.value || 0) + 1;
-    send({ type: "ready", records, nextRecordId, dropCounters });
+    send({ type: "ready",generation, records, nextRecordId, dropCounters });
     process.on("message", value => {
+      const request=snapshotExecutionShutdownRequest(value);
+      if(request){void handleShutdown(request).catch(()=>shutdownOwner.invalidateObservation());return;}
+      if(shutdownOwner.pinned)return;
       if (!isParentMessage(value)) return;
       if (value.type === "close") {
         close();
@@ -1200,7 +1285,7 @@ function isChildMessage(value: unknown): value is ChildMessage {
   const message = value as Record<string, unknown>;
   if (message.type === "fatal") return typeof message.message === "string";
   if (message.type === "ready") {
-    return Array.isArray(message.records) && Number.isSafeInteger(message.nextRecordId) &&
+    return typeof message.generation==="string" && isUuid(message.generation) && Array.isArray(message.records) && Number.isSafeInteger(message.nextRecordId) &&
       Array.isArray(message.dropCounters);
   }
   if (message.type === "drop-ack") return typeof message.ok === "boolean";
@@ -1266,13 +1351,15 @@ function childEnvironment(): NodeJS.ProcessEnv {
 
 const childFile = process.argv[process.argv.indexOf(CHILD_FLAG) + 1];
 const childSourceStateDatabaseId = process.argv[process.argv.indexOf(CHILD_FLAG) + 2];
+const childControllerId=process.argv[process.argv.indexOf(CHILD_FLAG)+3];
 if (process.argv.includes(CHILD_FLAG)) {
-  if (!childFile) throw new Error("Telemetry database path is required.");
+  if (!childFile || !childControllerId || !isUuid(childControllerId)) throw new Error("Telemetry database path and private controller UUID are required.");
   await runChild(
     childFile,
     process.argv.includes(FREEZE_PAGE_COUNT_FLAG),
     childSourceStateDatabaseId && childSourceStateDatabaseId !== "-"
       ? childSourceStateDatabaseId
-      : undefined
+      : undefined,
+    childControllerId
   );
 }
