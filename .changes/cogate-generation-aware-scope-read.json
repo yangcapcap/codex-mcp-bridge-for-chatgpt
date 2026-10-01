@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Add a read-only generation-aware CoGate scope routing model while retaining authenticated activation gates.",
+  "breaking": false,
+  "migration": null
+}
