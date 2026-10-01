@@ -249,3 +249,10 @@ the owner uses a fresh bounded read-only pool observation for its own receipt.
 This avoids reporting an early live-worker snapshot after actual owned-worker
 exit. It preserves initial UNKNOWN and still reports a surviving detached child.
 Finalization and controller actual owned-exit checks remain mandatory.
+
+The private owned-child controller retains any observed PID identity mismatch
+as sticky UNKNOWN, including after the numeric PID field is restored. This
+invalidates cached final receipts for current observations and ordinary close
+reporting while preserving the immutable original result. No fresh finalization
+or receipt request is sent once such uncertainty has been recorded. The new
+repair requires its own independent exact-head review.
