@@ -299,8 +299,9 @@ export class McpEventsController {
         const body = JSON.stringify(record.event);
         const secrets = [destination.secret];
         if (destination.previousSecret && (destination.rotateUntil || 0) > Date.now()) secrets.push(destination.previousSecret);
+        const eventId=record.event.eventId;
         response = await this.senderFence.run(()=>this.sender(destination.url, body,
-          signedHeaders(record.event.eventId, record.id, body, secrets),
+          signedHeaders(eventId, record.id, body, secrets),
           AbortSignal.any([this.stop.signal, AbortSignal.timeout(10_000)])));
       } catch (error) {
         this.retainedErrors.set(record.id,error);
