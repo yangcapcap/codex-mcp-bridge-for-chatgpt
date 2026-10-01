@@ -464,3 +464,34 @@ Resource-only nonforcing close leaves `bridge_instances` stopped/retirement fiel
 unchanged. The enclosing owner must establish independent actor/frontend/RPC
 quiescence before requesting it. A database resource receipt alone does not retire
 a durable writer or approve production activation. Runtime composition is pending.
+
+
+## Runtime ingress quiescence (SDK v2)
+
+HTTP and stdio expose internal synchronous admission pins, explicit nonforcing
+close receipts, and fresh quiescence observations. The ingress pin includes its
+owned Job registry and MCP Events controller before any close await. HTTP also
+tracks the actual listener, accepted sockets, each request-scoped SDK server,
+and the companion server. Stdio stops its owned decoder and pipe and closes
+both the SDK handle and the pre-created server. A shared operational store
+remains caller-owned. Resource EXIT never releases a retained writer or changes
+`bridge_instances` retirement evidence.
+
+The callback fence registers before delegation, preserves ordinary native
+Promise settlement identity and original rejection, and refuses unsupported
+thenables, proxies, or mutated Promise constructor/species descriptors without
+invoking their accessors. Unsupported raw returns remain retained and UNKNOWN.
+The memory telemetry fallback seals diagnostic admission with an explicit
+resource receipt; prior ordinary close or reentrant capture remains UNKNOWN.
+Events retain sender responses across a pin and never acknowledge delivery from
+an accessor-backed response. Prior ordinary close remains UNKNOWN.
+
+Initial root stdio checks demonstrated that an in-flight startup maintenance
+command is UNKNOWN even after its late settlement. The idle success fixture
+allows startup work to settle before pin; its timing is fixture evidence only.
+Neither result proves whole runtime process exit. The root also ran HTTP in an
+early pure fixture without a dedicated HOST lease; that qualification remains
+preserved. Later host tests have a separate exclusive lease and spawn audit.
+This candidate composes a reviewed SQLite component with a registry predecessor
+that requires repairs; ingress component checks cannot approve that predecessor,
+private owner IPC, writer release, operator activation, or the full release.

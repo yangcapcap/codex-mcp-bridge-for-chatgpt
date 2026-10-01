@@ -6,6 +6,8 @@ import { ScopeResolver } from "./scopeResolver.js";
 import { createBridgeMcpServer, createModelCatalog } from "./server.js";
 import { SessionRegistry } from "./sessionRegistry.js";
 import { BridgeStateStore } from "./stateStore.js";
+import {RuntimeOperationFence} from "./runtimeOperationFence.js";
+import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
 import {
   CodexJobRegistry,
   TaskProjectAvailabilityProjection,
@@ -41,6 +43,9 @@ export type BridgeStdioRuntime = {
   readonly applicationService: BridgeApplicationService;
   start(): Promise<void>;
   close(): Promise<void>;
+  pinNonforcingShutdown():true;
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult>;
+  observeNonforcingExit():ShutdownResult;
 };
 
 /**
@@ -57,6 +62,7 @@ export function createStdioBridgeRuntime(
     file: config.stateDatabaseFile
   });
   const ownsStateStore = options.stateStore === undefined;
+  const requestFence=new RuntimeOperationFence();
   const sessions = new SessionRegistry({
     stateStore,
     allowedRoots: config.allowedRoots,
@@ -91,7 +97,9 @@ export function createStdioBridgeRuntime(
     options.readProjection,
     options.onOperationFailure,
     false,
-    options.canAcceptNewJobs
+    options.canAcceptNewJobs,
+    undefined,
+    requestFence
   );
   // The SDK's stock stdio ReadBuffer calls Buffer.toString("utf8"), which
   // replaces malformed bytes. Feed it only complete, prevalidated JSON lines.
@@ -102,9 +110,54 @@ export function createStdioBridgeRuntime(
   let handle: StdioServerHandle | undefined;
   let started = false;
   let closePromise: Promise<void> | undefined;
+  let nonforcingClose:Promise<ShutdownResult>|undefined;
+  let nonforcingUnknown=false;
+  let resourcesClosed=false;
+  let pinComplete=false;
+  let pinFailed=false;
+  const pin=():true=>{
+    if(requestFence.isPinned){if(!pinComplete || pinFailed)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');return true;}
+    requestFence.pinNonforcingShutdown();
+    for(const fence of [()=>jobs.pinNonforcingShutdown(),()=>server.pinNonforcingShutdown(),()=>ownsStateStore?stateStore.pinNonforcingShutdown():true]) {
+      try{if(fence()!==true)pinFailed=true;}catch{pinFailed=true;}
+    }
+    rawInput.unpipe(strictInput);strictInput.destroy();
+    pinComplete=true;nonforcingUnknown ||= pinFailed;
+    if(pinFailed)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');
+    return true;
+  };
+  const observe=():ShutdownResult=>{
+    if(!requestFence.isPinned || nonforcingUnknown)return shutdownResult('uncertain');
+    return combineShutdown([requestFence.observeNonforcingExit(),jobs.observeNonforcingExit(),server.observeNonforcingExit(),
+      resourcesClosed && strictInput.destroyed && !server.isConnected()?shutdownResult('exited'):shutdownResult('timeout',1)]);
+  };
   return {
     applicationService: server.applicationService,
+    pinNonforcingShutdown:pin,
+    observeNonforcingExit:observe,
+    closeNonforcing(policy):Promise<ShutdownResult>{
+      const supplied=snapshotShutdownPolicy(policy);
+      if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
+      if(nonforcingClose)return nonforcingClose;
+      let seal!:(result:ShutdownResult)=>void;
+      nonforcingClose=new Promise(resolve=>{seal=resolve;});
+      try{pin();}catch{nonforcingUnknown=true;seal(shutdownResult('uncertain'));return nonforcingClose;}
+      const resources=Promise.allSettled([()=>handle?.close(),()=>server.close(),()=>jobs.closeThreadConnections()]
+        .map(close=>Promise.resolve().then(close))).then(results=>{
+        if(results.some(result=>result.status==='rejected'))nonforcingUnknown=true;
+        resourcesClosed=true;
+        if(ownsStateStore && observe().exited && !stateStore.closeNonforcing().exited)nonforcingUnknown=true;
+      });
+      void boundedShutdown(async()=>{
+        let timer:NodeJS.Timeout|undefined;
+        try{await Promise.race([resources,new Promise<void>(resolve=>{timer=setTimeout(resolve,supplied.graceMs);})]);}
+        finally{if(timer)clearTimeout(timer);}
+        return observe();
+      },supplied.graceMs+6000).then(seal,()=>seal(shutdownResult('uncertain')));
+      return nonforcingClose;
+    },
     async start(): Promise<void> {
+      requestFence.assertAdmission();
       if (started) throw new Error("MCP stdio bridge is already started.");
       started = true;
       stateStore.markServiceOpen("stdio");
@@ -125,9 +178,14 @@ export function createStdioBridgeRuntime(
       );
     },
     close(): Promise<void> {
+      if(requestFence.isPinned)return (nonforcingClose ?? Promise.resolve(shutdownResult('uncertain'))).then(result=>{
+        if(!result.exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');
+      });
       if (!closePromise) {
+        requestFence.markOrdinaryClose();
         closePromise = Promise.all([
-          handle?.close() || server.close(),
+          handle?.close(),
+          server.close(),
           jobs.closeThreadConnections()
         ]).then(() => {
           rawInput.unpipe(strictInput);

@@ -8,6 +8,8 @@ import { JOB_TERMINAL_EVENT, type EventJob, type EventSubscription } from "./mcp
 import { EventDestinationVault, sendPublicWebhook, signedHeaders, validateCallbackUrl, validateSigningSecret, type WebhookSender } from "./mcpWebhook.js";
 import { FOLLOWUP_ID_PATTERN } from "./taskFollowups.js";
 import { mcpOAuthPrincipal } from "./mcpOAuth.js";
+import {shutdownResult,type ShutdownResult} from "./shutdown.js";
+import {snapshotNonforcingData} from "./nonforcingData.js";
 
 const argsSchema = z.strictObject({ jobId: z.string().uuid() });
 const deliverySchema = z.strictObject({ mode: z.literal("webhook"), url: z.string().max(4_096), secret: z.string().max(100) });
@@ -69,6 +71,29 @@ export class McpEventsController {
   private running?: Promise<void>;
   private readonly unsubscribe: () => void;
   private readonly verifying = new Map<string, number>();
+  private nonforcingPinned=false;
+  private nonforcingUnknown=false;
+  private ordinaryClose=false;
+  private readonly retainedResponses=new Map<string,unknown>();
+
+  pinNonforcingShutdown():true {
+    if(this.nonforcingPinned)return true;
+    this.nonforcingPinned=true;this.nonforcingUnknown ||= this.ordinaryClose;
+    this.stop.abort();
+    try{this.unsubscribe();}catch{this.nonforcingUnknown=true;}
+    if(this.timer)clearTimeout(this.timer);this.timer=undefined;
+    return true;
+  }
+  observeNonforcingExit():ShutdownResult {
+    if(!this.nonforcingPinned || this.nonforcingUnknown)return shutdownResult('uncertain');
+    const active=this.verifying.size+(this.running?1:0);
+    return active ? shutdownResult('timeout',active) : shutdownResult('exited');
+  }
+  async closeNonforcing():Promise<ShutdownResult>{
+    this.pinNonforcingShutdown();
+    try{await this.running;}catch{this.nonforcingUnknown=true;}
+    return this.observeNonforcingExit();
+  }
 
   constructor(private readonly config: BridgeConfig, private readonly jobs: CodexJobRegistry,
     private readonly scopes: ScopeResolver, private readonly sender: WebhookSender = sendPublicWebhook) {
@@ -172,6 +197,7 @@ export class McpEventsController {
   }
 
   private authorize(context: ServerContext): string {
+    if(this.nonforcingPinned)throw new Error('MCP_EVENTS_NONFORCING_PINNED');
     if (!this.principal || authenticatedMcpPrincipal(context) !== this.principal) throw this.denied();
     return this.principal;
   }
@@ -224,6 +250,7 @@ export class McpEventsController {
   }
 
   private async deliver(): Promise<void> {
+    if(this.stop.signal.aborted)return;
     const ledger = this.jobs.admissionStateStore.mcpEvents;
     ledger.maintain();
     for (const { jobId, id } of ledger.list()) {
@@ -253,7 +280,13 @@ export class McpEventsController {
           signedHeaders(record.event.eventId, record.id, body, secrets),
           AbortSignal.any([this.stop.signal, AbortSignal.timeout(10_000)]));
       } catch { response = { status: 0 }; }
+      this.retainedResponses.set(record.id,response);
       if (this.stop.signal.aborted) break;
+      const captured=snapshotNonforcingData(response,()=>this.nonforcingPinned);
+      if(!captured.ok){this.nonforcingUnknown=true;break;}
+      response=captured.value;
+      if(this.stop.signal.aborted)break;
+      this.retainedResponses.delete(record.id);
       const current = ledger.get(record.jobId, record.id);
       if (!current || current.revision !== record.revision || current.disabled || current.expiresAt <= Date.now() ||
           current.delivery !== "pending" || current.event?.eventId !== record.event.eventId) continue;
@@ -270,5 +303,8 @@ export class McpEventsController {
     }
   }
 
-  async close(): Promise<void> { this.stop.abort(); this.unsubscribe(); if (this.timer) clearTimeout(this.timer); await this.running; }
+  async close(): Promise<void> {
+    if(this.nonforcingPinned){if(!(await this.closeNonforcing()).exited)throw new Error('NONFORCING_SHUTDOWN_UNCONFIRMED');return;}
+    this.ordinaryClose=true;this.stop.abort();this.unsubscribe();if(this.timer)clearTimeout(this.timer);await this.running;
+  }
 }

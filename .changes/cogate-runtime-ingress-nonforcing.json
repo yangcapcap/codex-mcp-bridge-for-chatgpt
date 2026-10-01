@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Seal SDK v2 ingress and observe owned callbacks, sockets, Events, stdio and memory telemetry without force recovery or writer release.",
+  "breaking": false,
+  "migration": null
+}
