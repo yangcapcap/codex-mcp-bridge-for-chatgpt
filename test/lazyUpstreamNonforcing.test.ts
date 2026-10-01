@@ -58,3 +58,19 @@ test("factory reentrancy sees an already sealed construction and cannot approve 
  await expect(lazy.startThread({} as any)).rejects.toThrow("closed");expect((await close!).outcome).toBe("uncertain");
  expect(b.closeNonforcing).toHaveBeenCalledTimes(1);expect(b.startThread).not.toHaveBeenCalled();
 });
+
+test.each(["callTool","listTools","listLoadedBackgroundTerminals","protectThreadFromImplicitResume","detachExecution"])("%s lookup cannot delegate after its accessor reentrantly pins shutdown",async name=>{
+ const b=backend() as any;const lazy=new LazyCodexUpstream("app-server",features,async()=>b);await lazy.callTool({} as any);
+ const delegated=vi.fn(async()=>({}));let closing:Promise<any>|undefined;
+ Object.defineProperty(b,name,{configurable:true,get(){closing=lazy.closeNonforcing(policy);return delegated;}});
+ let error:unknown;
+ try{await (lazy as any)[name]("retained-thread");}catch(value){error=value;}
+ await closing;expect(error).toBeInstanceOf(Error);expect((error as Error).message).toContain("closed");expect(delegated).not.toHaveBeenCalled();
+});
+test("resume protection lookup cannot run or erase retained protections after a factory-time pin",async()=>{
+ const b=backend() as any;let closing:Promise<any>|undefined;const delegated=vi.fn();let lazy:LazyCodexUpstream;
+ Object.defineProperty(b,"protectThreadFromImplicitResume",{get(){closing=lazy.closeNonforcing(policy);return delegated;}});
+ lazy=new LazyCodexUpstream("app-server",features,async()=>b);lazy.protectThreadFromImplicitResume("retained-thread");
+ await expect(lazy.startThread({} as any)).rejects.toThrow("closed");await closing;
+ expect(delegated).not.toHaveBeenCalled();expect((lazy as any).pendingResumeProtections.has("retained-thread")).toBe(true);
+});

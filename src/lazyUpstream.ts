@@ -30,11 +30,21 @@ export class LazyCodexUpstream implements CodexUpstream {
   ownsRetainedResult(...args: Args<"ownsRetainedResult">): boolean {
     return this.instance?.ownsRetainedResult?.(...args) === true;
   }
-  async detachExecution() { this.assertOpen();await this.starting?.catch(() => {});this.assertOpen(); await this.instance?.detachExecution?.(); }
+  async detachExecution() {
+    this.assertOpen();await this.starting?.catch(() => {});this.assertOpen();
+    const instance=this.instance,method=instance?.detachExecution;this.assertOpen();
+    if(method)await Reflect.apply(method,instance,[]);
+  }
   capabilities(): BackendCapabilities { return this.instance?.capabilities?.(this.kind) || this.features; }
   async prepareExecution(...args: Args<"prepareExecution">) { return (await this.method("prepareExecution"))(...args); }
-  listTools() { this.assertOpen();return this.instance?.listTools() || Promise.resolve({ backendKind: this.kind, initialized: false, capabilities: this.features }); }
-  async callTool(...args: Args<"callTool">) { const instance = await this.get(); await this.guard?.();this.assertOpen(); return instance.callTool(...args); }
+  listTools() {
+    this.assertOpen();const instance=this.instance,method=instance?.listTools;this.assertOpen();
+    return method ? Reflect.apply(method,instance,[]) : Promise.resolve({backendKind:this.kind,initialized:false,capabilities:this.features});
+  }
+  async callTool(...args:Args<"callTool">) {
+    const instance=await this.get();await this.guard?.();this.assertOpen();
+    const method=instance.callTool;this.assertOpen();return Reflect.apply(method,instance,args);
+  }
   async listModels(...args: Args<"listModels">) { return (await this.method("listModels"))(...args); }
   async readAccountSnapshot() { return (await this.method("readAccountSnapshot"))(); }
   async readAuthenticationPolicy() { return (await this.method("readAuthenticationPolicy"))(); }
@@ -48,11 +58,15 @@ export class LazyCodexUpstream implements CodexUpstream {
   async releaseThreadConnection(...args: Args<"releaseThreadConnection">) { return (await this.method("releaseThreadConnection"))(...args); }
   protectThreadFromImplicitResume(threadId: string): void {
     this.assertOpen();
-    if (this.instance) this.instance.protectThreadFromImplicitResume?.(threadId);
+    const instance=this.instance,method=instance?.protectThreadFromImplicitResume;this.assertOpen();
+    if(instance){if(method)Reflect.apply(method,instance,[threadId]);}
     else this.pendingResumeProtections.add(threadId);
   }
   async listBackgroundTerminals(...args: Args<"listBackgroundTerminals">) { return (await this.method("listBackgroundTerminals"))(...args); }
-  async listLoadedBackgroundTerminals(...args: Args<"listLoadedBackgroundTerminals">) { this.assertOpen();return this.instance?.listLoadedBackgroundTerminals?.(...args) ?? null; }
+  async listLoadedBackgroundTerminals(...args:Args<"listLoadedBackgroundTerminals">) {
+    this.assertOpen();const instance=this.instance,method=instance?.listLoadedBackgroundTerminals;this.assertOpen();
+    return method ? Reflect.apply(method,instance,args) : null;
+  }
   async terminateBackgroundTerminal(...args: Args<"terminateBackgroundTerminal">) { return (await this.method("terminateBackgroundTerminal"))(...args); }
   async forceTerminateWorker(...args: Args<"forceTerminateWorker">) { return (await this.method("forceTerminateWorker"))(...args); }
   async respondToInteraction(...args: Args<"respondToInteraction">) { return (await this.method("respondToInteraction"))(...args); }
@@ -124,7 +138,10 @@ export class LazyCodexUpstream implements CodexUpstream {
     if (!this.starting) this.starting = Promise.resolve().then(()=>{this.assertOpen();return this.factory();}).then(instance => {
       this.instance=instance;
       if(this.nonforcingClose){this.pinInstance(instance);return instance;}
-      for (const threadId of this.pendingResumeProtections) instance.protectThreadFromImplicitResume?.(threadId);
+      for(const threadId of this.pendingResumeProtections){
+        const method=instance.protectThreadFromImplicitResume;this.assertOpen();
+        if(method)Reflect.apply(method,instance,[threadId]);
+      }
       this.pendingResumeProtections.clear();
       this.instance = instance;
       return instance;

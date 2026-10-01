@@ -285,3 +285,10 @@ invalidates cached final receipts for current observations and ordinary close
 reporting while preserving the immutable original result. No fresh finalization
 or receipt request is sent once such uncertainty has been recorded. The new
 repair requires its own independent exact-head review.
+
+Lazy direct delegation captures each actionable backend method before a final
+admission check. A getter that reentrantly installs the nonforcing fence cannot
+invoke its returned method or clear retained resume protections afterward. This
+also covers direct tool/catalog/detach delegation and factory-time protection
+lookups. The new repair retains the rejected predecessor and requires fresh
+independent review.
