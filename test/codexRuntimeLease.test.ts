@@ -11,16 +11,16 @@ const writeGate = vi.hoisted(() => ({
 
 vi.mock("node:fs/promises", async () => {
   const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
-  return { ...actual, writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
-    if (writeGate.started && typeof args[1] === "string" && args[1].includes('"startedAt"') && args[1].includes('"selection"')) {
-      const started = writeGate.started, wait = writeGate.wait;
-      writeGate.started = undefined;
-      await actual.writeFile(args[0], "", args[2]);
-      started();
-      await wait;
-      return actual.writeFile(args[0], args[1], { mode: 0o600, flag: "w" });
-    }
-    return actual.writeFile(...args);
+  return { ...actual, open: async (...args: Parameters<typeof actual.open>) => {
+    const handle=await actual.open(...args),originalWrite=handle.writeFile.bind(handle);
+    handle.writeFile=async(data,options)=>{
+      if(writeGate.started && typeof data==='string' && data.includes('"startedAt"') && data.includes('"selection"')){
+        const started=writeGate.started,wait=writeGate.wait;writeGate.started=undefined;
+        await originalWrite('');started();await wait;
+      }
+      return originalWrite(data,options);
+    };
+    return handle;
   } };
 });
 

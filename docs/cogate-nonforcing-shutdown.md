@@ -605,3 +605,54 @@ pipes can reenter shutdown, so a late error keeps the original response and
 request accounting. Classification cleanup keeps its edge through rejection or
 replacement dispatch; a failed transfer cannot discard the original capture.
 These are resource-observation controls and never grant database writer release.
+
+
+CLI lease publication and original release admission
+---------------------------------------------------
+
+Only a manager's original release capability can prove passive retained lease
+identity. Calling that capability immediately and permanently invalidates its
+private observation before ordinary asynchronous unlink begins, including calls
+made outside the execution router. Nonforcing close never invokes it.
+
+Lease publication binds the manager-generated payload digest and the temporary
+file's original inode, private metadata and write timestamp before rename. The
+post-publication stable read must match those values and the original directory
+identity; a changed payload or replacement inode cannot become the original lease.
+Rename may change file ctime and directory entry count, so those are captured from
+the published stable record for subsequent immutable observations. Failed or
+unsupported evidence remains UNKNOWN. These local observations do not release
+durable writer records or authorize production activation.
+
+
+Creation descriptor and final passive observation
+------------------------------------------------
+
+The publisher holds the exact exclusively created temporary file descriptor
+through its original native FileHandle write and rename. The creation identity
+must survive the write; final publication metadata comes from that held descriptor,
+so replacing its pathname before a snapshot cannot acquire original authority.
+Passive lease observation rechecks sticky release-start history before returning
+a positive result. Controlled builtin callback probes are local characterization,
+not claims of a reachable production trigger.
+
+Publication tests gate the original FileHandle write rather than the retired
+pathname-write helper. Assertions still require concurrent readers to see no
+partial published record, then one complete record and no temporary pathname.
+Earlier timeout and writer-hook fixtures remain retained as qualified evidence.
+
+
+Temporary publication failures retain custody
+----------------------------------------------
+
+Publication cleanup closes only the original created file descriptor. It never
+unlinks the temporary pathname after failure or completed rename: that pathname
+may have belonged to a preexisting collision or a later replacement. Failed
+publication keeps private unpublished evidence; normal successful rename leaves
+no temporary pathname. Ordinary release behavior remains separate.
+
+A single original write, rename or close error is rethrown unchanged. When both
+publication and descriptor close fail, an AggregateError retains both original
+objects and the original publication error as its cause. No failed publication
+returns a retained lease capability. Earlier tests expecting automatic failed
+temporary deletion remain preserved as qualified predecessor evidence.
