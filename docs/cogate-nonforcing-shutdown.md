@@ -285,3 +285,13 @@ invalidates cached final receipts for current observations and ordinary close
 reporting while preserving the immutable original result. No fresh finalization
 or receipt request is sent once such uncertainty has been recorded. The new
 repair requires its own independent exact-head review.
+
+### Pending state progress queue retention
+
+The internal fair progress queue can pin without discarding pending snapshots
+or charging them as dropped. Once pinned, ordinary close and remove callbacks
+cannot erase retained work, including a remove predicate that reentrantly pins.
+An already delivered scheduler callback or run-method lookup also checks the
+fence before consuming work. A prior ordinary discard remains explicitly
+uncertain. This primitive still needs state-owner application wiring and an
+independent review; it does not prove whole-runtime quiescence.

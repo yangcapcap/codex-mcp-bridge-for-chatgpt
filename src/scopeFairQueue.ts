@@ -30,6 +30,8 @@ export class ScopeFairQueue<T> {
   private dropped = 0;
   private scheduled?: NodeJS.Immediate;
   private closed = false;
+  private nonforcingPinned=false;
+  private nonforcingHistoryUnknown=false;
 
   constructor(private readonly options: ScopeFairQueueOptions<T>) {
     if (!Number.isSafeInteger(options.capacity) || options.capacity < 1) {
@@ -68,20 +70,40 @@ export class ScopeFairQueue<T> {
   }
 
   remove(predicate: (value: T) => boolean): number {
-    let removed = 0;
-    for (const [scopeId, queue] of this.queues) {
-      const kept = queue.filter(value => {
-        if (!predicate(value)) return true;
-        removed += 1;
-        return false;
+    if(this.nonforcingPinned)return 0;
+    let removed=0;
+    const filtered=new Map<string,T[]>();
+    for(const [scopeId,queue] of this.queues){
+      const kept=queue.filter(value=>{
+        if(this.nonforcingPinned)return true;
+        const discard=predicate(value);
+        if(this.nonforcingPinned)return true;
+        if(discard)removed+=1;
+        return !discard;
       });
-      this.queued -= queue.length - kept.length;
-      if (kept.length > 0) this.queues.set(scopeId, kept);
+      if(this.nonforcingPinned)return 0;
+      filtered.set(scopeId,kept);
+    }
+    if(this.nonforcingPinned)return 0;
+    for(const [scopeId,kept] of filtered){
+      const queue=this.queues.get(scopeId);
+      if(!queue)continue;
+      this.queued-=queue.length-kept.length;
+      if(kept.length>0)this.queues.set(scopeId,kept);
       else this.removeEmptyScope(scopeId);
     }
-    this.dropped += removed;
-    return removed;
+    this.dropped+=removed;return removed;
   }
+
+  /** Stop projections without discarding their unconfirmed queued snapshots. */
+  pinNonforcingShutdown():true {
+    if(this.nonforcingPinned)return true;
+    this.nonforcingHistoryUnknown=this.closed;
+    this.nonforcingPinned=true;this.closed=true;
+    if(this.scheduled)clearImmediate(this.scheduled);
+    this.scheduled=undefined;return true;
+  }
+  get nonforcingHistoryUncertain():boolean{return this.nonforcingHistoryUnknown;}
 
   close(): void {
     if (this.closed) return;
@@ -116,6 +138,9 @@ export class ScopeFairQueue<T> {
   }
 
   private runOne(): void {
+    if(this.closed)return;
+    const run=this.options.run;
+    if(this.closed)return;
     const scopeId = this.order.shift();
     if (!scopeId) return;
     const queue = this.queues.get(scopeId);
@@ -128,7 +153,7 @@ export class ScopeFairQueue<T> {
     if (queue.length > 0) this.order.push(scopeId);
     else this.queues.delete(scopeId);
     try {
-      this.options.run(value);
+      Reflect.apply(run,this.options,[value]);
     } catch (error) {
       this.options.onError?.(error);
     } finally {
