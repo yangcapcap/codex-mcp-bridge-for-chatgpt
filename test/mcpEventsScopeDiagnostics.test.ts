@@ -61,3 +61,16 @@ test("an already pinned Events owner never delegates scope resolution", () => {
   expect(() => c.requireOwnedScope({ mcpReq: {} }, "Events")).toThrow("MCP_EVENTS_NONFORCING_PINNED");
   expect(require).not.toHaveBeenCalled();
 });
+
+test("a scope result accessor rejection retains the exact scope and failure", () => {
+  const raw = { original: "scope-accessor-failure" };
+  let c: any;
+  const scope = { get scopeId(): string { c.pinNonforcingShutdown(); throw raw; } };
+  c = controller({ require() { return scope; } });
+  let thrown;
+  try { c.requireOwnedScope({ mcpReq: {} }, "Events"); } catch(error) { thrown = error; }
+  expect(thrown).toBe(raw);
+  expect(c.retainedErrors.get("conversation-scope")).toBe(scope);
+  expect(c.retainedErrors.get("conversation-scope-error")).toBe(raw);
+  expect(c.observeNonforcingExit().outcome).toBe("uncertain");
+});

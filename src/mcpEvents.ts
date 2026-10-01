@@ -243,7 +243,14 @@ export class McpEventsController {
     this.assertAdmission();
     // Preserve the existing pre-pin resolution contract. A synchronous scope
     // accessor may pin while the request is owned; no continuation crosses it.
-    const scopeId=scope.scopeId;
+    let scopeId:string;
+    try {scopeId=scope.scopeId;}
+    catch(error){
+      this.nonforcingUnknown=true;
+      this.retainedErrors.set('conversation-scope',scope);
+      this.retainedErrors.set('conversation-scope-error',error);
+      throw error;
+    }
     if(this.nonforcingPinned){this.nonforcingUnknown=true;this.retainedErrors.set('conversation-scope',scope);}
     this.assertAdmission();return scopeId;
   }
