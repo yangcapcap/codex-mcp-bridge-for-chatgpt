@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Require actual owned SQLite closure in fresh ingress observations, preserve original event failures and response ownership, and register delivery work before reentrant shutdown pins.",
+  "breaking": false,
+  "migration": null
+}

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Retain execution acknowledgement uncertainty and fence registry producer, listener, interaction and error boundaries during nonforcing shutdown.","breaking":false,"migration":null}

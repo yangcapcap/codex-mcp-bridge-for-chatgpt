@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Fence owned SQLite authority and cached handles during explicit nonforcing shutdown without fabricating durable writer retirement.","breaking":false,"migration":null}

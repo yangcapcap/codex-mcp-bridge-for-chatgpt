@@ -14,6 +14,7 @@ import {OwnedProcessShutdown,beginOrdinaryOwnedProcessStop,isOwnedProcessNonforc
 import {ExecutionShutdownOwner} from "./executionShutdownOwner.js";
 import {snapshotExecutionShutdownRequest} from "./executionShutdownProtocol.js";
 import {snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
+import {snapshotNonforcingData} from './nonforcingData.js';
 
 const CHILD_FLAG = "--bridge-telemetry-child";
 const FREEZE_PAGE_COUNT_FLAG = "--test-freeze-page-count";
@@ -109,6 +110,8 @@ export interface BridgeTelemetryService {
   recordDiagnosticEvent(input: DiagnosticEventInput): boolean;
   status(): TelemetryServiceStatus;
   close(): Promise<void>;
+  closeNonforcing?(policy:ShutdownPolicy):Promise<ShutdownResult>;
+  observeNonforcingExit?():ShutdownResult|Promise<ShutdownResult>;
 }
 
 /** Fail-open diagnostic fallback: bounded memory only, never operational DB. */
@@ -117,16 +120,50 @@ export class InMemoryTelemetryService implements BridgeTelemetryService {
   private nextObservationId = 1;
   private failed = 0;
   private retainedDiagnostics = 0;
+  private nonforcingPinned=false;
+  private nonforcingUnknown=false;
+  private ordinaryClosed=false;
+  private callbacksInFlight=0;
+
+  pinNonforcingShutdown():true{
+    this.nonforcingPinned=true;
+    this.nonforcingUnknown ||= this.ordinaryClosed || this.callbacksInFlight>0;
+    return true;
+  }
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult>{
+    const supplied=snapshotShutdownPolicy(policy);
+    if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
+    this.pinNonforcingShutdown();return Promise.resolve(this.observeNonforcingExit());
+  }
+  observeNonforcingExit():ShutdownResult{
+    if(!this.nonforcingPinned || this.nonforcingUnknown)return shutdownResult('uncertain');
+    return this.callbacksInFlight?shutdownResult('timeout',this.callbacksInFlight):shutdownResult('exited');
+  }
+  private captured<T>(input:T):{ok:true;value:T}|{ok:false}{
+    this.callbacksInFlight++;
+    try {
+      const captured=snapshotNonforcingData(input,()=>this.nonforcingPinned);
+      if(!captured.ok)this.nonforcingUnknown=true;
+      return captured;
+    }finally{this.callbacksInFlight--;}
+  }
 
   recordTransportObservation(
     input: TransportObservationInput,
     bridgeInstanceId: string
   ): TransportObservationRecord | undefined {
+    if(this.nonforcingPinned)return undefined;
+    if(typeof bridgeInstanceId!=="string"){this.failed++;return undefined;}
+    const captured=this.captured(input);
+    if(!captured.ok || this.nonforcingPinned)return undefined;
+    input=captured.value;
     let record: TransportObservationRecord;
     try {
-      record = normalizeRecord(input, bridgeInstanceId, this.nextObservationId++);
+      record = normalizeRecord(input, bridgeInstanceId, this.nextObservationId);
+      if(this.nonforcingPinned)return undefined;
+      this.nextObservationId++;
     } catch {
-      this.failed += 1;
+      if(!this.nonforcingPinned)this.failed += 1;
       return undefined;
     }
     this.records.push(record);
@@ -141,13 +178,19 @@ export class InMemoryTelemetryService implements BridgeTelemetryService {
   }
 
   recordRuntimeMeasurement(input: RuntimeMeasurementInput): boolean {
-    try { normalizeMeasurement(input, 1); this.retainedDiagnostics += 1; return true; }
-    catch { this.failed += 1; return false; }
+    if(this.nonforcingPinned)return false;
+    const captured=this.captured(input);
+    if(!captured.ok || this.nonforcingPinned)return false;
+    try { normalizeMeasurement(captured.value, 1);if(this.nonforcingPinned)return false;this.retainedDiagnostics += 1; return true; }
+    catch { if(!this.nonforcingPinned)this.failed += 1; return false; }
   }
 
   recordDiagnosticEvent(input: DiagnosticEventInput): boolean {
-    try { normalizeDiagnosticEvent(input, 1); this.retainedDiagnostics += 1; return true; }
-    catch { this.failed += 1; return false; }
+    if(this.nonforcingPinned)return false;
+    const captured=this.captured(input);
+    if(!captured.ok || this.nonforcingPinned)return false;
+    try { normalizeDiagnosticEvent(captured.value, 1);if(this.nonforcingPinned)return false;this.retainedDiagnostics += 1; return true; }
+    catch { if(!this.nonforcingPinned)this.failed += 1; return false; }
   }
 
   status(): TelemetryServiceStatus {
@@ -161,7 +204,7 @@ export class InMemoryTelemetryService implements BridgeTelemetryService {
     };
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {if(!this.nonforcingPinned)this.ordinaryClosed=true;}
 }
 
 type RecordMessage = { type: "record"; entry: QueuedTelemetryRecord };

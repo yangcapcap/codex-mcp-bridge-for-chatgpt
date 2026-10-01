@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
+import {StateDatabaseShutdownFence} from "./stateDatabaseShutdownFence.js";
+import type {ShutdownResult} from "./shutdown.js";
 import { V31_COGATE_UNIFIED_MIGRATION_SCHEMA } from "./cogateUnifiedSchema.js";
 import { assertCoGateUnifiedRuntimeAdmission } from "./cogateRuntimeAdmission.js";
 import { McpEventStore } from "./mcpEventStore.js";
@@ -671,6 +673,7 @@ export class BridgeStateStore {
   readonly dashboardReadModel: DashboardReadModel;
   readonly statusReadModel: StatusReadModel;
   private database!: Database.Database;
+  private databaseShutdown!: StateDatabaseShutdownFence;
   private readonly databaseLease: StateDatabaseOpenLease | null;
   private readonly migrationLease: StateMigrationLease | null;
   private readonly currentInstanceId = randomUUID();
@@ -694,7 +697,8 @@ export class BridgeStateStore {
           ? { verbose: (message?: unknown) => options.traceSql?.(String(message ?? "")) }
           : {})
       };
-      this.database = new Database(databaseFile, databaseOptions);
+      this.databaseShutdown = new StateDatabaseShutdownFence(new Database(databaseFile,databaseOptions));
+      this.database = this.databaseShutdown.database;
       openedDatabase = this.database;
       this.database.pragma(`busy_timeout = ${STATE_DATABASE_BUSY_TIMEOUT_MS}`);
       if (options.readOnly) {
@@ -805,7 +809,8 @@ export class BridgeStateStore {
         // before this instance has registered durable ownership below.
         this.database.close();
         openedDatabase = undefined;
-        this.database = new Database(databaseFile, databaseOptions);
+        this.databaseShutdown = new StateDatabaseShutdownFence(new Database(databaseFile,databaseOptions));
+        this.database = this.databaseShutdown.database;
         openedDatabase = this.database;
         this.database.pragma(`busy_timeout = ${STATE_DATABASE_BUSY_TIMEOUT_MS}`);
         this.configureDatabaseConnection();
@@ -4194,6 +4199,17 @@ export class BridgeStateStore {
         AND j.archived_at IS NULL AND (d.direct_result_offered_at IS NOT NULL OR d.completion_result_offered_at IS NOT NULL)`)
       .get(jobId, scopeId, version) as { threadId: string | null; sandbox: string; selection: string | null } | undefined;
     return row ? { ...row, selection: row.selection ? JSON.parse(row.selection) : null } : undefined;
+  }
+
+  pinNonforcingShutdown(): true {return this.databaseShutdown.pinNonforcingShutdown();}
+
+  observeNonforcingExit(): ShutdownResult {return this.databaseShutdown.observeNonforcingExit();}
+
+  /** Resource-only close: preserve the bridge instance and retirement evidence. */
+  closeNonforcing(): ShutdownResult {
+    const result = this.databaseShutdown.closeNonforcing();
+    if (result.exited) this.closed = true;
+    return result;
   }
 
   close(): void {

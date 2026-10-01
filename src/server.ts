@@ -35,6 +35,9 @@ import { SkillLibrary } from "./skillLibrary.js";
 import { assertJsonTextIntegrity, decodeUtf8Strict } from "./textIntegrity.js";
 import type { OperationalStateOperationObservation } from "./stateService.js";
 import type { BridgeTelemetryService } from "./telemetryService.js";
+import {RuntimeOperationFence} from "./runtimeOperationFence.js";
+import {boundedShutdown,combineShutdown,snapshotShutdownPolicy,shutdownResult,type ShutdownPolicy,type ShutdownResult} from "./shutdown.js";
+import type {Socket} from "node:net";
 
 const MAX_MCP_REQUEST_BYTES = 8 * 1024 * 1024;
 
@@ -120,10 +123,15 @@ export type BridgeHttpRuntimeOptions = {
 export type BridgeHttpServer = HttpServer & {
   /** Shares live jobs, settings, and admission with every MCP request. */
   readonly applicationService: BridgeApplicationService;
+  pinNonforcingShutdown():true;
+  closeNonforcing(policy:ShutdownPolicy):Promise<ShutdownResult>;
+  observeNonforcingExit():ShutdownResult|Promise<ShutdownResult>;
 };
 
 export type BridgeMcpServer = McpServer & {
   readonly applicationService: BridgeApplicationService;
+  pinNonforcingShutdown():true;
+  observeNonforcingExit():ShutdownResult;
 };
 
 export function createBridgeMcpServer(
@@ -141,8 +149,10 @@ export function createBridgeMcpServer(
   onOperationFailure?: (error: unknown) => void,
   conformanceFixtures = false,
   canAcceptNewJobs?: () => boolean,
-  sharedEvents?: McpEventsController
+  sharedEvents?: McpEventsController,
+  requestFence = new RuntimeOperationFence()
 ): BridgeMcpServer {
+  requestFence.assertAdmission();
   // A directly constructed server has the same single-store admission boundary
   // as an HTTP runtime. HTTP handlers share their explicitly composed store.
   const composedStateStore = userSettings?.admissionStateStore ||
@@ -223,6 +233,7 @@ export function createBridgeMcpServer(
   const events = sharedEvents || (config.eventsEnabled && !jobRegistry.admissionStateStore.readOnly
     ? new McpEventsController(config, jobRegistry, effectiveScopeResolver)
     : undefined);
+  installMcpOperationFence(server,requestFence);
   events?.install(server);
   installMcpToolTextIntegrityGuard(server, onOperationFailure, config);
   const toolRegistration = registerBridgeTools(
@@ -247,20 +258,57 @@ export function createBridgeMcpServer(
     value: toolRegistration.applicationService
   });
   const closeServer = server.close.bind(server);
+  const runtimeServer=server as BridgeMcpServer;
   let closePromise: Promise<void> | undefined;
+  let mcpPinned=false;
+  let mcpUnknown=false;
+  let mcpClosed=false;
+  let mcpOrdinaryClosed=false;
+  let mcpPinComplete=false;
+  let mcpPinFailed=false;
+  runtimeServer.pinNonforcingShutdown=()=>{
+    if(mcpPinned){if(!mcpPinComplete || mcpPinFailed)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');return true;}
+    mcpPinned=true;requestFence.pinNonforcingShutdown();
+    mcpUnknown ||= mcpOrdinaryClosed;
+    for(const pin of [()=>jobRegistry.pinNonforcingShutdown(),()=>events?.pinNonforcingShutdown() ?? true,
+      ()=>!composedStateStore && fallbackStateStore?fallbackStateStore.pinNonforcingShutdown():true]) {
+      try{if(pin()!==true)mcpPinFailed=true;}catch{mcpPinFailed=true;}
+    }
+    mcpPinComplete=true;mcpUnknown ||= mcpPinFailed;
+    if(mcpPinFailed)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');
+    return true;
+  };
+  runtimeServer.observeNonforcingExit=()=>{
+    if(!mcpPinned || mcpUnknown)return shutdownResult('uncertain');
+    const observed=combineShutdown([requestFence.observeNonforcingExit(),jobRegistry.observeNonforcingExit(),
+      events?.observeNonforcingExit() ?? shutdownResult('exited'),
+      mcpClosed && !server.isConnected()?shutdownResult('exited'):shutdownResult('timeout',1)]);
+    if(composedStateStore || !fallbackStateStore)return observed;
+    const database=observed.exited && mcpClosed && closePromise ? fallbackStateStore.closeNonforcing() : fallbackStateStore.observeNonforcingExit();
+    return combineShutdown([observed,database]);
+  };
   server.close = () => {
     if (!closePromise) {
-      toolRegistration.dispose();
-      closePromise = Promise.all([
-        closeServer(),
-        !sharedEvents ? events?.close() : undefined,
-        !jobs ? jobRegistry.closeThreadConnections() : undefined
-      ]).then(() => {
-        if (!composedStateStore && fallbackStateStore) fallbackStateStore.close();
-      });
+      if(!mcpPinned)mcpOrdinaryClosed=true;
+      let finish!:()=>void,fail!:(error:unknown)=>void;
+      closePromise=new Promise<void>((resolve,reject)=>{finish=resolve;fail=reject;});
+      // Publish the exact owned promise before a disposal or SDK hook reenters.
+      void Promise.all([
+        ()=>toolRegistration.dispose(),
+        ()=>closeServer(),
+        ()=>!sharedEvents ? mcpPinned?events?.closeNonforcing():events?.close() : undefined,
+        ()=>!jobs ? jobRegistry.closeThreadConnections() : undefined
+      ].map(close=>Promise.resolve().then(close))).then(() => {
+        mcpClosed=true;
+        if (!composedStateStore && fallbackStateStore) {
+          if(!mcpPinned)fallbackStateStore.close();
+          else if(runtimeServer.observeNonforcingExit().exited && !fallbackStateStore.closeNonforcing().exited)mcpUnknown=true;
+        }
+      }).then(finish,error=>{if(mcpPinned)mcpUnknown=true;fail(error);});
     }
     return closePromise;
   };
+
   return server as BridgeMcpServer;
 }
 
@@ -274,6 +322,8 @@ export function createHttpServer(
   const oauthVerifier = config.oauth ? new McpOAuthVerifier(config.oauth, runtimeOptions.oauthJwksFetch) : undefined;
   const stateStore = runtimeOptions.stateStore || new BridgeStateStore({ file: config.stateDatabaseFile });
   const ownsStateStore = runtimeOptions.stateStore === undefined;
+  const requestFence = new RuntimeOperationFence();
+  const mcpServers=new Set<BridgeMcpServer>();
   const sessions = new SessionRegistry({
     stateStore,
     allowedRoots: config.allowedRoots,
@@ -312,6 +362,7 @@ export function createHttpServer(
 
   let notifyToolsChanged = () => {};
   const newMcpServer = () => {
+    requestFence.assertAdmission();
     const server = createBridgeMcpServer(
       config,
       upstream,
@@ -327,8 +378,12 @@ export function createHttpServer(
       runtimeOptions.onOperationFailure,
       runtimeOptions.conformanceFixtures === true,
       runtimeOptions.canAcceptNewJobs,
-      events
+      events,
+      requestFence
     );
+    mcpServers.add(server);
+    const close=server.close.bind(server);
+    server.close=async()=>{await close();if(!server.isConnected())mcpServers.delete(server);};
     if (runtimeOptions.conformanceFixtures) {
       registerMcpConformanceFixtures(server, () => notifyToolsChanged());
     }
@@ -381,7 +436,8 @@ export function createHttpServer(
   const validateOrigin = originValidation(allowedOrigins);
 
   const httpServer = createServer((req, res) => {
-    void handleHttpRequest(
+    if(requestFence.isPinned){writeJson(res,503,{error:"RUNTIME_NONFORCING_PINNED"});return;}
+    void requestFence.run(()=>handleHttpRequest(
       req,
       res,
       config,
@@ -396,9 +452,14 @@ export function createHttpServer(
         limitations: ["state-execution-in-process"]
       })),
       oauthVerifier
-    );
+    )).catch(error=>{
+      observeOperationFailure(runtimeOptions.onOperationFailure,error);
+      if(!res.headersSent)writeJson(res,503,{error:"RUNTIME_REQUEST_UNCONFIRMED"});else res.destroy();
+    });
   }) as BridgeHttpServer;
-  httpServer.once("listening", () => stateStore.markServiceOpen("http"));
+  const sockets=new Set<Socket>();
+  httpServer.on("connection",socket=>{sockets.add(socket);socket.once("close",()=>sockets.delete(socket));});
+  httpServer.once("listening", () => {if(!requestFence.isPinned)stateStore.markServiceOpen("http");});
   Object.defineProperty(httpServer, "applicationService", {
     configurable: false,
     enumerable: false,
@@ -421,7 +482,72 @@ export function createHttpServer(
     return closeResources;
   };
   const closeHttp = httpServer.close.bind(httpServer);
+  const listenHttp=httpServer.listen.bind(httpServer);
+  const closeIdleHttp=httpServer.closeIdleConnections.bind(httpServer);
+  httpServer.listen=((...args:unknown[])=>{requestFence.assertAdmission();return Reflect.apply(listenHttp,httpServer,args);}) as BridgeHttpServer['listen'];
+  let nonforcingClose:Promise<ShutdownResult>|undefined;
+  let nonforcingUnknown=false;
+  let nonforcingClosed=false;
+  let ordinaryClosed=false;
+  let pinComplete=false;
+  let pinFailed=false;
+  httpServer.pinNonforcingShutdown=()=>{
+    if(requestFence.isPinned){if(!pinComplete || pinFailed)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');return true;}
+    requestFence.pinNonforcingShutdown();nonforcingUnknown ||= ordinaryClosed;
+    for(const pin of [()=>jobs.pinNonforcingShutdown(),()=>events?.pinNonforcingShutdown() ?? true,
+      ()=>ownsStateStore?stateStore.pinNonforcingShutdown():true,
+      ...[...mcpServers].map(server=>()=>server.pinNonforcingShutdown())]) {
+      try{if(pin()!==true)pinFailed=true;}catch{pinFailed=true;}
+    }
+    pinComplete=true;nonforcingUnknown ||= pinFailed;
+    if(nonforcingUnknown)requestFence.invalidateObservation();
+    if(pinFailed)throw new Error('NONFORCING_SHUTDOWN_PIN_UNCONFIRMED');
+    return true;
+  };
+  httpServer.observeNonforcingExit=()=>{
+    if(!requestFence.isPinned || nonforcingUnknown)return shutdownResult('uncertain');
+    const live=[...mcpServers].filter(server=>server.isConnected()).length+sockets.size;
+    const frontends=nonforcingClosed && !httpServer.listening && live===0 ? shutdownResult('exited') : shutdownResult('timeout',Math.max(1,live));
+    const observed=combineShutdown([frontends,requestFence.observeNonforcingExit(),jobs.observeNonforcingExit(),events?.observeNonforcingExit() ?? shutdownResult('exited')]);
+    if(!ownsStateStore)return observed;
+    // Fresh observation can finish the already requested resource-only close
+    // once the exact admitted callbacks have settled. Never infer DB exit.
+    const database=observed.exited && nonforcingClosed && nonforcingClose ? stateStore.closeNonforcing() : stateStore.observeNonforcingExit();
+    return combineShutdown([observed,database]);
+  };
+  httpServer.closeNonforcing=policy=>{
+    const supplied=snapshotShutdownPolicy(policy);
+    if(supplied.allowSigkillEscalation!==false)throw new Error('NONFORCING_SHUTDOWN_POLICY_REQUIRED');
+    if(nonforcingClose)return nonforcingClose;
+    let seal!:(result:ShutdownResult)=>void;
+    nonforcingClose=new Promise(resolve=>{seal=resolve;});
+    try{httpServer.pinNonforcingShutdown();}catch{nonforcingUnknown=true;seal(shutdownResult('uncertain'));return nonforcingClose;}
+    const closed=new Promise<void>((resolve,reject)=>closeHttp(error=>
+      error && (error as NodeJS.ErrnoException).code!=='ERR_SERVER_NOT_RUNNING'?reject(error):resolve()));
+    let idleFailure:unknown;
+    try{closeIdleHttp();}catch(error){idleFailure=error;nonforcingUnknown=true;}
+    const resources=Promise.allSettled([()=>closed,()=>mcpHandler.close(),()=>companionMcpServer.close(),
+      ()=>events?.closeNonforcing(),()=>jobs.closeThreadConnections()].map(close=>Promise.resolve().then<unknown>(()=>close()))).then(async results=>{
+      if(idleFailure!==undefined || results.some(result=>result.status==='rejected'))nonforcingUnknown=true;
+      nonforcingClosed=true;
+      if(ownsStateStore && (await httpServer.observeNonforcingExit()).exited) {
+        if(!stateStore.closeNonforcing().exited)nonforcingUnknown=true;
+      }
+    });
+    void boundedShutdown(async()=>{
+      let timer:NodeJS.Timeout|undefined;
+      try{await Promise.race([resources,new Promise<void>(resolve=>{timer=setTimeout(resolve,supplied.graceMs);})]);}
+      finally{if(timer)clearTimeout(timer);}
+      return httpServer.observeNonforcingExit();
+    },supplied.graceMs+6000).then(seal,()=>seal(shutdownResult('uncertain')));
+    return nonforcingClose;
+  };
   httpServer.close = ((callback?: (error?: Error) => void) => {
+    if(requestFence.isPinned){
+      void (nonforcingClose ?? Promise.resolve(shutdownResult('uncertain'))).then(result=>callback?.(result.exited?undefined:new Error('NONFORCING_SHUTDOWN_UNCONFIRMED')));
+      return httpServer;
+    }
+    ordinaryClosed=true;requestFence.markOrdinaryClose();
     closeHttp((error?: Error) => {
       void closeBridgeResources().then(
         () => callback?.(error),
@@ -433,9 +559,22 @@ export function createHttpServer(
     return httpServer;
   }) as BridgeHttpServer["close"];
   httpServer.once("close", () => {
-    void closeBridgeResources();
+    if(!requestFence.isPinned)void closeBridgeResources();
   });
   return httpServer;
+}
+
+/** Track every registered state-bearing SDK request before it can delegate. */
+export function installMcpOperationFence(server:McpServer,fence:RuntimeOperationFence):void {
+  const protocol=server.server as unknown as {setRequestHandler:(...args:unknown[])=>unknown};
+  const register=protocol.setRequestHandler;
+  protocol.setRequestHandler=function(...args:unknown[]){
+    fence.assertAdmission();
+    const handler=args.at(-1);
+    if(typeof handler!=='function')throw new Error('MCP_REQUEST_HANDLER_INVALID');
+    args[args.length-1]=function(this:unknown,...values:unknown[]){return fence.run(()=>Reflect.apply(handler,this,values));};
+    return Reflect.apply(register,protocol,args);
+  };
 }
 
 /**

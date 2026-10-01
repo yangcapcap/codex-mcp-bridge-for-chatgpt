@@ -376,3 +376,183 @@ ownership evidence and retain bounded (128) original values plus sticky UNKNOWN.
 Queue status reads the last validated primitive limits without executing option
 getters after pin. Nine root suites (116 cases) are regression evidence only;
 fresh exact-head independent review and complete runtime wiring remain pending.
+
+
+## Pending state registry integration
+
+The registry has an internal synchronous `pinNonforcingShutdown()` fence with a
+positive acknowledgement only after every existing owned background component
+has been pinned. Admission, recovery, deferred launch/discard, cancellation,
+steering, interaction responses and registry mutation endpoints cannot resume
+once pinned. Application service drain cancellation cannot reopen this fence.
+The internal fence is not an MCP tool or a public runtime RPC method.
+
+Registry callback inputs are captured as bounded own-data snapshots before
+mutation. Accessors, cycles, unsupported values and descriptor inspection failures
+are retained as uncertainty. Late progress, assignment and original settlements
+cannot update the durable Job or acknowledge an execution owner after the fence.
+The original outcome stays reserved; terminal rollback callbacks are retained
+rather than executed after the fence. Completion callbacks accept only `undefined`
+or a synchronous undo function; unsupported returns retain the original resolved
+settlement without a terminal commit or execution ACK. Ordinary admitted-thread
+callbacks update the registry's captured `sessionDecision` object.
+
+Observation is resource-only. A known active Job, construction or bounded observer
+wait gives `TIMEOUT`; retained outcomes, unfinished admissions or control maps,
+unsupported callback returns, prior ordinary-close history and a fence inside an
+activity transaction give sticky `UNKNOWN`. Activity transactions reject their
+commit after a reentrant fence. Notification dispatch stops before later listeners
+when one listener pins. Retained observation samples are bounded at 128 and
+sample overflow remains `UNKNOWN`.
+
+Execution acknowledgements register their owner before reading or invoking the
+upstream callback. Synchronous failures and unsupported results remain `UNKNOWN`;
+a native Promise stays registered until it resolves before pinning. Pinning while
+an acknowledgement is pending permanently retains uncertainty and its original
+identity, even if it later resolves. Throwing change listeners are retained with
+their original error. Invalid progress or worker identity inputs preserve the
+last valid Job and original producer outcome without terminal commit or ACK.
+Interaction input checks admission before lookup, before delegation and before
+returning captured data. Cancellation, steering and persistence errors inspect
+own message data without invoking accessor messages or writing after pinning.
+Explicit retained-Job maintenance also rejects after the permanent pin.
+
+This registry component does not close the state database, retire a durable writer
+or approve the complete runtime. The full runtime owner must additionally fence
+in-flight application RPCs and frontends before closing resources and authenticating
+its generation-bound shutdown receipts. Production policy remains unchanged.
+
+
+## Pending registry callback and result repair
+
+The initial registry candidate `3220b2a` remains unapproved. Its independent
+review found ignored assignment callback returns, deferred identity deletion
+following an authentication callback pin, retained-ownership getter delegation
+after pin, and malformed data interpreted as a successful terminal result.
+The successor captures both ownership capabilities before delegation, checks
+admission again after authentication, and fences the deferred finish closure.
+Unsupported assignment returns and exceptions retain their original callback
+observation and resolved owner outcome without a terminal commit or ACK.
+
+Data snapshots alone are not terminal-result authority. The successor validates
+the captured value against the installed SDK v2 `CallToolResultSchema`, preserving
+additional captured fields and the SDK's empty-content default for structured-only
+results. Invalid results remain reserved at their original owner. The already
+locked SDK core package is now an explicit runtime dependency; package versions
+and installed dependency bytes are unchanged. These repairs require a new exact
+head review; the database and complete runtime have separate pending reviews.
+
+
+## Pending owned SQLite authority fence
+
+Every state connection and cached statement/transaction/iterator handle passes
+through an internal fence. After a synchronous pin, no new native operation is
+admitted. Pinning inside a transaction callback prevents its subsequent commit
+and permits a prepared `ROLLBACK` to unwind, including a borrowed public native
+transaction. A native SQL statement or COMMIT already admitted before pinning can
+finish; that case stays `UNKNOWN` even when the connection becomes idle. Already
+active native or asynchronous work and prior ordinary close
+history produce sticky `UNKNOWN`. Live iterators prevent closure until their
+existing cleanup returns. Native close is attempted at most once; failure remains
+`UNKNOWN`. Ordinary transaction variants preserve their caller receiver.
+Borrowed basic native prototype methods use a guarded compatibility handle;
+internal extension or asynchronous handles are unavailable through that path.
+Transaction variants preserve their guarded database binding, default identity
+and chained variants. Resource cleanup failures remain `UNKNOWN`.
+
+Resource-only nonforcing close leaves `bridge_instances` stopped/retirement fields
+unchanged. The enclosing owner must establish independent actor/frontend/RPC
+quiescence before requesting it. A database resource receipt alone does not retire
+a durable writer or approve production activation. Runtime composition is pending.
+
+
+## Runtime ingress quiescence (SDK v2)
+
+HTTP and stdio expose internal synchronous admission pins, explicit nonforcing
+close receipts, and fresh quiescence observations. The ingress pin includes its
+owned Job registry and MCP Events controller before any close await. HTTP also
+tracks the actual listener, accepted sockets, each request-scoped SDK server,
+and the companion server. Stdio stops its owned decoder and pipe and closes
+both the SDK handle and the pre-created server. A shared operational store
+remains caller-owned. Resource EXIT never releases a retained writer or changes
+`bridge_instances` retirement evidence.
+
+The callback fence registers before delegation, preserves ordinary native
+Promise settlement identity and original rejection, and refuses unsupported
+thenables, proxies, or mutated Promise constructor/species descriptors without
+invoking their accessors. Unsupported raw returns remain retained and UNKNOWN.
+The memory telemetry fallback seals diagnostic admission with an explicit
+resource receipt; prior ordinary close or reentrant capture remains UNKNOWN.
+Events retain sender responses across a pin and never acknowledge delivery from
+an accessor-backed response. Prior ordinary close remains UNKNOWN.
+
+Initial root stdio checks demonstrated that an in-flight startup maintenance
+command is UNKNOWN even after its late settlement. The idle success fixture
+allows startup work to settle before pin; its timing is fixture evidence only.
+Neither result proves whole runtime process exit. The root also ran HTTP in an
+early pure fixture without a dedicated HOST lease; that qualification remains
+preserved. Later host tests have a separate exclusive lease and spawn audit.
+This candidate composes a reviewed SQLite component with a registry predecessor
+that requires repairs; ingress component checks cannot approve that predecessor,
+private owner IPC, writer release, operator activation, or the full release.
+
+Fresh HTTP and stdio observations also require their owned SQLite connection to
+be closed. After a delayed admitted callback settles, a fresh observation may
+finish the resource-only close already requested by explicit nonforcing shutdown.
+The original timeout receipt stays immutable, and shared stores remain owned by
+their caller. Resource closure never changes durable writer retirement rows.
+Events register the delivery operation before its first ledger callback, retain
+original ledger and sender errors, and check the permanent pin before inspecting
+a verification response. Sender calls use the same strict native-Promise fence:
+unsupported Promise constructor/then accessors remain retained and `UNKNOWN`.
+Copied regression assertions for delayed owned-store closure require actual
+native connection closure before a new `EXIT`; the old candidate's original
+false-EXIT reproducer and rejection evidence remain retained separately.
+
+Directly constructed MCP servers require the same actual owned database closure
+as HTTP and stdio. Pin-only observation never closes a database; a previously
+requested explicit close may finish resource cleanup after its callbacks settle.
+Events request ownership begins before subscription scope and ledger preflight.
+Scope and ledger method lookup and invocation each stop at a reentrant pin, so
+an earlier callback cannot admit the next one. List and unsubscribe handlers
+share the request fence. Authentication metadata is captured as own data before
+inspection. Initial timeout observations remain immutable. These are ingress
+resource guarantees; the separately rejected registry, private process owner,
+durable writer and activation contracts still require their own validation.
+
+
+Events authentication requires an exact bridge scope in an array and a finite,
+nonnegative numeric expiry when present. Malformed controlled SDK metadata
+cannot acquire the capability; this check does not claim remote reachability of
+those malformed shapes. Unsupported raw authentication snapshots are retained
+as `UNKNOWN` even when a descriptor trap pins the controller during inspection.
+Unsubscribe and post-verification transaction method lookups stop before invoking
+any callback returned by a pinning getter. Job/Activity/Agent ownership reads,
+public request data and ledger records are captured before downstream use; sender
+signal lookup and delivery/timer ledger stages observe the same permanent pin.
+Expiry after network verification uses a newly validated own-data auth snapshot.
+Initial resource receipts remain immutable. Whole private-runtime and durable
+writer admission still require independent evidence.
+
+Events timer and synchronous delegate ownership
+------------------------------------------------
+
+The Events worker remains registered through delivery, next-deadline lookup and
+retry scheduling. A permanent nonforcing pin forbids new timers. Original
+lookup/body errors remain retained and UNKNOWN; ordinary pre-pin failures keep
+the existing ten-second retry. Synchronous scope, Job, transaction and ledger
+calls register their original delegate before method lookup and preserve raw
+unsupported Promise/Proxy/results before pin checks. A delayed result is not a
+synchronous save acknowledgement or evidence of completed writer cleanup.
+
+Fixed synchronous Events callbacks
+-----------------------------------
+
+Events uses a separate fixed synchronous fence for scope, Job, transaction and
+ledger callbacks. Unsupported raw thenables are rejected before the caller can
+perform another ledger mutation. Native Promise errors are observed only after
+strict prototype/constructor/species validation, without assimilating arbitrary
+thenables. The original captured unsubscribe runs in its own registered fence:
+a reentrant observation sees the active callback, and unsupported raw returns
+and errors remain UNKNOWN after repeated pins. This contract never permits an
+asynchronous value to serve as a synchronous mutation acknowledgement.

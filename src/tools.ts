@@ -1,3 +1,6 @@
+import {CallToolResultSchema} from "@modelcontextprotocol/core";
+import {combineShutdown, shutdownResult, type ShutdownResult} from "./shutdown.js";
+import {snapshotNonforcingData} from "./nonforcingData.js";
 import { withExecutionIdentity } from "./executionIdentity.js";
 import { dashboardHistoryActionInput, ISSUE_ATTENTION_DAYS, type HistoryRetentionDays, type DashboardHistoryActionInput } from "./workHistory.js";
 import { DASHBOARD_STATUS_FILTERS, dashboardSummaryCategory, type DashboardStatusFilter } from "./dashboardPresentation.js";
@@ -2256,6 +2259,116 @@ export class CodexJobRegistry {
   private retainedJobTarget?: number;
   private retainedJobMaintenanceTimer?: NodeJS.Timeout;
   private stateMaintenanceClosed = false;
+  private nonforcingPinned = false;
+  private nonforcingUnknown = false;
+  private nonforcingFenceComplete = false;
+  private nonforcingFenceFailed = false;
+  private readonly nonforcingConstructions = new Set<string>();
+  private registryCallbacksInFlight = 0;
+  private registryTransactionsInFlight = 0;
+  private readonly unconfirmedJobCallbacks = new WeakSet<CodexJob>();
+  private readonly executionAcknowledgements = new Map<CodexJob,{value?: unknown}>();
+  private readonly nonforcingLateObservations = new Map<string, Array<{kind: string; value: unknown}>>();
+  private nonforcingLateObservationCount = 0;
+
+  get nonforcingShutdownPinned(): boolean {return this.nonforcingPinned;}
+
+  /** Internal synchronous fence. It does not cancel Jobs or release writers. */
+  pinNonforcingShutdown(): true {
+    if (this.nonforcingPinned) {
+      if (!this.nonforcingFenceComplete || this.nonforcingFenceFailed) throw new Error("NONFORCING_SHUTDOWN_PIN_UNCONFIRMED");
+      return true;
+    }
+    this.nonforcingUnknown ||= this.stateMaintenanceClosed;
+    this.nonforcingUnknown ||= this.registryTransactionsInFlight > 0;
+    this.nonforcingUnknown ||= this.executionAcknowledgements.size > 0;
+    this.nonforcingPinned = true;
+    this.stateMaintenanceClosed = true;
+    this.runtimeAdmission.acceptingNewJobs = false;
+    for (const owner of [this.progressPersistenceQueue, this.threadController, this.recoveryController, this.maintenanceScheduler]) {
+      if (!owner) continue;
+      try {
+        if (owner.pinNonforcingShutdown() !== true) this.nonforcingFenceFailed = true;
+      } catch {this.nonforcingFenceFailed = true;}
+    }
+    if (this.progressPersistenceImmediateReset) clearImmediate(this.progressPersistenceImmediateReset);
+    this.progressPersistenceImmediateReset = undefined;
+    if (this.retainedJobMaintenanceTimer) clearTimeout(this.retainedJobMaintenanceTimer);
+    this.retainedJobMaintenanceTimer = undefined;
+    try {this.unsubscribeRecovery?.();} catch {this.nonforcingFenceFailed = true;}
+    this.nonforcingFenceComplete = true;
+    if (this.nonforcingFenceFailed) {
+      this.nonforcingUnknown = true;
+      throw new Error("NONFORCING_SHUTDOWN_PIN_UNCONFIRMED");
+    }
+    return true;
+  }
+
+  observeNonforcingExit(): ShutdownResult {
+    if (!this.nonforcingPinned || !this.nonforcingFenceComplete || this.nonforcingFenceFailed || this.nonforcingUnknown || this.progressPersistenceQueue.nonforcingHistoryUncertain)
+      return shutdownResult("uncertain");
+    if (this.nonforcingConstructions.size) return shutdownResult("timeout",this.nonforcingConstructions.size);
+    if (this.registryCallbacksInFlight + this.activeJobObservationWaits > 0)
+      return shutdownResult("timeout",this.registryCallbacksInFlight + this.activeJobObservationWaits);
+    const retained = this.deferredSettlements.size + this.deferredExecutions.size + this.terminations.size +
+      this.cancellationOperationsInFlight.size + this.steeringOperationsInFlight.size + this.interactionResponses.size +
+      this.nonforcingLateObservationCount + this.runtimeAdmission.pendingAdmissions;
+    if (retained > 0 || this.progressPersistenceQueue.status().queued > 0) return shutdownResult("uncertain");
+    const active = this.observedRunningCount();
+    return combineShutdown([
+      active > 0 ? shutdownResult("timeout", active) : shutdownResult("exited"),
+      this.threadController?.observeNonforcingExit() ?? shutdownResult("exited"),
+      this.recoveryController?.observeNonforcingExit() ?? shutdownResult("exited"),
+      this.maintenanceScheduler?.observeNonforcingExit() ?? shutdownResult("exited")
+    ]);
+  }
+
+  private assertNonforcingAdmission(): void {
+    if (this.nonforcingPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+  }
+
+  private admittedData<T>(value: T): T {
+    this.assertNonforcingAdmission();
+    const captured = snapshotNonforcingData(value, () => this.nonforcingPinned);
+    this.assertNonforcingAdmission();
+    if (!captured.ok) {this.nonforcingUnknown = true;throw new Error("STATE_CALLBACK_DATA_UNCONFIRMED");}
+    return captured.value;
+  }
+
+  private capturedExecutionError(original: unknown): {ok: true; error: Error} | {ok: false} {
+    try {
+      const isError = original instanceof Error;
+      if (this.nonforcingPinned) return {ok:false};
+      const terminalCommitFailed = original instanceof JobTerminalCommitError;
+      if (this.nonforcingPinned) return {ok:false};
+      let message: string | undefined;
+      if (isError) {
+        const field = Object.getOwnPropertyDescriptor(original,"message");
+        if (this.nonforcingPinned || field && (!Object.hasOwn(field,"value") || typeof field.value !== "string")) return {ok:false};
+        message = field?.value ?? "Error";
+      } else if (original === null || original === undefined || ["string","number","boolean"].includes(typeof original))
+        message = String(original);
+      if (message === undefined) return {ok:false};
+      const error = new Error(message);
+      if (terminalCommitFailed) Object.setPrototypeOf(error,JobTerminalCommitError.prototype);
+      return {ok:true,error};
+    } catch {return {ok:false};}
+  }
+
+  private pinLateConstructedResource(owner: {pinNonforcingShutdown(): true}): boolean {
+    if (!this.nonforcingPinned) return false;
+    try {if (owner.pinNonforcingShutdown() !== true) this.nonforcingUnknown = true;}
+    catch {this.nonforcingUnknown = true;}
+    return true;
+  }
+
+  private retainNonforcingObservation(jobId: string, kind: string, value: unknown): void {
+    if (this.nonforcingLateObservationCount >= 128) {this.nonforcingUnknown = true; return;}
+    const retained = this.nonforcingLateObservations.get(jobId) ?? [];
+    retained.push({kind, value});
+    this.nonforcingLateObservations.set(jobId, retained);
+    this.nonforcingLateObservationCount++;
+  }
   private readonly progressPersistenceQueue: ScopeFairQueue<ProgressPersistenceSnapshot>;
   private readonly progressPersisted = new Map<
     string,
@@ -2265,9 +2378,15 @@ export class CodexJobRegistry {
   private progressPersistenceImmediateReset?: NodeJS.Immediate;
 
   configureAutomaticRecovery(options: ConstructorParameters<typeof AutomaticRecoveryController>[1]): void {
+    this.assertNonforcingAdmission();
     if (this.projectionOnly) return;
-    if (this.recoveryController) return;
-    this.recoveryController = new AutomaticRecoveryController(this.activityStore.automaticRecovery, options);
+    if (this.recoveryController || this.nonforcingConstructions.has("recovery")) return;
+    this.nonforcingConstructions.add("recovery");
+    try {
+      this.recoveryController = new AutomaticRecoveryController(this.activityStore.automaticRecovery, options);
+      if (this.pinLateConstructedResource(this.recoveryController)) return;
+    } catch (error) {this.nonforcingUnknown = true;throw error;}
+    finally {this.nonforcingConstructions.delete("recovery");}
     this.unsubscribeRecovery = this.subscribeChanges((reason, agentId) => {
       // Scope-only Dashboard notifications have no recovery identity. The
       // periodic keyset pass covers them without triggering a global survey.
@@ -2280,21 +2399,28 @@ export class CodexJobRegistry {
   sweepAutomaticRecovery(): Promise<void> { return this.recoveryController?.sweep() || Promise.resolve(); }
 
   configureThreadConnections(upstream: CodexUpstream, idleMs?: number): void {
+    this.assertNonforcingAdmission();
     if (this.projectionOnly) return;
-    if (this.threadController) return;
-    this.threadController = new ThreadConnectionController(this.activityStore.threadConnections, upstream, {
-      idleMs, changed: () => { for (const listener of this.changeListeners) listener(); }
-    });
+    if (this.threadController || this.nonforcingConstructions.has("thread")) return;
+    this.nonforcingConstructions.add("thread");
+    try {
+      this.threadController = new ThreadConnectionController(this.activityStore.threadConnections, upstream, {
+        idleMs, changed: () => this.publishRegistryChanges()
+      });
+      if (this.pinLateConstructedResource(this.threadController)) return;
+    } catch (error) {this.nonforcingUnknown = true;throw error;}
+    finally {this.nonforcingConstructions.delete("thread");}
     this.threadController.start();
   }
 
   configureStateMaintenance(intervalMs?: number): void {
+    this.assertNonforcingAdmission();
     if (this.projectionOnly) return;
     if (this.maintenanceScheduler || this.stateMaintenanceClosed) return;
     const stateService = new InProcessOperationalStateService(this.activityStore);
     this.maintenanceScheduler = new StateMaintenanceScheduler(stateService, {
       intervalMs,
-      changed: () => { for (const listener of this.changeListeners) listener(); },
+      changed: () => this.publishRegistryChanges(),
       shouldDefer: () => this.runtimeAdmission.pendingAdmissions > 0 || this.observedRunningCount() > 0,
       maxDeferMs: 30_000,
       command: slice => this.stateMaintenanceCommand(slice),
@@ -2305,6 +2431,12 @@ export class CodexJobRegistry {
   }
 
   async closeThreadConnections(): Promise<void> {
+    if (this.nonforcingPinned) {
+      await this.recoveryController?.close();
+      await this.threadController?.close();
+      if (!this.observeNonforcingExit().exited) throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+      return;
+    }
     this.stateMaintenanceClosed = true;
     this.progressPersistenceQueue.close();
     if (this.progressPersistenceImmediateReset) {
@@ -2320,6 +2452,7 @@ export class CodexJobRegistry {
   }
 
   threadHandoff(threadId: string, action: "request" | "cancel" | "status"): ThreadConnectionRecord {
+    this.assertNonforcingAdmission();
     const current = action === "request" ? this.threadController?.request(threadId)
       : action === "cancel" ? this.threadController?.cancel(threadId) : this.activityStore.threadConnections.get(threadId);
     if (!current) throw new Error("THREAD_HANDOFF_UNAVAILABLE: Connection management is not available for this conversation.");
@@ -2327,11 +2460,26 @@ export class CodexJobRegistry {
   }
 
   subscribeChanges(listener: (reason?: CodexJobWakeReason, agentId?: string) => void): () => void {
+    this.assertNonforcingAdmission();
     this.changeListeners.add(listener);
     return () => { this.changeListeners.delete(listener); };
   }
 
   private persistenceWarningShown = false;
+
+  private recordPersistenceWarning(kind: string, error: unknown): void {
+    if (this.nonforcingPinned) {this.retainNonforcingObservation("persistence",kind,error);return;}
+    const captured = this.capturedExecutionError(error);
+    if (!captured.ok || this.nonforcingPinned) {
+      this.nonforcingUnknown = true;
+      this.retainNonforcingObservation("persistence",kind,error);
+      return;
+    }
+    if (!this.persistenceWarningShown) {
+      console.error(`${kind}: ${captured.error.message}`);
+      if (!this.nonforcingPinned) this.persistenceWarningShown = true;
+    }
+  }
 
   constructor(options: CodexJobRegistryOptions = {}) {
     this.authBoundary = options.authBoundary;
@@ -2403,6 +2551,7 @@ export class CodexJobRegistry {
   }
 
   attachUpstream(upstream: CodexUpstream, sessions?: SessionRegistry): void {
+    this.assertNonforcingAdmission();
     if (this.upstream && this.upstream !== upstream) {
       throw new Error("Codex job registry is already attached to another upstream.");
     }
@@ -2420,6 +2569,7 @@ export class CodexJobRegistry {
 
   /** A failed startup check leaves receipts dormant until a later successful admission. */
   resumeAuthorizedRecoveries(): void {
+    if (this.nonforcingPinned) return;
     const upstream = this.upstream;
     const sessions = this.recoverySessions;
     if (!upstream || !sessions || !this.recoveryStarted || this.projectionOnly) return;
@@ -2435,18 +2585,27 @@ export class CodexJobRegistry {
         contextMode: job.contextMode || "fresh", ...lineage });
     };
     for (const job of this.jobs.values()) {
+      if (this.nonforcingPinned) return;
       if (job.executionReceipt && isTerminalActivityJobStatus(job.status)) {
         this.acknowledgeSettledExecution(job); continue;
       }
-      if (!this.recoveryJobs.has(job.jobId) || !upstream.recoverExecution) continue;
-      if (this.authBoundary && job.authBoundary !== this.authBoundary()) continue;
+      if (!this.recoveryJobs.has(job.jobId)) continue;
+      const recover = upstream.recoverExecution;
+      if (this.nonforcingPinned) return;
+      if (!recover) continue;
+      const boundary = this.authBoundary?.();
+      if (this.nonforcingPinned) return;
+      if (this.authBoundary && job.authBoundary !== boundary) continue;
       this.recoveryJobs.delete(job.jobId);
       // A cancellation dispatch whose controller vanished is unconfirmed,
       // not proof of a stopped turn. Exact terminal replay settles the race.
       if (job.status === "terminating") job.status = "termination-failed";
-      job.promise = upstream.recoverExecution(job.jobId,
-        progress => this.recordProgress(job, progress),
-        assignment => { this.recordWorkerAssignment(job, assignment); record(job, assignment.threadId, assignment); })
+      job.promise = (Reflect.apply(recover,upstream,[job.jobId,
+        (progress: CodexProgress) => this.recordProgress(job, progress),
+        (assignment: UpstreamWorkerAssignment) => {
+          const captured = this.recordWorkerAssignment(job, assignment);
+          if (captured && !this.nonforcingPinned) record(job, captured.threadId, captured);
+        }]) as Promise<ToolResult>)
         .then(result => this.settleExecutionResult(job, result,
           value => record(job, extractThreadId(value), extractResultThreadLineage(value))))
         .catch(error => this.settleExecutionError(job, error))
@@ -2455,11 +2614,48 @@ export class CodexJobRegistry {
   }
 
   private acknowledgeSettledExecution(job: CodexJob): void {
-    const assignment = this.jobAssignment(job);
-    if (this.authBoundary && job.authBoundary !== this.authBoundary() &&
-        (!assignment || this.upstream?.ownsRetainedResult?.(job.jobId, assignment) !== true)) return;
-    if (job.executionReceipt && isTerminalActivityJobStatus(job.status) && job.terminalOrigin) {
-      void Promise.resolve(this.upstream?.acknowledgeExecution?.(job.jobId)).catch(() => {});
+    if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job) || this.executionAcknowledgements.has(job)) return;
+    const observation: {value?: unknown} = {};
+    this.executionAcknowledgements.set(job,observation);
+    const failed = (error: unknown) => {
+      this.nonforcingUnknown = true;
+      this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(job.jobId,"execution-ack-error",error);
+    };
+    try {
+      const assignment = this.jobAssignment(job);
+      const currentBoundary = this.authBoundary?.();
+      if (this.nonforcingPinned) return;
+      if (this.authBoundary && job.authBoundary !== currentBoundary) {
+        if (!assignment) return;
+        const owns = this.upstream?.ownsRetainedResult;
+        if (this.nonforcingPinned || typeof owns !== "function") return;
+        const owned = Reflect.apply(owns,this.upstream,[job.jobId,assignment]);
+        if (this.nonforcingPinned || owned !== true) return;
+      }
+      if (job.executionReceipt && isTerminalActivityJobStatus(job.status) && job.terminalOrigin) {
+        const acknowledge = this.upstream?.acknowledgeExecution;
+        if (this.nonforcingPinned) return;
+        if (acknowledge) {
+          observation.value = Reflect.apply(acknowledge,this.upstream,[job.jobId]);
+          if (this.nonforcingPinned) return;
+          if (observation.value !== undefined) {
+            const promise = observation.value instanceof Promise;
+            if (this.nonforcingPinned) return;
+            if (!promise) {failed(observation.value);return;}
+            Reflect.apply(Promise.prototype.then,observation.value,[
+              () => {if (!this.nonforcingPinned) this.executionAcknowledgements.delete(job);},
+              (error: unknown) => {failed(error);}
+            ]);
+            return;
+          }
+        }
+      }
+    } catch (error) {failed(error);throw error;}
+    finally {
+      // Outstanding native Promise ACKs keep their exact owner until resolution.
+      if (!this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job) && observation.value === undefined)
+        this.executionAcknowledgements.delete(job);
     }
   }
 
@@ -2472,7 +2668,34 @@ export class CodexJobRegistry {
   }
 
   private async settleExecution(job: CodexJob, settlement: DeferredJobSettlement): Promise<void> {
-    while (!this.stateMaintenanceClosed) {
+    if (!this.nonforcingPinned && settlement.kind === "resolved") {
+      const captured = snapshotNonforcingData(settlement.result, () => this.nonforcingPinned);
+      if (!captured.ok) {
+        this.nonforcingUnknown = true;
+        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
+        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        return;
+      }
+      const validated = CallToolResultSchema.safeParse(captured.value);
+      if (!validated.success) {
+        this.nonforcingUnknown = true;
+        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
+        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        return;
+      }
+      settlement = {...settlement,result:{...captured.value,content:validated.data.content}};
+    }
+    if (!this.nonforcingPinned && settlement.kind === "rejected") {
+      const captured = this.capturedExecutionError(settlement.error);
+      if (!captured.ok) {
+        this.nonforcingUnknown = true;
+        if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId,settlement);
+        else this.retainNonforcingObservation(job.jobId,"terminal-settlement",settlement);
+        return;
+      }
+      settlement = {...settlement,error:captured.error};
+    }
+    while (!this.stateMaintenanceClosed && !this.unconfirmedJobCallbacks.has(job)) {
       if (job.status === "terminating") {
         this.deferredSettlements.set(job.jobId, settlement);
         return;
@@ -2484,6 +2707,7 @@ export class CodexJobRegistry {
         return;
       }
       catch (error) {
+        if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) break;
         if (!job.executionReceipt || !(error instanceof JobTerminalCommitError)) throw error;
         if (settlement.kind === "resolved" && !this.pendingTerminalCommits.has(job)) {
           const turnStatus = extractResultTurnStatus(settlement.result);
@@ -2498,6 +2722,11 @@ export class CodexJobRegistry {
         // succeeds. A busy DB must not replace a completed turn's outcome.
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
+    }
+    if (this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) {
+      if (!this.deferredSettlements.has(job.jobId)) this.deferredSettlements.set(job.jobId, settlement);
+      else this.retainNonforcingObservation(job.jobId, "terminal-settlement", settlement);
+      return;
     }
     this.pendingTerminalCommits.delete(job);
   }
@@ -2552,9 +2781,11 @@ export class CodexJobRegistry {
   }
 
   private assertCurrentJobOwner(job: CodexJob): void {
-    if (this.authBoundary && job.authBoundary !== this.authBoundary()) {
+    this.assertNonforcingAdmission();
+    const boundary = this.authBoundary?.();
+    this.assertNonforcingAdmission();
+    if (this.authBoundary && job.authBoundary !== boundary)
       throw new Error("CODEX_AUTH_JOB_BOUNDARY: This Job belongs to another or unverified authentication connection.");
-    }
   }
 
   private jobAssignment(job: CodexJob): UpstreamWorkerAssignment | null {
@@ -2567,10 +2798,20 @@ export class CodexJobRegistry {
 
   /** Existing controls must still target the original live request after login changes. */
   private assertOriginalJobControl(job: CodexJob): void {
-    if (!this.authBoundary || job.authBoundary === this.authBoundary()) return;
+    this.assertNonforcingAdmission();
+    const boundary = this.authBoundary?.();
+    this.assertNonforcingAdmission();
+    if (!this.authBoundary || job.authBoundary === boundary) return;
     const assignment = this.jobAssignment(job);
-    if (isActiveActivityJobStatus(job.status) && job.trackingState === "connected" && assignment &&
-        this.upstream?.ownsActiveExecution?.(job.jobId, assignment) === true) return;
+    if (isActiveActivityJobStatus(job.status) && job.trackingState === "connected" && assignment) {
+      const owns = this.upstream?.ownsActiveExecution;
+      this.assertNonforcingAdmission();
+      if (typeof owns === "function") {
+        const owned = Reflect.apply(owns,this.upstream,[job.jobId,assignment]);
+        this.assertNonforcingAdmission();
+        if (owned === true) return;
+      }
+    }
     throw new Error("CODEX_AUTH_JOB_BOUNDARY: This Job belongs to another or unverified authentication connection.");
   }
 
@@ -2658,10 +2899,21 @@ export class CodexJobRegistry {
   }
 
   activityTransaction<T>(operation: () => T): T {
-    return this.activityStore.transaction(operation);
+    this.assertNonforcingAdmission();
+    this.registryTransactionsInFlight++;
+    try {
+      return this.activityStore.transaction(() => {
+        this.assertNonforcingAdmission();
+        const result = operation();
+        this.assertNonforcingAdmission();
+        return result;
+      });
+    } finally {this.registryTransactionsInFlight--;}
   }
 
   createActivity(input: CreateActivityInput): BridgeActivity {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     const activity = this.activityStore.createActivity(input);
     this.notifyScope(activity.scopeId);
     return activity;
@@ -2688,6 +2940,8 @@ export class CodexJobRegistry {
   }
 
   createAgent(input: { scopeId: string; agentName: string }): BridgeAgent {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     const agent = this.activityStore.createAgent(input);
     this.notifyScope(agent.scopeId, agent.agentId);
     return agent;
@@ -2743,6 +2997,8 @@ export class CodexJobRegistry {
     contextMode: AgentContextMode;
     role?: string;
   }): ActivityAgentAssignment {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     const assignment = this.activityStore.assignAgent(input);
     const agent = this.activityStore.getAgent(input.agentId);
     if (agent) this.notifyScope(agent.scopeId, agent.agentId);
@@ -2750,6 +3006,7 @@ export class CodexJobRegistry {
   }
 
   releaseAgentAssignment(activityId: string, agentId: string): ActivityAgentAssignment | undefined {
+    this.assertNonforcingAdmission();
     const assignment = this.activityStore.releaseAgentAssignment(activityId, agentId);
     const agent = this.activityStore.getAgent(agentId);
     if (agent) this.notifyScope(agent.scopeId, agent.agentId);
@@ -2761,6 +3018,8 @@ export class CodexJobRegistry {
     agentId: string;
     expectedAgentVersion: number;
   }) {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     const detached = this.activityStore.detachIdleAgentAssignment(input);
     this.notifyScope(detached.agent.scopeId, detached.agent.agentId);
     return detached;
@@ -2778,6 +3037,8 @@ export class CodexJobRegistry {
     contextMode: AgentContextMode;
     forkedFromThreadId?: string;
   }): BridgeAgentThread {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     const thread = this.activityStore.linkAgentThread(input);
     this.notifyScope(thread.scopeId, input.agentId);
     return thread;
@@ -2788,12 +3049,15 @@ export class CodexJobRegistry {
     lifecycle: "idle" | "active" | "waiting-input" | "orphaned",
     options: { currentJobId?: string; orphanedReason?: string } = {}
   ): BridgeAgent {
+    this.assertNonforcingAdmission();
+    options = this.admittedData(options);
     const agent = this.activityStore.setAgentExecutionState(agentId, lifecycle, options);
     this.notifyScope(agent.scopeId, agent.agentId);
     return agent;
   }
 
   renameAgent(agentId: string, name: string): BridgeAgent {
+    this.assertNonforcingAdmission();
     const agent = this.activityStore.renameAgent(agentId, name);
     this.notifyScope(agent.scopeId, agent.agentId);
     return agent;
@@ -2804,11 +3068,14 @@ export class CodexJobRegistry {
   }
 
   acknowledgeHistoryIssue(jobId: string, scopeId: string): void {
+    this.assertNonforcingAdmission();
     this.activityStore.workHistory.acknowledge(jobId);
     this.notifyScope(scopeId);
   }
 
   reviewHistoryIssues(targets: Array<{jobId:string;scopeId:string}>, acknowledged: boolean): void {
+    this.assertNonforcingAdmission();
+    targets = this.admittedData(targets);
     this.activityStore.transaction(() => {
       for (const target of targets) this.activityStore.workHistory.setAcknowledged(target.jobId, acknowledged);
     });
@@ -2816,11 +3083,15 @@ export class CodexJobRegistry {
   }
 
   resolveHistoryRuntimeProblem(agent: BridgeAgent, revision: string): void {
+    this.assertNonforcingAdmission();
+    agent = this.admittedData(agent);
     this.activityStore.transaction(() => this.activityStore.workHistory.resolveRuntimeProblem(agent.agentId, revision));
     this.notifyScope(agent.scopeId, agent.agentId);
   }
 
   recordAgentMutation(scopeId: string, requestId: string, actionHash: string, result: unknown): void {
+    this.assertNonforcingAdmission();
+    result = this.admittedData(result);
     this.activityStore.recordAgentMutation(scopeId, requestId, actionHash, result);
   }
 
@@ -2840,6 +3111,7 @@ export class CodexJobRegistry {
     requestId: string,
     actionHash: string
   ): SteeringDeliveryRecord {
+    this.assertNonforcingAdmission();
     return this.activityStore.markSteeringDeliveryDispatching(
       scopeId,
       requestId,
@@ -2852,6 +3124,9 @@ export class CodexJobRegistry {
     fallbacks: SteeringMutationFallbacks,
     operation: () => Promise<SteeringMutationOutcome>
   ): Promise<unknown> {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
+    fallbacks = this.admittedData(fallbacks);
     const key = `${input.scopeId}\0${input.requestId}`;
     const active = this.steeringOperationsInFlight.get(key);
     if (active) {
@@ -2901,9 +3176,18 @@ export class CodexJobRegistry {
       return prepared.status === "dispatching" ? fallbacks.uncertain : fallbacks.notDelivered;
     }
 
+    this.assertNonforcingAdmission();
     const promise = Promise.resolve()
-      .then(operation)
+      .then(() => {this.assertNonforcingAdmission(); return operation();})
       .then((outcome) => {
+        if (this.nonforcingPinned) {this.retainNonforcingObservation(key, "steering-outcome", outcome); return fallbacks.uncertain;}
+        const captured = snapshotNonforcingData(outcome, () => this.nonforcingPinned);
+        if (!captured.ok) {
+          this.nonforcingUnknown = true;
+          this.retainNonforcingObservation(key,"steering-outcome",outcome);
+          return fallbacks.uncertain;
+        }
+        outcome = captured.value;
         try {
           this.activityStore.completeSteeringDelivery(
             input.scopeId,
@@ -2919,6 +3203,7 @@ export class CodexJobRegistry {
         }
       })
       .catch(() => {
+        if (this.nonforcingPinned) return fallbacks.uncertain;
         const current = this.getSteeringDelivery(input.scopeId, input.requestId);
         const status: SteeringTerminalStatus = current?.status === "prepared"
           ? "not-delivered"
@@ -2944,7 +3229,7 @@ export class CodexJobRegistry {
     try {
       return await promise;
     } finally {
-      if (this.steeringOperationsInFlight.get(key)?.promise === promise) {
+      if (!this.nonforcingPinned && this.steeringOperationsInFlight.get(key)?.promise === promise) {
         this.steeringOperationsInFlight.delete(key);
       }
     }
@@ -2967,6 +3252,7 @@ export class CodexJobRegistry {
     actionHash: string,
     operation: () => Promise<unknown>
   ): Promise<unknown> {
+    this.assertNonforcingAdmission();
     const key = `${scopeId}\0${requestId}`;
     const active = this.cancellationOperationsInFlight.get(key);
     if (active) {
@@ -2992,9 +3278,11 @@ export class CodexJobRegistry {
         "CANCELLATION_OPERATION_INCOMPLETE: A durable intent exists without a recorded outcome; inspect authoritative status before using a new requestId."
       );
     }
+    this.assertNonforcingAdmission();
     const promise = Promise.resolve()
-      .then(operation)
+      .then(() => {this.assertNonforcingAdmission(); return operation();})
       .catch((error) => {
+        if (this.nonforcingPinned) throw error;
         const durable = this.getCancellationOperation(scopeId, requestId);
         if (durable?.status === "recorded") {
           for (const intent of this.listCancellationIntents({ scopeId, requestId })) {
@@ -3019,7 +3307,7 @@ export class CodexJobRegistry {
     try {
       return await promise;
     } finally {
-      if (this.cancellationOperationsInFlight.get(key)?.promise === promise) {
+      if (!this.nonforcingPinned && this.cancellationOperationsInFlight.get(key)?.promise === promise) {
         this.cancellationOperationsInFlight.delete(key);
       }
     }
@@ -3029,14 +3317,20 @@ export class CodexJobRegistry {
     operation: CancellationOperationRecord;
     intent: CancellationIntentRecord;
   } {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     this.assertCancellationTargetOwner(input.target);
+    this.assertNonforcingAdmission();
     const result = this.activityStore.beginCancellationOperation(input);
     this.notifyScope(result.operation.scopeId);
     return result;
   }
 
   createCancellationIntent(input: CreateCancellationIntentInput): CancellationIntentRecord {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     this.assertCancellationTargetOwner(input.target);
+    this.assertNonforcingAdmission();
     const intent = this.activityStore.createCancellationIntent(input);
     this.notifyScope(intent.scopeId);
     return intent;
@@ -3050,6 +3344,7 @@ export class CodexJobRegistry {
     intentId: string,
     status: "dispatched" | "succeeded" | "failed" | "no-op"
   ): CancellationIntentRecord {
+    this.assertNonforcingAdmission();
     const intent = this.activityStore.setCancellationIntentStatus(intentId, status);
     this.notifyScope(intent.scopeId);
     return intent;
@@ -3061,6 +3356,8 @@ export class CodexJobRegistry {
     result: unknown,
     status: "completed" | "failed" = "completed"
   ): CancellationOperationRecord {
+    this.assertNonforcingAdmission();
+    result = this.admittedData(result);
     return this.activityStore.completeCancellationOperation(
       scopeId,
       requestId,
@@ -3079,6 +3376,8 @@ export class CodexJobRegistry {
   }
 
   recordTransportObservation(input: Parameters<BridgeStateStore["recordTransportObservation"]>[0]) {
+    if (this.nonforcingPinned) {this.retainNonforcingObservation("transport","transport",input);return undefined;}
+    input = this.admittedData(input);
     try {
       return this.telemetry
         ? this.telemetry.recordTransportObservation(input, this.activityStore.bridgeInstanceId)
@@ -3192,42 +3491,50 @@ export class CodexJobRegistry {
       kind?: ActivityKind;
     }
   ): BridgeActivity {
+    this.assertNonforcingAdmission();
+    policy = this.admittedData(policy);
     const activity = this.activityStore.setActivityPolicy(activityId, policy);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   sealActivity(activityId: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.sealActivity(activityId);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   completeActivity(activityId: string, reason?: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.completeActivity(activityId, reason);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   abandonActivity(activityId: string, reason?: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.abandonActivity(activityId, reason);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   cancelActivity(activityId: string, reason?: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.cancelActivity(activityId, reason);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   beginActivityTermination(activityId: string, reason?: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.beginActivityTermination(activityId, reason);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   startActivityVerification(activityId: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.startActivityVerification(activityId);
     this.notifyScope(activity.scopeId);
     return activity;
@@ -3237,12 +3544,15 @@ export class CodexJobRegistry {
     activityId: string,
     evidence: ActivityVerificationEvidence
   ): BridgeActivity {
+    this.assertNonforcingAdmission();
+    evidence = this.admittedData(evidence);
     const activity = this.activityStore.passActivityVerification(activityId, evidence);
     this.notifyScope(activity.scopeId);
     return activity;
   }
 
   failActivityVerification(activityId: string, reason: string): BridgeActivity {
+    this.assertNonforcingAdmission();
     const activity = this.activityStore.failActivityVerification(activityId, reason);
     this.notifyScope(activity.scopeId);
     return activity;
@@ -3260,6 +3570,8 @@ export class CodexJobRegistry {
     onAssigned?: (assignment: UpstreamWorkerAssignment, job: CodexJob) => void,
     deferExecution = false
   ): CodexJob {
+    this.assertNonforcingAdmission();
+    input = this.admittedData(input);
     const replay = this.findRequest(input.scopeId, input.requestId, input.requestHash);
     if (replay) return replay;
     this.activityStore.threadConnections.assertAdmission(input.agentId, input.sessionDecision.threadId || input.sourceThreadId);
@@ -3299,6 +3611,10 @@ export class CodexJobRegistry {
     if (this.authBoundary && !currentAuthBoundary) {
       throw new Error("CODEX_AUTH_JOB_BOUNDARY: Confirm the current authentication owner before starting a Job.");
     }
+    const supportsRecovery = this.upstream?.supportsExecutionRecovery;
+    this.assertNonforcingAdmission();
+    const executionReceipt = supportsRecovery ? Reflect.apply(supportsRecovery,this.upstream,[]) === true : false;
+    this.assertNonforcingAdmission();
     const job: CodexJob = {
       ...input,
       ...(currentAuthBoundary ? { authBoundary: currentAuthBoundary } : {}),
@@ -3310,7 +3626,7 @@ export class CodexJobRegistry {
       requestHashVersion: input.requestHashVersion || CURRENT_TASK_REQUEST_HASH_VERSION,
       completionDeliveryPolicy: input.completionDeliveryPolicy || "live-card",
       jobId: randomUUID(),
-      executionReceipt: this.upstream?.supportsExecutionRecovery?.() === true,
+      executionReceipt,
       createdAt: now,
       updatedAt: now,
       lastProgressAt: now,
@@ -3321,6 +3637,7 @@ export class CodexJobRegistry {
       promise: Promise.resolve()
     };
     job.approvedFollowups = issueApprovedFollowups(job.jobId, job.approvedFollowups);
+    this.assertNonforcingAdmission();
     this.setIndexedJob(job);
     try {
       this.persistJob(job);
@@ -3329,15 +3646,30 @@ export class CodexJobRegistry {
       throw error;
     }
     const execute = () => Promise.resolve()
-      .then(() =>
-        withExecutionIdentity(job.jobId, () => run(
+      .then(() => {
+        this.assertNonforcingAdmission();
+        return withExecutionIdentity(job.jobId, () => run(
           (progress) => this.recordProgress(job, progress),
           (assignment) => {
-            this.recordWorkerAssignment(job, assignment);
-            onAssigned?.(assignment, job);
+            const captured = this.recordWorkerAssignment(job, assignment);
+            if (!captured || this.nonforcingPinned) return;
+            if (!onAssigned) return;
+            this.registryCallbacksInFlight++;
+            try {
+              const returned = Reflect.apply(onAssigned,undefined,[captured,job]);
+              if (returned !== undefined) {
+                this.nonforcingUnknown = true;
+                this.unconfirmedJobCallbacks.add(job);
+                this.retainNonforcingObservation(job.jobId,"assignment-callback-result",returned);
+              }
+            } catch (error) {
+              this.nonforcingUnknown = true;
+              this.unconfirmedJobCallbacks.add(job);
+              this.retainNonforcingObservation(job.jobId,"assignment-callback-error",error);
+            } finally {this.registryCallbacksInFlight--;}
           }
-        ))
-      )
+        ));
+      })
       .then((result) => {
         if (job.status === "terminating") {
           this.deferredSettlements.set(job.jobId, { kind: "resolved", result, onComplete });
@@ -3356,6 +3688,7 @@ export class CodexJobRegistry {
       job.promise = new Promise<void>((resolve, reject) => {
         let settled = false;
         const finish = (operation?: () => Promise<void>) => {
+          this.assertNonforcingAdmission();
           if (settled) return;
           settled = true;
           this.deferredExecutions.delete(job.jobId);
@@ -3374,12 +3707,15 @@ export class CodexJobRegistry {
   }
 
   activateDeferredExecution(jobId: string): void {
+    this.assertNonforcingAdmission();
     const job = this.jobs.get(jobId);
     if (job) this.assertCurrentJobOwner(job);
+    this.assertNonforcingAdmission();
     this.deferredExecutions.get(jobId)?.launch();
   }
 
   discardDeferredAdmission(jobId: string): void {
+    this.assertNonforcingAdmission();
     const deferred = this.deferredExecutions.get(jobId);
     if (!deferred) return;
     deferred.discard();
@@ -3391,6 +3727,22 @@ export class CodexJobRegistry {
     this.lastWake.delete(jobId);
     this.retentionProtectedJobs.delete(jobId);
     this.scheduleIdleRetainedJobMaintenance();
+  }
+
+  private invokeCompletionCallback(job: CodexJob, result: ToolResult,
+    callback?: JobCompletionCallback): (() => void) | undefined {
+    this.assertNonforcingAdmission();
+    if (!callback) return undefined;
+    this.registryCallbacksInFlight++;
+    try {
+      const returned = Reflect.apply(callback,undefined,[result,job]);
+      if (returned === undefined) return undefined;
+      if (typeof returned === "function") return returned;
+      this.nonforcingUnknown = true;
+      this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(job.jobId,"completion-callback-result",returned);
+      throw new Error("STATE_COMPLETION_CALLBACK_UNCONFIRMED");
+    } finally {this.registryCallbacksInFlight--;}
   }
 
   private settleResolvedJob(
@@ -3415,7 +3767,7 @@ export class CodexJobRegistry {
     let undo: (() => void) | undefined;
     try {
       const next = this.activityStore.transaction(() => {
-        undo = onComplete?.(result, job) || undefined;
+        undo = this.invokeCompletionCallback(job,result,onComplete);
         const candidate: CodexJob = {
           ...job,
           threadId: job.sessionDecision.threadId,
@@ -3442,7 +3794,8 @@ export class CodexJobRegistry {
       this.notify(job.jobId, "terminal");
       this.notifyScope(job.scopeId);
     } catch (error) {
-      undo?.();
+      if (!this.nonforcingPinned) undo?.();
+      else if (undo) this.retainNonforcingObservation(job.jobId,"terminal-undo",undo);
       throw new JobTerminalCommitError(error);
     }
   }
@@ -3465,7 +3818,7 @@ export class CodexJobRegistry {
       const next = this.activityStore.transaction(() => {
         // A failed turn can still have created or resumed a durable thread.
         // Keep the same callback in the atomic terminal transaction.
-        undo = onComplete?.(result, job) || undefined;
+        undo = this.invokeCompletionCallback(job,result,onComplete);
         const candidate: CodexJob = {
           ...job,
           threadId: job.sessionDecision.threadId,
@@ -3493,7 +3846,8 @@ export class CodexJobRegistry {
       this.notify(job.jobId, "terminal");
       this.notifyScope(job.scopeId);
     } catch (error) {
-      undo?.();
+      if (!this.nonforcingPinned) undo?.();
+      else if (undo) this.retainNonforcingObservation(job.jobId,"terminal-undo",undo);
       throw new JobTerminalCommitError(error);
     }
   }
@@ -3566,6 +3920,7 @@ export class CodexJobRegistry {
   }
 
   private flushDeferredSettlement(job: CodexJob): void {
+    if (this.nonforcingPinned) return;
     const settlement = this.deferredSettlements.get(job.jobId);
     if (!settlement) return;
     this.deferredSettlements.delete(job.jobId);
@@ -3593,6 +3948,9 @@ export class CodexJobRegistry {
     intent: CancellationIntentRecord,
     options: ForceTerminateOptions = {}
   ): Promise<CodexJob> {
+    this.assertNonforcingAdmission();
+    intent = this.admittedData(intent);
+    options = this.admittedData(options);
     const job = this.jobs.get(jobId);
     if (job) this.assertOriginalJobControl(job);
     this.assertCancellationIntentForJob(jobId, intent);
@@ -3605,8 +3963,11 @@ export class CodexJobRegistry {
       }
       return existingTermination.promise;
     }
-    const operation = this.forceTerminateJob(jobId, intent, options).finally(() => {
-      if (this.terminations.get(jobId)?.promise === operation) {
+    this.assertNonforcingAdmission();
+    const operation = Promise.resolve().then(() => {
+      this.assertNonforcingAdmission(); return this.forceTerminateJob(jobId, intent, options);
+    }).finally(() => {
+      if (!this.nonforcingPinned && this.terminations.get(jobId)?.promise === operation) {
         this.terminations.delete(jobId);
       }
     });
@@ -3643,8 +4004,11 @@ export class CodexJobRegistry {
     interactionId: string,
     response: CodexInteractionResponse
   ): Promise<CodexJob> {
+    this.assertNonforcingAdmission();
+    response = this.admittedData(response);
     const key = `${jobId}\0${interactionId}`;
     const responseHash = createHash("sha256").update(JSON.stringify(response)).digest("hex");
+    this.assertNonforcingAdmission();
     const active = this.interactionResponses.get(key);
     if (active) {
       if (active.responseHash !== responseHash) {
@@ -3652,8 +4016,11 @@ export class CodexJobRegistry {
       }
       return active.promise;
     }
-    const promise = this.resolveInteraction(jobId, interactionId, response).finally(() => {
-      if (this.interactionResponses.get(key)?.promise === promise) {
+    this.assertNonforcingAdmission();
+    const promise = Promise.resolve().then(() => {
+      this.assertNonforcingAdmission(); return this.resolveInteraction(jobId, interactionId, response);
+    }).finally(() => {
+      if (!this.nonforcingPinned && this.interactionResponses.get(key)?.promise === promise) {
         this.interactionResponses.delete(key);
       }
     });
@@ -3662,7 +4029,14 @@ export class CodexJobRegistry {
   }
 
   interactionInput(interactionId: string): CodexInteractionInput | undefined {
-    return this.upstream?.interactionInput?.(interactionId);
+    this.assertNonforcingAdmission();
+    const upstream = this.upstream;
+    const read = upstream?.interactionInput;
+    this.assertNonforcingAdmission();
+    if (!read) return undefined;
+    const value = Reflect.apply(read,upstream,[interactionId]);
+    this.assertNonforcingAdmission();
+    return this.admittedData(value);
   }
 
   private async resolveInteraction(
@@ -3700,16 +4074,20 @@ export class CodexJobRegistry {
         throw new Error("The selected decision is not available for this Codex approval request.");
       }
       const checkedUpstream = this.upstream;
-      if (!checkedUpstream?.respondToInteraction) throw new Error("The active Codex backend cannot accept interactions.");
+      const respond = checkedUpstream?.respondToInteraction;
+      this.assertNonforcingAdmission();
+      if (!respond) throw new Error("The active Codex backend cannot accept interactions.");
       job = current;
       interaction = pending;
-      sendResponse = checkedUpstream.respondToInteraction.bind(checkedUpstream);
+      sendResponse = (id, value) => Reflect.apply(respond,checkedUpstream,[id,value]);
     } catch (error) {
       throw new InteractionNotDispatchedError(error);
     }
     // Keep the checked upstream instance and interaction together. An error
     // from this call can mean the answer was sent; it must remain uncertain.
+    this.assertNonforcingAdmission();
     await sendResponse(interactionId, response);
+    this.assertNonforcingAdmission();
     job.pendingInteractions = job.pendingInteractions.filter((entry) => entry.interactionId !== interactionId);
     this.recordProgress(job, {
       progress: (job.lastProgress?.progress || 0) + 1,
@@ -3726,25 +4104,41 @@ export class CodexJobRegistry {
   }
 
   async steer(jobId: string, prompt: string): Promise<CodexJob> {
+    this.assertNonforcingAdmission();
     const job = this.get(jobId);
     if (!job || job.status !== "running") throw new Error("The selected Codex job has no active turn to steer.");
     this.assertCurrentJobOwner(job);
-    if (!backendSupports(job.backendKind, "supportsSteering") || !job.threadId || !this.upstream?.steerThread) {
+    this.assertNonforcingAdmission();
+    const steer = this.upstream?.steerThread;
+    this.assertNonforcingAdmission();
+    if (!backendSupports(job.backendKind, "supportsSteering") || !job.threadId || !steer) {
       throw new Error("Steering is available only for an active Codex App Server turn.");
     }
     this.rememberSteeringPrompt(job.jobId, prompt);
     try {
-      await this.upstream.steerThread(job.threadId, prompt);
+      this.assertNonforcingAdmission();
+      await Reflect.apply(steer,this.upstream,[job.threadId, prompt]);
     } catch (error) {
+      if (this.nonforcingPinned) {
+        this.retainNonforcingObservation(job.jobId,"steering-error",error);
+        throw new Error("NONFORCING_SHUTDOWN_UNCONFIRMED");
+      }
+      const captured = this.capturedExecutionError(error);
+      if (!captured.ok || this.nonforcingPinned) {
+        this.nonforcingUnknown = true;
+        this.retainNonforcingObservation(jobId,"steering-error",error);
+        throw new Error("STATE_CALLBACK_DATA_UNCONFIRMED");
+      }
       // The dispatch boundary is uncertain to callers. Keep the redaction until
       // terminal state, and never reflect a prompt-bearing upstream error.
       throw new Error(
         redactSteeringPromptText(
-          error instanceof Error ? error.message : String(error),
+          captured.error.message,
           this.steeringPromptsFor(job.jobId)
         )
       );
     }
+    this.assertNonforcingAdmission();
     this.recordProgress(job, {
       progress: (job.lastProgress?.progress || 0) + 1,
       message: "Additional user guidance was sent to the active Codex turn.",
@@ -3778,6 +4172,7 @@ export class CodexJobRegistry {
     signal?: AbortSignal,
     source: CodexJobWaitSource = "internal"
   ): Promise<CodexJobWaitResult> {
+    this.assertNonforcingAdmission();
     if (!Number.isInteger(waitMs) || waitMs < 1 || waitMs > MAX_CODEX_STATUS_WAIT_MS) {
       throw new Error(`waitMs must be an integer between 1 and ${MAX_CODEX_STATUS_WAIT_MS}.`);
     }
@@ -3833,6 +4228,7 @@ export class CodexJobRegistry {
   }
 
   async waitForInput(jobId: string, afterCursor?: string, waitMs = 0, signal?: AbortSignal) {
+    this.assertNonforcingAdmission();
     if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > MAX_CODEX_STATUS_WAIT_MS) throw new Error("INPUT_WAIT_INVALID: Invalid bounded wait duration.");
     if (signal?.aborted) throw new Error("The input wait was cancelled by the host.");
     const started = Date.now(), deadline = started + waitMs;
@@ -3852,6 +4248,14 @@ export class CodexJobRegistry {
   }
 
   private recordProgress(job: CodexJob, progress: CodexProgress): void {
+    if (this.nonforcingPinned) {this.retainNonforcingObservation(job.jobId, "progress", progress); return;}
+    const captured = snapshotNonforcingData(progress, () => this.nonforcingPinned);
+    if (!captured.ok || !isRecord(captured.value) || typeof captured.value.progress !== "number" || !Number.isFinite(captured.value.progress) ||
+        captured.value.total !== undefined && (typeof captured.value.total !== "number" || !Number.isFinite(captured.value.total)) ||
+        captured.value.message !== undefined && typeof captured.value.message !== "string") {
+      this.nonforcingUnknown = true;this.unconfirmedJobCallbacks.add(job);this.retainNonforcingObservation(job.jobId,"progress",progress);return;
+    }
+    progress = captured.value;
     if (job.status !== "running" && job.status !== "termination-failed") return;
     const now = Date.now();
     const resumedFromTerminationFailure = job.status === "termination-failed";
@@ -3896,6 +4300,7 @@ export class CodexJobRegistry {
     job.updatedAt = now;
     job.version += 1;
     this.notify(job.jobId, "progress");
+    if (this.nonforcingPinned) return;
     const snapshot = this.progressSnapshot(job, publicEvent);
     if (publicEvent) {
       const critical = resumedFromTerminationFailure ||
@@ -3933,7 +4338,19 @@ export class CodexJobRegistry {
     }
   }
 
-  private recordWorkerAssignment(job: CodexJob, assignment: UpstreamWorkerAssignment): void {
+  private recordWorkerAssignment(job: CodexJob, assignment: UpstreamWorkerAssignment): UpstreamWorkerAssignment | undefined {
+    if (this.nonforcingPinned) {this.retainNonforcingObservation(job.jobId, "assignment", assignment); return;}
+    const captured = snapshotNonforcingData(assignment, () => this.nonforcingPinned);
+    if (!captured.ok || !isRecord(captured.value) || !isCodexBackendKind(captured.value.backendKind) ||
+        typeof captured.value.workerId !== "string" || !captured.value.workerId ||
+        !Number.isSafeInteger(captured.value.workerGeneration) || captured.value.workerGeneration < 0 ||
+        (["workerPid","processGroupId"] as const).some(key => captured.value[key] !== undefined &&
+          (!Number.isSafeInteger(captured.value[key]) || (captured.value[key] as number) <= 0)) ||
+        (["upstreamRequestId","threadId","sessionId","forkedFromThreadId"] as const).some(key => captured.value[key] !== undefined &&
+          (typeof captured.value[key] !== "string" || !captured.value[key]))) {
+      this.nonforcingUnknown = true;this.unconfirmedJobCallbacks.add(job);this.retainNonforcingObservation(job.jobId,"assignment",assignment);return;
+    }
+    assignment = captured.value;
     if (job.status !== "running" && job.status !== "termination-failed") return;
     if (job.workerId && (job.workerId !== assignment.workerId || job.workerGeneration !== assignment.workerGeneration ||
         job.upstreamRequestId && assignment.upstreamRequestId && job.upstreamRequestId !== assignment.upstreamRequestId)) {
@@ -3957,6 +4374,7 @@ export class CodexJobRegistry {
     job.version += 1;
     this.persistJob(job);
     this.notify(job.jobId);
+    return assignment;
   }
 
   private jobsForWorker(job: CodexJob): CodexJob[] {
@@ -3975,10 +4393,12 @@ export class CodexJobRegistry {
     suppliedIntent: CancellationIntentRecord,
     options: ForceTerminateOptions
   ): Promise<CodexJob> {
+    this.assertNonforcingAdmission();
     const primaryIntent = this.assertCancellationIntentForJob(jobId, suppliedIntent);
     const target = this.get(jobId);
     if (!target) throw new Error("Unknown Codex job id. Read codex_status({}) for the current conversation and use an exact retained Job id.");
     this.assertOriginalJobControl(target);
+    this.assertNonforcingAdmission();
     if (primaryIntent.scopeId !== target.scopeId || primaryIntent.targetActivityId !== target.activityId) {
       throw new Error("Cancellation intent scope or Activity no longer matches the target job.");
     }
@@ -3991,7 +4411,9 @@ export class CodexJobRegistry {
       this.setCancellationIntentStatus(primaryIntent.intentId, "no-op");
       return target;
     }
-    if (!target.workerId || target.workerGeneration === undefined || !this.upstream?.forceTerminateWorker) {
+    const terminate = this.upstream?.forceTerminateWorker;
+    this.assertNonforcingAdmission();
+    if (!target.workerId || target.workerGeneration === undefined || !terminate) {
       target.status = "termination-failed";
       target.cancelRequestedAt ||= Date.now();
       target.cancellationIntentId = primaryIntent.intentId;
@@ -4091,12 +4513,15 @@ export class CodexJobRegistry {
       ...(target.upstreamRequestId ? { upstreamRequestId: target.upstreamRequestId } : {})
     };
     try {
-      const result = await this.upstream.forceTerminateWorker(
+      this.assertNonforcingAdmission();
+      const observedResult = await Reflect.apply(terminate,this.upstream,[
         assignment,
         cancellationTerminationCorrelation(primaryIntent),
         undefined,
         options.interruptOnly ? {interruptOnly:true} : undefined
-      );
+      ]);
+      this.assertNonforcingAdmission();
+      const result = this.admittedData(observedResult);
       if (result.mode === "already-completed") {
         this.activityTransaction(() => {
           for (const job of initiallyTerminating) {
@@ -4157,10 +4582,17 @@ export class CodexJobRegistry {
       });
       for (const job of actuallyAffected) this.acknowledgeSettledExecution(job);
     } catch (error) {
+      if (this.nonforcingPinned) throw error;
+      const captured = this.capturedExecutionError(error);
+      if (!captured.ok || this.nonforcingPinned) {
+        this.nonforcingUnknown = true;
+        this.retainNonforcingObservation(jobId,"termination-error",error);
+        throw error;
+      }
       this.activityTransaction(() => {
         for (const job of initiallyTerminating) {
           job.status = "termination-failed";
-          job.error = `Could not confirm Codex worker termination: ${error instanceof Error ? error.message : String(error)}`;
+          job.error = `Could not confirm Codex worker termination: ${captured.error.message}`;
           this.recordChange(job);
         }
         for (const intent of impactIntentByJobId.values()) {
@@ -4176,6 +4608,7 @@ export class CodexJobRegistry {
   }
 
   private recordChange(job: CodexJob): void {
+    this.assertNonforcingAdmission();
     job.updatedAt = Date.now();
     job.version += 1;
     this.notify(
@@ -4265,15 +4698,23 @@ export class CodexJobRegistry {
   }
 
   private notify(jobId: string, reason: CodexJobWakeReason = "state-change"): void {
+    if (this.nonforcingPinned) return;
     const current = this.jobs.get(jobId);
     const effectiveReason = current && isTerminalActivityJobStatus(current.status)
       ? "terminal"
       : reason;
     if (current) this.lastWake.set(jobId, { version: current.version, reason: effectiveReason });
-    for (const listener of this.changeListeners) listener(effectiveReason, current?.agentId);
-    for (const listener of [...(this.waiters.get(jobId) || [])]) listener(effectiveReason);
+    this.publishRegistryChanges(effectiveReason,current?.agentId);
+    for (const listener of [...(this.waiters.get(jobId) || [])]) {
+      if (this.nonforcingPinned) return;
+      listener(effectiveReason);
+    }
     if (effectiveReason === "terminal") {
-      for (const listener of [...(this.terminalWaiters.get(jobId) || [])]) listener();
+      for (const listener of [...(this.terminalWaiters.get(jobId) || [])]) {
+        if (this.nonforcingPinned) return;
+        listener();
+      }
+      if (this.nonforcingPinned) return;
       if (this.observedRunningCount() === 0) {
         this.scheduleIdleRetainedJobMaintenance();
       }
@@ -4281,8 +4722,30 @@ export class CodexJobRegistry {
   }
 
   private notifyScope(scopeId: string, agentId?: string): void {
-    for (const listener of this.changeListeners) listener(undefined, agentId);
-    for (const listener of [...(this.scopeWaiters.get(scopeId) || [])]) listener();
+    if (this.nonforcingPinned) return;
+    this.publishRegistryChanges(undefined,agentId);
+    for (const listener of [...(this.scopeWaiters.get(scopeId) || [])]) {
+      if (this.nonforcingPinned) return;
+      listener();
+    }
+  }
+
+  private publishRegistryChanges(reason?: CodexJobWakeReason, agentId?: string): void {
+    for (const listener of this.changeListeners) {
+      if (this.nonforcingPinned) return;
+      this.registryCallbacksInFlight++;
+      try {
+        const result = Reflect.apply(listener,undefined,[reason,agentId]);
+        if (result !== undefined) {
+          this.nonforcingUnknown = true;
+          this.retainNonforcingObservation("listener","listener-result",result);
+        }
+      } catch (error) {
+        this.nonforcingUnknown = true;
+        this.retainNonforcingObservation("listener","listener-error",error);
+        throw error;
+      } finally {this.registryCallbacksInFlight--;}
+    }
   }
 
   /**
@@ -4446,6 +4909,7 @@ export class CodexJobRegistry {
   }
 
   private persistJob(job: CodexJob, removed: string[] = [], notifyScope = true): void {
+    this.assertNonforcingAdmission();
     const { promise: _promise, ...persisted } = job;
     this.activityStore.transaction(() => {
       this.activityStore.upsertJob(persisted);
@@ -4468,17 +4932,13 @@ export class CodexJobRegistry {
       this.persistJob(job, removed);
       return true;
     } catch (error) {
-      if (!this.persistenceWarningShown) {
-        console.error(
-          `Could not persist Codex job state: ${error instanceof Error ? error.message : String(error)}`
-        );
-        this.persistenceWarningShown = true;
-      }
+      this.recordPersistenceWarning("Could not persist Codex job state",error);
       return false;
     }
   }
 
   private persistProgressSnapshotBestEffort(snapshot: ProgressPersistenceSnapshot): boolean {
+    if (this.nonforcingPinned) {this.retainNonforcingObservation(snapshot.jobId, "progress-snapshot", snapshot); return false;}
     return snapshot.publicEvent
       ? this.persistTelemetrySnapshotBestEffort(snapshot)
       : this.persistProgressStateSnapshotBestEffort(snapshot);
@@ -4524,12 +4984,7 @@ export class CodexJobRegistry {
       this.notifyScope(snapshot.scopeId);
       return true;
     } catch (error) {
-      if (!this.persistenceWarningShown) {
-        console.error(
-          `Could not persist Codex job telemetry: ${error instanceof Error ? error.message : String(error)}`
-        );
-        this.persistenceWarningShown = true;
-      }
+      this.recordPersistenceWarning("Could not persist Codex job telemetry",error);
       return false;
     }
   }
@@ -4553,12 +5008,7 @@ export class CodexJobRegistry {
       if (scopeChanged) this.notifyScope(snapshot.scopeId);
       return true;
     } catch (error) {
-      if (!this.persistenceWarningShown) {
-        console.error(
-          `Could not persist Codex job progress: ${error instanceof Error ? error.message : String(error)}`
-        );
-        this.persistenceWarningShown = true;
-      }
+      this.recordPersistenceWarning("Could not persist Codex job progress",error);
       return false;
     }
   }
@@ -4615,6 +5065,8 @@ export class CodexJobRegistry {
     maxRemoved?: number;
     maxDurationMs?: number;
   } = {}): number {
+    this.assertNonforcingAdmission();
+    options = this.admittedData(options);
     const startedAt = performance.now();
     try {
       this.refreshProjectIdentities();
@@ -4623,13 +5075,8 @@ export class CodexJobRegistry {
         const result = executeOperationalStateCommand(this.activityStore, command);
         return this.applyRetainedJobMaintenanceResult(command, result);
       } catch (error) {
-        this.retainedJobMaintenanceIterator = undefined;
-        if (!this.persistenceWarningShown) {
-          console.error(
-            `Could not persist Codex job pruning: ${error instanceof Error ? error.message : String(error)}`
-          );
-          this.persistenceWarningShown = true;
-        }
+        if (!this.nonforcingPinned) this.retainedJobMaintenanceIterator = undefined;
+        this.recordPersistenceWarning("Could not persist Codex job pruning",error);
         return 0;
       }
     } finally {
@@ -4777,6 +5224,7 @@ export class CodexJobRegistry {
   }
 
   private refreshProjectIdentities(): void {
+    if (this.nonforcingPinned) return;
     const revision = this.activityStore.getProjectRegistryRevision();
     if (revision === this.projectedProjectRevision) return;
     const activities = new Map(
@@ -4912,7 +5360,7 @@ export function registerBridgeTools(
   const runtimeAdmission = jobs.runtimeAdmission;
   const executionAcceptingNewJobs = () => runtimeOptions.canAcceptNewJobs?.() !== false;
   const acceptingNewJobs = () =>
-    runtimeAdmission.acceptingNewJobs && runtimeAdmission.storageError === undefined &&
+    !jobs.nonforcingShutdownPinned && runtimeAdmission.acceptingNewJobs && runtimeAdmission.storageError === undefined &&
     executionAcceptingNewJobs();
   let testTaskReadStorageError =
     runtimeOptions.conformanceFixtures && process.env.NODE_ENV === "test" &&
@@ -4965,7 +5413,7 @@ export function registerBridgeTools(
         `${runtimeAdmission.storageError}; retry only after a confirmed state commit.`
       );
     }
-    if (!runtimeAdmission.acceptingNewJobs) {
+    if (jobs.nonforcingShutdownPinned || !runtimeAdmission.acceptingNewJobs) {
       throw new Error(
         "BRIDGE_DRAINING: The app is preparing to stop or restart the bridge. " +
         "No new Codex work is being admitted; retry after the runtime is available."
@@ -4982,7 +5430,8 @@ export function registerBridgeTools(
     return () => {
       if (released) return;
       released = true;
-      runtimeAdmission.pendingAdmissions = Math.max(0, runtimeAdmission.pendingAdmissions - 1);
+      if (!jobs.nonforcingShutdownPinned)
+        runtimeAdmission.pendingAdmissions = Math.max(0, runtimeAdmission.pendingAdmissions - 1);
     };
   };
   type AccountObservation = {
@@ -5320,11 +5769,13 @@ export function registerBridgeTools(
       jobs.releaseNativeCompletionNotifications(input.outboxIds, input.leaseOwner);
     },
     subscribeChanges(listener) {
+      if (jobs.nonforcingShutdownPinned) throw new Error("NONFORCING_SHUTDOWN_PINNED");
+      const publish = (topic: "settings" | "dashboard" | "enrichment") => {if (!jobs.nonforcingShutdownPinned) listener(topic);};
       const subscriptions = [
-        jobs.subscribeChanges(() => listener("dashboard")),
-        userSettings.subscribeChanges(() => { listener("settings"); listener("dashboard"); }),
-        modelCatalog.subscribe?.(() => listener("settings")),
-        subscribeCardObservations(upstream, () => listener("enrichment"))
+        jobs.subscribeChanges(() => publish("dashboard")),
+        userSettings.subscribeChanges(() => { publish("settings"); publish("dashboard"); }),
+        modelCatalog.subscribe?.(() => publish("settings")),
+        subscribeCardObservations(upstream, () => publish("enrichment"))
       ];
       return () => { for (const unsubscribe of subscriptions) unsubscribe?.(); };
     },
@@ -5500,9 +5951,11 @@ export function registerBridgeTools(
       return runtimeAdmissionSnapshot(options);
     },
     cancelDrain() {
-      runtimeAdmission.acceptingNewJobs = true;
+      if (!jobs.nonforcingShutdownPinned) runtimeAdmission.acceptingNewJobs = true;
       return runtimeAdmissionSnapshot();
     },
+    pinNonforcingShutdown() {return jobs.pinNonforcingShutdown();},
+    observeNonforcingExit() {return jobs.observeNonforcingExit();},
     setStorageAdmissionError(error) {
       runtimeAdmission.storageError = error;
     }
@@ -9709,7 +10162,7 @@ async function startNewSession(input: {
         sessions: input.sessions,
         jobs: input.jobs,
         authBoundary: job.authBoundary,
-        sessionDecision,
+        sessionDecision: job.sessionDecision,
         agent,
         threadId: assignment.threadId,
         scopeId: input.routing.scopeId,
@@ -9735,7 +10188,7 @@ async function startNewSession(input: {
         sessions: input.sessions,
         jobs: input.jobs,
         authBoundary: job.authBoundary,
-        sessionDecision,
+        sessionDecision: job.sessionDecision,
         agent,
         threadId,
         scopeId: input.routing.scopeId,
@@ -10018,7 +10471,7 @@ async function forkTrackedSession(input: {
         sessions: input.sessions,
         jobs: input.jobs,
         authBoundary: job.authBoundary,
-        sessionDecision,
+        sessionDecision: job.sessionDecision,
         agent: input.agent,
         threadId: assignment.threadId,
         scopeId: input.routing.scopeId,
@@ -10044,7 +10497,7 @@ async function forkTrackedSession(input: {
         sessions: input.sessions,
         jobs: input.jobs,
         authBoundary: job.authBoundary,
-        sessionDecision,
+        sessionDecision: job.sessionDecision,
         agent: input.agent,
         threadId,
         scopeId: input.routing.scopeId,
@@ -11227,6 +11680,9 @@ export type BridgeApplicationService = {
   cancelDrain(): Promise<BridgeRuntimeAdmissionSnapshot>;
   /** Internal runtime gate; never registered as an MCP or native RPC method. */
   setStorageAdmissionError?(error?: BridgeStorageAdmissionError): void;
+  /** Internal resource fence/observation, never registered as MCP/native RPC. */
+  pinNonforcingShutdown?(): true;
+  observeNonforcingExit?(): ShutdownResult;
   /** Local native app only: opaque completion events, never task content. */
   claimNativeCompletionNotifications?(input: BridgeNativeCompletionNotificationClaim): Promise<NativeCompletionNotification[]>;
   markNativeCompletionNotificationsDelivered?(input: BridgeNativeCompletionNotificationMutation): Promise<void>;

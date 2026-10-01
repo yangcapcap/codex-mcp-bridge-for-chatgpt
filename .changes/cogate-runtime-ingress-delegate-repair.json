@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Reject unsupported synchronous Events delegate returns before mutation continuation and register original unsubscribe callback ownership during pin.",
+  "breaking": false,
+  "migration": null
+}

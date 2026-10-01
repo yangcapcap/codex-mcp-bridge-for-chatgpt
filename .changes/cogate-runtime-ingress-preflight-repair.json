@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Include standalone MCP owned SQLite in fresh shutdown receipts and register Events request ownership before scope and ledger preflight callbacks.",
+  "breaking": false,
+  "migration": null
+}

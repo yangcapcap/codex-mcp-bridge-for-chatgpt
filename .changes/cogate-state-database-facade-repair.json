@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Guard borrowed native SQLite methods and preserve transaction variant bindings during explicit nonforcing shutdown.","breaking":false,"migration":null}
