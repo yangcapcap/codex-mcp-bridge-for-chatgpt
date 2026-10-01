@@ -3,7 +3,6 @@ import { SCOPE_ID_PATTERN } from "./sessionRegistry.js";
 import type { BridgeStateStore } from "./stateStore.js";
 import { parseJsonTextStrict } from "./textIntegrity.js";
 
-const SCOPE_SECRET_META_KEY = "scope_hmac_secret_v1";
 const CHATGPT_CONVERSATION_LINKS_META_KEY = "chatgpt_conversation_links_v1";
 const SCOPE_KEY_VERSION = 1;
 const SCOPE_ROTATION_POLICY = "manual-state-migration-required" as const;
@@ -35,24 +34,24 @@ export type ScopeResolverOptions = {
  * never retained, and scopes observed before this capture cannot be backfilled.
  */
 export class ScopeResolver {
-  private readonly secret: Buffer;
+  private readonly secret?: Buffer;
   private readonly stateStore?: BridgeStateStore;
   private readonly conversationIds: Map<string, string>;
 
   constructor(options: ScopeResolverOptions = {}) {
+    if (options.secret && options.stateStore) {
+      throw new Error("Conversation-scope resolver cannot override persisted HMAC state.");
+    }
     this.stateStore = options.stateStore;
-    this.secret = options.secret
-      ? validateSecret(Buffer.from(options.secret))
-      : options.stateStore
-        ? loadOrCreateSecret(options.stateStore)
-        : randomBytes(32);
+    if (options.stateStore) options.stateStore.activeSecurityHmacKey("scope", true);
+    else this.secret = options.secret ? validateSecret(Buffer.from(options.secret)) : randomBytes(32);
     this.conversationIds = options.stateStore
       ? loadConversationIds(options.stateStore)
       : new Map();
   }
 
   get keyVersion(): number {
-    return SCOPE_KEY_VERSION;
+    return this.stateStore?.activeSecurityHmacKey("scope").generation ?? SCOPE_KEY_VERSION;
   }
 
   get rotationPolicy(): typeof SCOPE_ROTATION_POLICY {
@@ -62,13 +61,20 @@ export class ScopeResolver {
   resolve(metadata: ToolCallMetadata, explicitScopeId?: string): ScopeResolution | undefined {
     const hostIdentity = readHostIdentity(metadata);
     if (hostIdentity) {
-      const scopeId = deriveScopeId(this.secret, hostIdentity);
+      const routing = this.stateStore?.conversationScopeRouting(hostIdentity);
+      let scopeId: string;
+      if (routing) scopeId = routing.existingCanonicalScopeId ?? routing.activeScopeId;
+      else {
+        const key = this.stateStore?.activeSecurityHmacKey("scope");
+        if (key && key.generation !== 1) throw new Error("Conversation routing generation changed; retry resolution.");
+        scopeId = deriveScopeId(key?.secret ?? this.secret!, hostIdentity);
+      }
       const conversationId = normalizeChatGptConversationId(hostIdentity.session);
       if (conversationId) this.rememberConversationId(scopeId, conversationId);
       return {
         scopeId,
         source: "host-metadata",
-        keyVersion: SCOPE_KEY_VERSION,
+        keyVersion: routing?.activeGeneration ?? SCOPE_KEY_VERSION,
         explicitInputIgnored: explicitScopeId !== undefined,
         ...(conversationId
           ? { conversationUrl: chatGptConversationUrl(conversationId) }
@@ -81,9 +87,9 @@ export class ScopeResolver {
       throw new Error("Expected a UUID-formatted compatibility scope id.");
     }
     return {
-      scopeId: normalized,
+      scopeId: this.stateStore?.canonicalConversationScopeId(normalized) ?? normalized,
       source: "explicit-compatibility",
-      keyVersion: SCOPE_KEY_VERSION,
+      keyVersion: this.keyVersion,
       explicitInputIgnored: false
     };
   }
@@ -101,7 +107,9 @@ export class ScopeResolver {
   }
 
   conversationUrl(scopeId: string): string | undefined {
-    const conversationId = this.conversationIds.get(scopeId.toLowerCase());
+    const normalized = scopeId.toLowerCase();
+    const canonical = this.stateStore?.canonicalConversationScopeId(normalized) ?? normalized;
+    const conversationId = this.conversationIds.get(canonical);
     return conversationId ? chatGptConversationUrl(conversationId) : undefined;
   }
 
@@ -229,27 +237,6 @@ function persistConversationIds(
   );
 }
 
-function loadOrCreateSecret(stateStore: BridgeStateStore): Buffer {
-  return stateStore.transaction(() => {
-    const encoded = stateStore.getMeta(SCOPE_SECRET_META_KEY);
-    if (encoded !== undefined) {
-      try {
-        const decoded = validateSecret(Buffer.from(encoded, "base64url"));
-        if (decoded.toString("base64url") !== encoded) {
-          throw new Error("Conversation-scope HMAC key is not canonical base64url.");
-        }
-        return decoded;
-      } catch (error) {
-        throw new Error(
-          `Invalid persisted conversation-scope HMAC key: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-    const created = randomBytes(32);
-    stateStore.setMeta(SCOPE_SECRET_META_KEY, created.toString("base64url"));
-    return created;
-  });
-}
 
 function validateSecret(secret: Buffer): Buffer {
   if (secret.length !== 32) throw new Error("Conversation-scope HMAC key must contain exactly 32 bytes.");

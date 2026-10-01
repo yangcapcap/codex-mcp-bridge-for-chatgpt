@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -7,6 +7,10 @@ import {StateDatabaseShutdownFence} from "./stateDatabaseShutdownFence.js";
 import type {ShutdownResult} from "./shutdown.js";
 import { V31_COGATE_UNIFIED_MIGRATION_SCHEMA } from "./cogateUnifiedSchema.js";
 import { assertCoGateUnifiedRuntimeAdmission } from "./cogateRuntimeAdmission.js";
+import { loadSecurityHmacKeyring, SCOPE_HMAC_PURPOSE, EXECUTION_POLICY_HMAC_PURPOSE,
+  SECURITY_ROTATION_REQUIRED_META_KEY, type SecurityHmacPurpose } from "./cogateLegacySecurityRead.js";
+import { readCoGateScopeRoutingSnapshot, type CoGateScopeIdentity,
+  type CoGateScopeRoutingInspection } from "./cogateScopeRoutingRead.js";
 import { McpEventStore } from "./mcpEventStore.js";
 import { TaskFollowupStore, issueApprovedFollowups, readFollowupReference, type ApprovedFollowup, type FollowupReference } from "./taskFollowups.js";
 import { canonicalHumanText, parseJsonTextStrict } from "./textIntegrity.js";
@@ -4154,6 +4158,110 @@ export class BridgeStateStore {
       );
     }
     return delivery;
+  }
+
+  /** Internal composition only: keys stay in the single runtime owner. No
+   * state-service/IPC command exposes this method or serializes key material.
+   * Empty upstream state retains its original generation-one meta encoding;
+   * any versioned/partial CoGate state must validate the paired keyrings. */
+  activeSecurityHmacKey(purpose: SecurityHmacPurpose, createIfMissing = false): {
+    generation: number; secret: Buffer
+  } {
+    if (purpose !== SCOPE_HMAC_PURPOSE && purpose !== EXECUTION_POLICY_HMAC_PURPOSE) {
+      throw new Error("Invalid runtime HMAC purpose.");
+    }
+    const readOrCreate = () => {
+      if (this.#hasVersionedSecurityHmacState()) {
+        this.#assertHmacStateSchema();
+        const key = loadSecurityHmacKeyring(this.database, purpose).active;
+        return { generation: key.generation, secret: Buffer.from(key.secret) };
+      }
+      // No table/marker may silently downgrade an incomplete conversion to a
+      // newly generated legacy secret. This also preserves the activation gate.
+      assertCoGateUnifiedRuntimeAdmission(this.database);
+      const name = purpose === SCOPE_HMAC_PURPOSE ? "scope_hmac_secret_v1" : "execution_policy_hmac_secret_v1";
+      const encoded = this.getMeta(name);
+      if (encoded !== undefined) {
+        const secret = Buffer.from(encoded, "base64url");
+        if (secret.length !== 32 || secret.toString("base64url") !== encoded) {
+          throw new Error(`Invalid persisted ${purpose === SCOPE_HMAC_PURPOSE ? "conversation-scope" : purpose} HMAC key.`);
+        }
+        return { generation: 1, secret };
+      }
+      if (createIfMissing !== true || this.readOnly) throw new Error(`Runtime requires an existing ${purpose} HMAC key.`);
+      const secret = randomBytes(32);
+      this.setMeta(name, secret.toString("base64url"));
+      return { generation: 1, secret: Buffer.from(secret) };
+    };
+    return createIfMissing === true && !this.readOnly
+      ? this.transaction(readOrCreate) : this.#withSecurityReadSnapshot(readOrCreate);
+  }
+
+  /** Correlation routing only, using the owner's current snapshot. No scope,
+   * alias, membership, Job, writer or dispatch authority is created here. */
+  conversationScopeRouting(identity: CoGateScopeIdentity): CoGateScopeRoutingInspection | undefined {
+    return this.#withSecurityReadSnapshot(() => {
+      if (!this.#hasVersionedSecurityHmacState()) {
+        assertCoGateUnifiedRuntimeAdmission(this.database);
+        return undefined;
+      }
+      return readCoGateScopeRoutingSnapshot(this.database, identity, 31);
+    });
+  }
+
+  /** Existing aliases are correlation lookups, never membership or admission. */
+  canonicalConversationScopeId(scopeId: string): string {
+    if (typeof scopeId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(scopeId)) {
+      throw new Error("Invalid conversation scope id.");
+    }
+    return this.#withSecurityReadSnapshot(() => {
+      if (!this.#hasVersionedSecurityHmacState()) {
+        assertCoGateUnifiedRuntimeAdmission(this.database);
+        return scopeId;
+      }
+      this.#assertHmacStateSchema();
+      const ring = loadSecurityHmacKeyring(this.database, SCOPE_HMAC_PURPOSE);
+      const canonical = this.database.prepare("SELECT scope_id FROM main.scopes WHERE scope_id=?").get(scopeId);
+      const alias = this.database.prepare(`SELECT canonical_scope_id,key_generation,rotation_id
+        FROM main.scope_aliases WHERE alias_scope_id=?`).get(scopeId) as {
+          canonical_scope_id: string; key_generation: number; rotation_id: string
+        } | undefined;
+      if (canonical && alias) throw new Error("SECURITY_SCOPE_ALIAS_COLLISION");
+      if (!alias) return scopeId;
+      const key = [ring.active, ...ring.retired].find(key => key.generation === alias.key_generation);
+      if (!key || key.rotationId !== alias.rotation_id) throw new Error("SECURITY_SCOPE_ALIAS_PROVENANCE_CONFLICT");
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(alias.canonical_scope_id) ||
+        !this.database.prepare("SELECT 1 FROM main.scopes WHERE scope_id=?").get(alias.canonical_scope_id)) {
+        throw new Error("SECURITY_SCOPE_LOOKUP_CANONICAL_MISSING");
+      }
+      return alias.canonical_scope_id;
+    });
+  }
+
+  #hasVersionedSecurityHmacState(): boolean {
+    return this.getMeta(SECURITY_ROTATION_REQUIRED_META_KEY) !== undefined ||
+      Boolean(this.database.prepare("SELECT 1 FROM main.security_hmac_keys LIMIT 1").get());
+  }
+
+  #assertHmacStateSchema(): void {
+    if (this.database.prepare("SELECT 1 FROM temp.sqlite_master LIMIT 1").get()) {
+      throw new Error("Runtime HMAC state rejects TEMP objects.");
+    }
+    const objects = this.database.prepare(`SELECT type,name,tbl_name AS tableName,sql
+      FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
+      ORDER BY type,name`).all();
+    if (this.getMeta("schema_version") !== "31" ||
+      createHash("sha256").update(JSON.stringify(objects)).digest("hex") !==
+      "2ced184f0b7de991be944c28fdf5219f16863ae69d645e7092b75aadd377e79a") {
+      throw new Error("Runtime HMAC state requires the fixed unified31 schema.");
+    }
+  }
+
+  #withSecurityReadSnapshot<T>(read: () => T): T {
+    if (this.database.inTransaction) return read();
+    this.database.exec("BEGIN");
+    try { return read(); }
+    finally { if (this.database.inTransaction) this.database.exec("ROLLBACK"); }
   }
 
   getMeta(key: string): string | undefined {

@@ -27,7 +27,7 @@ const SCHEMAS = new Map<string, 21 | 31>([
   ["2ced184f0b7de991be944c28fdf5219f16863ae69d645e7092b75aadd377e79a", 31]
 ]);
 
-/** State-owned read model for the future Workspace adapter. This does not
+/** State-owned correlation read model, shared with the unified ScopeResolver. This does not
  * authenticate host metadata, bind an alias, create a scope, or admit execution.
  * It deliberately works before runtime activation, on an idle read-only copy.
  * Retirement evidence permits lookup only, never signing or dispatch. */
@@ -41,65 +41,75 @@ export function inspectCoGateScopeRouting(database: Database.Database,
   try {
     database.pragma("query_only = ON");
     database.exec("BEGIN");
-    if (database.prepare("SELECT 1 FROM temp.sqlite_master LIMIT 1").get()) {
-      throw new Error("CoGate scope inspection rejects caller TEMP objects.");
-    }
-    const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
-      FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
-      ORDER BY type,name`).all();
-    const schema = SCHEMAS.get(createHash("sha256").update(JSON.stringify(objects)).digest("hex"));
-    const version = database.prepare("SELECT value FROM main.bridge_meta WHERE key='schema_version'")
-      .get() as { value: string } | undefined;
-    if (!schema || version?.value !== String(schema)) {
-      throw new Error("CoGate scope inspection requires the fixed legacy21 or unified31 schema.");
-    }
-    const ring = loadSecurityHmacKeyring(database, SCOPE_HMAC_PURPOSE);
-    const keys = [ring.active, ...ring.retired];
-    const canonical = database.prepare("SELECT scope_id FROM main.scopes WHERE scope_id=?");
-    const alias = database.prepare(`SELECT canonical_scope_id,key_generation
-      FROM main.scope_aliases WHERE alias_scope_id=?`);
-    const evidence = database.prepare(`SELECT canonical_scope_id FROM main.scope_rotation_lookup_evidence
-      WHERE key_generation=? AND lookup_scope_id=?`);
-    const matches: CoGateScopeRoutingInspection["matches"] = [];
-    const activeScopeId = deriveScopeId(ring.active.secret, identity);
-    for (const key of keys) {
-      const scopeId = deriveScopeId(key.secret, identity);
-      const scope = canonical.get(scopeId) as { scope_id: string } | undefined;
-      const mapped = alias.get(scopeId) as { canonical_scope_id: string; key_generation: number } | undefined;
-      if (scope && mapped) throw new Error("SECURITY_SCOPE_ALIAS_COLLISION");
-      const current = scope?.scope_id ?? mapped?.canonical_scope_id;
-      if (mapped && mapped.key_generation !== key.generation) {
-        throw new Error("SECURITY_SCOPE_ALIAS_PROVENANCE_CONFLICT");
-      }
-      let resolved: string | undefined;
-      if (key === ring.active) {
-        resolved = current;
-      } else {
-        // Full keyring validation above has already validated the paired
-        // rotation plan, applied event, receipt counts and immutable evidence.
-        const historical = evidence.get(key.generation, scopeId) as { canonical_scope_id: string } | undefined;
-        if (!historical) continue; // A later-created old-key UUID is not evidence.
-        resolved = historical.canonical_scope_id;
-        if (current && current !== resolved) throw new Error("SECURITY_SCOPE_LOOKUP_EVIDENCE_CONFLICT");
-      }
-      if (resolved !== undefined) {
-        if (!UUID.test(resolved) || !canonical.get(resolved)) {
-          throw new Error("SECURITY_SCOPE_LOOKUP_CANONICAL_MISSING");
-        }
-        matches.push({ scopeId, canonicalScopeId: resolved, generation: key.generation,
-          basis: key === ring.active ? "current-namespace" : "retirement-snapshot" });
-      }
-    }
-    const targets = new Set(matches.map(match => match.canonicalScopeId));
-    if (targets.size > 1) throw new Error("SECURITY_SCOPE_ROUTING_CONFLICT");
-    const existingCanonicalScopeId = matches[0]?.canonicalScopeId;
-    return { format: "cogate-scope-routing-inspection/v1", schema,
-      activeGeneration: ring.active.generation, activeScopeId, matches,
-      ...(existingCanonicalScopeId ? { existingCanonicalScopeId } : {}), authority: "none" };
+    return readCoGateScopeRoutingSnapshot(database, identity);
   } finally {
     try { if (database.inTransaction) database.exec("ROLLBACK"); }
     finally { database.pragma(`query_only = ${queryOnly ? "ON" : "OFF"}`); }
   }
+}
+
+/** Internal state-owner read kernel. The owner supplies the enclosing SQLite
+ * snapshot; this cannot start/commit a transaction, write an alias or activate
+ * a runtime. The idle-copy inspector above retains its original boundary. */
+export function readCoGateScopeRoutingSnapshot(database: Database.Database,
+  suppliedIdentity: CoGateScopeIdentity, expectedSchema?: 31): CoGateScopeRoutingInspection {
+  if (!database.inTransaction) throw new Error("CoGate routing requires an owner snapshot.");
+  const identity = identityData(suppliedIdentity);
+  if (database.prepare("SELECT 1 FROM temp.sqlite_master LIMIT 1").get()) {
+    throw new Error("CoGate scope inspection rejects caller TEMP objects.");
+  }
+  const objects = database.prepare(`SELECT type,name,tbl_name AS tableName,sql
+    FROM main.sqlite_master WHERE sql IS NOT NULL AND substr(name,1,7) != 'sqlite_'
+    ORDER BY type,name`).all();
+  const schema = SCHEMAS.get(createHash("sha256").update(JSON.stringify(objects)).digest("hex"));
+  const version = database.prepare("SELECT value FROM main.bridge_meta WHERE key='schema_version'")
+    .get() as { value: string } | undefined;
+  if (!schema || version?.value !== String(schema) || (expectedSchema !== undefined && schema !== expectedSchema)) {
+    throw new Error("CoGate scope inspection requires the fixed legacy21 or unified31 schema.");
+  }
+  const ring = loadSecurityHmacKeyring(database, SCOPE_HMAC_PURPOSE);
+  const keys = [ring.active, ...ring.retired];
+  const canonical = database.prepare("SELECT scope_id FROM main.scopes WHERE scope_id=?");
+  const alias = database.prepare(`SELECT canonical_scope_id,key_generation
+    FROM main.scope_aliases WHERE alias_scope_id=?`);
+  const evidence = database.prepare(`SELECT canonical_scope_id FROM main.scope_rotation_lookup_evidence
+    WHERE key_generation=? AND lookup_scope_id=?`);
+  const matches: CoGateScopeRoutingInspection["matches"] = [];
+  const activeScopeId = deriveScopeId(ring.active.secret, identity);
+  for (const key of keys) {
+    const scopeId = deriveScopeId(key.secret, identity);
+    const scope = canonical.get(scopeId) as { scope_id: string } | undefined;
+    const mapped = alias.get(scopeId) as { canonical_scope_id: string; key_generation: number } | undefined;
+    if (scope && mapped) throw new Error("SECURITY_SCOPE_ALIAS_COLLISION");
+    const current = scope?.scope_id ?? mapped?.canonical_scope_id;
+    if (mapped && mapped.key_generation !== key.generation) {
+      throw new Error("SECURITY_SCOPE_ALIAS_PROVENANCE_CONFLICT");
+    }
+    let resolved: string | undefined;
+    if (key === ring.active) {
+      resolved = current;
+    } else {
+      // Full keyring validation above has already validated the paired
+      // rotation plan, applied event, receipt counts and immutable evidence.
+      const historical = evidence.get(key.generation, scopeId) as { canonical_scope_id: string } | undefined;
+      if (!historical) continue; // A later-created old-key UUID is not evidence.
+      resolved = historical.canonical_scope_id;
+      if (current && current !== resolved) throw new Error("SECURITY_SCOPE_LOOKUP_EVIDENCE_CONFLICT");
+    }
+    if (resolved !== undefined) {
+      if (!UUID.test(resolved) || !canonical.get(resolved)) {
+        throw new Error("SECURITY_SCOPE_LOOKUP_CANONICAL_MISSING");
+      }
+      matches.push({ scopeId, canonicalScopeId: resolved, generation: key.generation,
+        basis: key === ring.active ? "current-namespace" : "retirement-snapshot" });
+    }
+  }
+  const targets = new Set(matches.map(match => match.canonicalScopeId));
+  if (targets.size > 1) throw new Error("SECURITY_SCOPE_ROUTING_CONFLICT");
+  const existingCanonicalScopeId = matches[0]?.canonicalScopeId;
+  return { format: "cogate-scope-routing-inspection/v1", schema,
+    activeGeneration: ring.active.generation, activeScopeId, matches,
+    ...(existingCanonicalScopeId ? { existingCanonicalScopeId } : {}), authority: "none" };
 }
 
 function identityData(value: CoGateScopeIdentity): CoGateScopeIdentity {

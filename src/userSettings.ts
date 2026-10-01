@@ -1,5 +1,5 @@
 import { DEFAULT_HISTORY_RETENTION_DAYS, HISTORY_RETENTION_DAYS, historyRetentionDays, type HistoryRetentionDays } from "./workHistory.js";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type { AccessStrategy, BridgeConfig, SandboxMode } from "./config.js";
 import { DEFAULT_USER_MAX_CONCURRENT_JOBS } from "./config.js";
 import { EXECUTION_POLICY_VERSION, resolveTaskSandbox } from "./executionPolicy.js";
@@ -30,7 +30,6 @@ import {
 export type { ProjectRegistryOperation } from "./projectRegistry.js";
 
 export const SETTINGS_REVISION_CONFLICT = "SETTINGS_REVISION_CONFLICT";
-const EXECUTION_POLICY_HMAC_SECRET_META_KEY = "execution_policy_hmac_secret_v1";
 const EXECUTION_POLICY_REF_CONTRACT_VERSION = 5;
 const TASK_EXECUTION_ENVELOPE_REF_CONTRACT_VERSION = 6;
 
@@ -80,7 +79,6 @@ export type UserSettingsStoreOptions = {
 
 export class UserSettingsStore {
   private readonly stateStore: BridgeStateStore;
-  private readonly executionPolicyHmacSecret: Buffer;
   private readonly now: () => number;
   private readonly projectionOnly: boolean;
   private readonly initial: GeneralSettings;
@@ -99,10 +97,7 @@ export class UserSettingsStore {
   ) {
     this.stateStore = options.stateStore || new BridgeStateStore({ file: ":memory:" });
     this.projectionOnly = options.projectionOnly === true;
-    this.executionPolicyHmacSecret = loadOrCreateExecutionPolicySecret(
-      this.stateStore,
-      !this.projectionOnly
-    );
+    this.stateStore.activeSecurityHmacKey("execution-policy", !this.projectionOnly);
     this.now = options.now || Date.now;
     this.initial = this.validateGeneral({
       schemaVersion: MODEL_POLICY_SCHEMA_VERSION,
@@ -142,6 +137,10 @@ export class UserSettingsStore {
     return this.stateStore.modelDescriptionHistory(modelId, beforeVersion, limit);
   }
 
+  get executionPolicyKeyGeneration(): number {
+    return this.stateStore.activeSecurityHmacKey("execution-policy").generation;
+  }
+
   get persistent(): boolean {
     return this.stateStore.persistent;
   }
@@ -176,12 +175,14 @@ export class UserSettingsStore {
     settings: BridgeUserSettings = this.current,
     admissionCatalogFingerprint: string | null = null
   ): string {
-    return createHmac("sha256", this.executionPolicyHmacSecret)
+    const key = this.stateStore.activeSecurityHmacKey("execution-policy");
+    return createHmac("sha256", key.secret)
       .update(
         `codex-mcp-bridge/execution-policy/v${EXECUTION_POLICY_REF_CONTRACT_VERSION}\0`
       )
       .update(canonicalJsonValue({
         contract: EXECUTION_POLICY_REF_CONTRACT_VERSION,
+        ...(key.generation > 1 ? { keyGeneration: key.generation } : {}),
         accessStrategy: settings.accessStrategy,
         modelPolicy: canonicalExecutionModelPolicy(settings.modelPolicy),
         usePriorityServiceTier: settings.usePriorityServiceTier,
@@ -206,12 +207,14 @@ export class UserSettingsStore {
    * or the schema itself and therefore still requires a connection Refresh.
    */
   taskExecutionEnvelopeRef(): string {
-    return createHmac("sha256", this.executionPolicyHmacSecret)
+    const key = this.stateStore.activeSecurityHmacKey("execution-policy");
+    return createHmac("sha256", key.secret)
       .update(
         `codex-mcp-bridge/task-execution-envelope/v${TASK_EXECUTION_ENVELOPE_REF_CONTRACT_VERSION}\0`
       )
       .update(canonicalJsonValue({
         contract: TASK_EXECUTION_ENVELOPE_REF_CONTRACT_VERSION,
+        ...(key.generation > 1 ? { keyGeneration: key.generation } : {}),
         taskInputContract: 6,
         maxPromptChars: this.config.maxPromptChars,
         operator: canonicalExecutionOperatorEnvelope(this.config)
@@ -535,32 +538,6 @@ function canonicalGeneralSettings(settings: GeneralSettings): string {
   return JSON.stringify(semantic);
 }
 
-function loadOrCreateExecutionPolicySecret(
-  stateStore: BridgeStateStore,
-  createIfMissing = true
-): Buffer {
-  return stateStore.transaction(() => {
-    const encoded = stateStore.getMeta(EXECUTION_POLICY_HMAC_SECRET_META_KEY);
-    if (encoded !== undefined) {
-      let decoded: Buffer;
-      try {
-        decoded = Buffer.from(encoded, "base64url");
-      } catch {
-        throw new Error("Invalid persisted execution-policy HMAC key encoding.");
-      }
-      if (decoded.length !== 32 || decoded.toString("base64url") !== encoded) {
-        throw new Error("Invalid persisted execution-policy HMAC key.");
-      }
-      return decoded;
-    }
-    if (!createIfMissing) {
-      throw new Error("Read projection requires an existing execution-policy HMAC key.");
-    }
-    const created = randomBytes(32);
-    stateStore.setMeta(EXECUTION_POLICY_HMAC_SECRET_META_KEY, created.toString("base64url"));
-    return created;
-  });
-}
 
 function canonicalJsonValue(value: unknown): string {
   if (value === null) return "null";
