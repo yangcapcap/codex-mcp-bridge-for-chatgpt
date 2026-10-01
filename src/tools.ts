@@ -2476,19 +2476,32 @@ export class CodexJobRegistry {
   }
 
   /** Observers may inspect Jobs, but cannot acquire or replace their authority. */
-  private invokeJobObserver(listener:()=>unknown,kind:string):void {
+  private invokeJobObserver(listener:()=>unknown,kind:string,allowCleanup=false):unknown {
     this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
-    const owners=new Map(this.jobs);
-    const before=new Map<CodexJob,CodexJob>();
+    const owners=new Map(this.jobs),before=new Map<CodexJob,CodexJob>();
+    const uncertainOwners=(error?:unknown)=>{
+      for(const [id,job] of owners){
+        this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+        this.retainNonforcingObservation(id,'observer-unconfirmed-owner',{job,before:before.get(job),listener,error});
+      }
+    };
+    let result:unknown;
     try {
       for(const [id,job] of owners) {
         if(this.unconfirmedJobCallbacks.has(job))continue;
         before.set(job,this.terminalJobData(job,id));
       }
-      const result=Reflect.apply(listener,undefined,[]);
-      // Preserve unsupported raw returns even if ownership validation fails.
-      if(result!==undefined){this.nonforcingUnknown=true;this.retainNonforcingObservation(kind,'listener-result',result);}
-      if(this.nonforcingPinned)return;
+      result=Reflect.apply(listener,undefined,[]);
+      if(result!==undefined && (!allowCleanup || typeof result!=='function')){
+        this.nonforcingUnknown=true;
+        this.retainNonforcingObservation(kind,allowCleanup?'registration-result':'listener-result',result);
+        uncertainOwners();
+        if(allowCleanup)throw new Error('STATE_APPLICATION_SUBSCRIPTION_UNCONFIRMED');
+      }
+      if(this.nonforcingPinned){
+        if(allowCleanup){this.retainNonforcingObservation(kind,'registration-result',result);throw new Error('STATE_APPLICATION_SUBSCRIPTION_UNCONFIRMED');}
+        uncertainOwners();return;
+      }
       let stable=true;
       for(const [id,job] of owners) {
         if(this.jobs.get(id)!==job) {
@@ -2503,8 +2516,12 @@ export class CodexJobRegistry {
         this.retainNonforcingObservation(id,'observer-added-owner',job);stable=false;
       }
       if(!stable)throw new Error('STATE_OBSERVER_JOB_AUTHORITY_UNCONFIRMED');
-    }catch(error){this.nonforcingUnknown=true;this.retainNonforcingObservation(kind,'listener-error',error);throw error;}
-    finally{this.registryCallbacksInFlight--;}
+      return allowCleanup?result:undefined;
+    }catch(error){
+      this.nonforcingUnknown=true;this.retainNonforcingObservation(kind,allowCleanup?'registration-error':'listener-error',error);
+      if(allowCleanup && typeof result==='function')this.retainNonforcingObservation(kind,'registration-result',result);
+      uncertainOwners(error);throw error;
+    }finally{this.registryCallbacksInFlight--;}
   }
   /** Internal application listener boundary; no MCP/native exposure. */
   publishApplicationChange(listener:()=>unknown):void {
@@ -2512,17 +2529,9 @@ export class CodexJobRegistry {
   }
   /** Register first, then retain a returned cleanup capability if pin reenters. */
   registerApplicationSubscription(register:()=>unknown):(()=>void)|undefined {
-    this.assertNonforcingAdmission();this.registryCallbacksInFlight++;
-    try {
-      const result=Reflect.apply(register,undefined,[]);
-      if(this.nonforcingPinned || result!==undefined && typeof result!=='function') {
-        this.nonforcingUnknown=true;this.retainNonforcingObservation('application-subscription','registration-result',result);
-        throw new Error('STATE_APPLICATION_SUBSCRIPTION_UNCONFIRMED');
-      }
-      return result as (()=>void)|undefined;
-    }catch(error){this.nonforcingUnknown=true;this.retainNonforcingObservation('application-subscription','registration-error',error);throw error;}
-    finally{this.registryCallbacksInFlight--;}
+    return this.invokeJobObserver(register,'application-subscription',true) as (()=>void)|undefined;
   }
+
   releaseApplicationSubscriptions(subscriptions:Array<(()=>void)|undefined>):void {
     let firstError:unknown,failed=false;
     for(const unsubscribe of subscriptions) {
@@ -2804,6 +2813,7 @@ export class CodexJobRegistry {
       try {
         if (settlement.kind === "resolved") this.settleResolvedJob(job, settlement.result, settlement.onComplete);
         else this.settleRejectedJob(job, settlement.error);
+        if(this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job))break;
         this.pendingTerminalCommits.delete(job);
         return;
       }
@@ -3878,18 +3888,18 @@ export class CodexJobRegistry {
     if(!undo)return;
     if(this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)){this.retainNonforcingObservation(jobId,'terminal-undo',undo);return;}
     this.registryCallbacksInFlight++;
-    let invoked=false;
     try {
       const before=this.terminalJobData(job,jobId);
-      invoked=true;
       const result=Reflect.apply(undo,undefined,[]);
       if(result!==undefined) {
         this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
         this.retainNonforcingObservation(jobId,'terminal-undo-result',result);
+        this.retainNonforcingObservation(jobId,'terminal-undo',undo);
       }
-      if(!this.nonforcingPinned)this.validateCallbackJobOwnership(job,before);
+      if(this.nonforcingPinned){this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);this.retainNonforcingObservation(jobId,'terminal-undo',undo);}
+      else this.validateCallbackJobOwnership(job,before);
     }catch(error){
-      if(!invoked)this.retainNonforcingObservation(jobId,'terminal-undo',undo);
+      this.retainNonforcingObservation(jobId,'terminal-undo',undo);
       this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
       this.retainNonforcingObservation(jobId,'terminal-undo-error',error);
     }finally{this.registryCallbacksInFlight--;}

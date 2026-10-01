@@ -524,3 +524,15 @@ its first notification, then replaced only by the original execution promise.
 Unsupported rollback return values are retained before validating callback
 ownership. A failed rollback preflight retains the original uncalled undo
 capability. No callback result or notification constitutes writer retirement.
+
+Failed observer and undo capability retention
+-----------------------------------------------
+
+An observer's unsupported return or original thrown error marks every original
+Job seen at the boundary unconfirmed, including an owner removed from the map.
+The original producer settlement remains deferred even when the terminal SQL
+transaction succeeded before the notification. A supported observer returning
+void keeps existing notification behavior; UNKNOWN prevents an execution ACK.
+Subscription registration uses the same authority comparison while accepting
+only its original synchronous cleanup function. Failed, unsupported or pinned
+undo calls retain their original capability as well as raw outcomes and errors.

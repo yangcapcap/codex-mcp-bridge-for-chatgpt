@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Block execution ACK and retain original producer settlements and capabilities when observers fail or return unsupported values, including removed Job owners and failed undo calls.",
+  "breaking": false,
+  "migration": null
+}
