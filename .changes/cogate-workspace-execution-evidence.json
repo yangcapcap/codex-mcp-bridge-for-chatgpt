@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Port bounded generation-correlated Workspace protocol evidence into the unified runtime foundation.",
+  "breaking": false,
+  "migration": null
+}
