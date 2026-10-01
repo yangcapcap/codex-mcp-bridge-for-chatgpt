@@ -7,6 +7,11 @@ the exact retained legacy schema21 or unified storage schema31. It rejects TEMP
 objects, incomplete paired keyrings, required/pending rotation, and ambiguous
 canonical routes. Snapshot failure returns no evidence.
 
+Identity input must be an ordinary object with exactly three own data fields.
+Native Proxy detection rejects even revoked proxies before descriptor reflection
+can invoke caller traps. Getters and extra fields are rejected without reading
+their values; identifiers are bounded and preserve well-formed Unicode exactly.
+
 The original HMAC tuple, v1 domain and UUIDv8 derivation remain unchanged.
 The active generation can locate a current scope or an existing generation-bound
 alias. A retired scope key can locate only immutable lookup evidence captured by

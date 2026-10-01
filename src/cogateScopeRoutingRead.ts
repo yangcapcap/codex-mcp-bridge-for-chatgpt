@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { types as utilTypes } from "node:util";
 import type Database from "better-sqlite3";
 import { loadSecurityHmacKeyring, SCOPE_HMAC_PURPOSE } from "./cogateLegacySecurityRead.js";
 import { assertWellFormedUnicode } from "./textIntegrity.js";
@@ -103,6 +104,9 @@ export function inspectCoGateScopeRouting(database: Database.Database,
 
 function identityData(value: CoGateScopeIdentity): CoGateScopeIdentity {
   if (!value || typeof value !== "object") throw new Error("Invalid CoGate scope identity.");
+  // Native detection is inert even for a revoked Proxy. Descriptor reflection
+  // otherwise executes caller traps before a snapshot can protect its state.
+  if (utilTypes.isProxy(value)) throw new Error("CoGate scope identity rejects Proxy inputs.");
   const fields = Object.getOwnPropertyDescriptors(value);
   if (Reflect.ownKeys(fields).length !== 3) throw new Error("Invalid CoGate scope identity fields.");
   const read = (name: keyof CoGateScopeIdentity): string | null => {
