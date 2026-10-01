@@ -2204,6 +2204,7 @@ export class CodexJobRegistry {
   private readonly jobs = new Map<string, CodexJob>();
   readonly #observerJobs=this.jobs;
   readonly #admittedJobOwners=new Map<string,CodexJob>();
+  readonly #producerOutcomes=new WeakSet<CodexJob>();
   private readonly ownedJobIds = new WeakMap<CodexJob,string>();
   private readonly ownedJobPromises = new WeakMap<CodexJob,Promise<void>>();
   private readonly ownedJobPrototypes = new WeakMap<CodexJob,object|null>();
@@ -2339,7 +2340,10 @@ export class CodexJobRegistry {
       this.cancellationOperationsInFlight.size + this.steeringOperationsInFlight.size + this.interactionResponses.size +
       this.nonforcingLateObservationCount + this.runtimeAdmission.pendingAdmissions;
     if (retained > 0 || this.progressPersistenceQueue.status().queued > 0) return shutdownResult("uncertain");
-    const active = this.observedRunningCount();
+    const active = observerMapInventory(this.#admittedJobOwners).filter(([,job])=>{
+      const status=Object.getOwnPropertyDescriptor(job,'status');
+      return !this.#producerOutcomes.has(job) || !!status && ('value' in status) && isActiveActivityJobStatus(status.value);
+    }).length;
     return combineShutdown([
       active > 0 ? shutdownResult("timeout", active) : shutdownResult("exited"),
       this.threadController?.observeNonforcingExit() ?? shutdownResult("exited"),
@@ -2502,7 +2506,16 @@ export class CodexJobRegistry {
     }
     for(const [id,job] of observerMapInventory(this.#admittedJobOwners)) {
       const indexed=Reflect.apply(observerMapGet,this.#observerJobs,[id]);
-      if(indexed!==job || !confirmed){
+      const descriptors=Object.getOwnPropertyDescriptors(job),identity=descriptors.jobId,promise=descriptors.promise,status=descriptors.status;
+      const fieldsConfirmed=Object.getPrototypeOf(job)===this.ownedJobPrototypes.get(job) &&
+        !!identity && ('value' in identity) && identity.value===id &&
+        !!promise && ('value' in promise) && promise.value===this.ownedJobPromises.get(job) &&
+        !!status && ('value' in status) && typeof status.value==='string' &&
+        (isActiveActivityJobStatus(status.value) || isTerminalActivityJobStatus(status.value));
+      if(!fieldsConfirmed){
+        this.retainNonforcingObservation(id,'admission-original-fields',{job,descriptors,originalPromise:this.ownedJobPromises.get(job)});
+      }
+      if(indexed!==job || !fieldsConfirmed || !confirmed){
         this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);confirmed=false;
         this.retainNonforcingObservation(id,'admission-original-owner',{job,indexed});
       }
@@ -2826,6 +2839,7 @@ export class CodexJobRegistry {
   }
 
   private async settleExecution(job: CodexJob, settlement: DeferredJobSettlement): Promise<void> {
+    this.#producerOutcomes.add(job);
     this.indexedJobOwnersConfirmed();
     const jobId=this.ownedJobId(job);
     const originalSettlement=settlement;
@@ -3048,10 +3062,10 @@ export class CodexJobRegistry {
     if (!this.ownedJobPrototypes.has(job)) this.ownedJobPrototypes.set(job,Object.getPrototypeOf(job));
     if (!this.ownedJobPromises.has(job)) this.ownJobPromise(job);
     const jobId=this.ownedJobId(job),original=Reflect.apply(observerMapGet,this.#admittedJobOwners,[jobId]);
-    if(original&&original!==job){
+    if(original && (!this.indexedJobOwnersConfirmed() || original!==job)){
       this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(original);this.unconfirmedJobCallbacks.add(job);
       this.retainNonforcingObservation(jobId,'admission-owner-reindex',{job,original});
-      throw new Error('STATE_JOB_INDEX_OWNER_UNCONFIRMED');
+      return;
     }
     Reflect.apply(observerMapSet,this.#admittedJobOwners,[jobId,job]);
     Reflect.apply(observerMapSet,this.#observerJobs,[jobId,job]);
@@ -3077,7 +3091,9 @@ export class CodexJobRegistry {
   }
 
   private ownJobPromise(job:CodexJob):void {
+    const initial=!this.ownedJobPromises.has(job),status=Object.getOwnPropertyDescriptor(job,'status');
     this.ownedJobPromises.set(job,job.promise);
+    if(initial && status && ('value' in status) && isTerminalActivityJobStatus(status.value))this.#producerOutcomes.add(job);
   }
 
   private deleteIndexedJob(jobId: string): void {
@@ -3850,7 +3866,7 @@ export class CodexJobRegistry {
           (progress) => this.recordProgress(job, progress),
           (assignment) => {
             const captured = this.recordWorkerAssignment(job, assignment);
-            if (!captured || this.nonforcingPinned) return;
+            if (!captured || this.nonforcingPinned || this.unconfirmedJobCallbacks.has(job)) return;
             if (!onAssigned) return;
             const before=this.terminalJobData(job,jobId);
             this.registryCallbacksInFlight++;
@@ -5242,6 +5258,7 @@ export class CodexJobRegistry {
       for (const jobId of removed) this.activityStore.deleteJob(jobId);
     });
     this.setIndexedJob(this.jobs.get(job.jobId) || job);
+    if(this.unconfirmedJobCallbacks.has(job))return;
     const removedIds = new Set([job.jobId, ...removed]);
     this.progressPersistenceQueue.remove(snapshot => removedIds.has(snapshot.jobId));
     this.progressPersisted.set(job.jobId, {

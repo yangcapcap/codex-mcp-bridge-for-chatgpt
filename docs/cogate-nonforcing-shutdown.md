@@ -536,3 +536,21 @@ void keeps existing notification behavior; UNKNOWN prevents an execution ACK.
 Subscription registration uses the same authority comparison while accepting
 only its original synchronous cleanup function. Failed, unsupported or pinned
 undo calls retain their original capability as well as raw outcomes and errors.
+
+
+Original producer lifetime and transaction reindexing
+-----------------------------------------------------
+
+Nonforcing observation tracks the original producer outcome separately from the
+Job's display status. A caller changing a running Job to a terminal status cannot
+prove producer exit. Observation validates original Job identity, prototype,
+promise and status through own data descriptors; unsupported accessors remain
+unread and retain UNKNOWN. An originally loaded terminal Job has no live producer.
+A received producer outcome does not release callbacks or durable writer evidence.
+
+Reindexing after a persistence transaction checks the original admitted owner
+before rewriting the index. A transaction notification that deletes or replaces
+an entry remains an ownership contradiction even if the original entry could be
+reconstructed. That contradiction retains the original outcome and prevents the
+assignment continuation, terminal ACK and persistence accounting retirement.
+These controls require fresh independent review and full runtime integration.
