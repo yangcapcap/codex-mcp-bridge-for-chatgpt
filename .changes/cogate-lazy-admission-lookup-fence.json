@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Recheck lazy admission after backend method lookup so reentrant nonforcing shutdown cannot delegate new actions or erase pending protections.","breaking":false,"migration":null}

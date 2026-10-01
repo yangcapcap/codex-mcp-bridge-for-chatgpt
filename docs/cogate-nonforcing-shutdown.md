@@ -266,9 +266,40 @@ EXIT describes resource/process closure and does not certify their persistence.
 Existing ordinary diagnostic flush/recovery remains the default. This draft still
 requires actual-host verification and a new independent exact-head review and
 does not expose a production shutdown policy switch.
+
+### Pending lazy execution construction fence
+
+The lazy execution adapter seals startup before invoking its factory. A
+nonforcing close immediately stops new admission, including a method captured
+before an asynchronous admission guard returns. Existing instances receive their
+explicit capability synchronously. A late factory result is pinned before any
+resume protection or request continues; an unfinished factory remains sticky
+UNKNOWN because late registration cannot reconstruct earlier resources. Missing
+capabilities, prior ordinary close and unqualified disposal also remain UNKNOWN;
+ordinary close/disposal never resumes after pin. Execution factory construction
+checks its pin after CLI selection, and an unconfirmed router close retains the
+CLI context rather than releasing it. These are local source/pure checks pending
+fresh independent review and runtime/launcher integration.
 The private owned-child controller retains any observed PID identity mismatch
 as sticky UNKNOWN, including after the numeric PID field is restored. This
 invalidates cached final receipts for current observations and ordinary close
 reporting while preserving the immutable original result. No fresh finalization
 or receipt request is sent once such uncertainty has been recorded. The new
 repair requires its own independent exact-head review.
+
+Lazy direct delegation captures each actionable backend method before a final
+admission check. A getter that reentrantly installs the nonforcing fence cannot
+invoke its returned method or clear retained resume protections afterward. This
+also covers direct tool/catalog/detach delegation and factory-time protection
+lookups. The new repair retains the rejected predecessor and requires fresh
+independent review.
+
+Each retained-protection flush also checks admission before lookup and after the
+callback, including the final item. A callback that installs the fence cannot
+start a later callback or clear the retained IDs, even in a single-item flush.
+
+Lazy continuations check admission immediately after awaiting an instance, before
+starting an admission guard, after awaiting that guard, and after method lookup.
+An ordinary close also rechecks its captured close method before invocation, so
+lookup-time pinning cannot resume force recovery. These checks preserve prior
+rejected evidence and require a fresh independent review.

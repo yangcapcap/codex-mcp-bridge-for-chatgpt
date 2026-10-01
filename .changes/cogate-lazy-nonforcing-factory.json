@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseUnitId": "codex-mcp-bridge",
+  "bump": "patch",
+  "summary": "Propagate explicit nonforcing shutdown through lazy execution construction and prevent ordinary admission or disposal from resuming after the fence.",
+  "breaking": false,
+  "migration": null
+}

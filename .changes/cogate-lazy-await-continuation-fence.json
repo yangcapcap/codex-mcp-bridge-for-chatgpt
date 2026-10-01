@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Recheck lazy admission at every instance and guard await continuation, and block ordinary close lookup from resuming after a nonforcing pin.","breaking":false,"migration":null}

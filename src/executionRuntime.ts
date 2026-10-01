@@ -49,12 +49,14 @@ export function createExecutionRuntime(
   };
   let executionService: ChildProcessCodexExecutionService | undefined;
   let executionStarting = false;
+  let constructionPinned=false;
   const app = new LazyCodexUpstream(
     "app-server",
     UNVERIFIED_APP_SERVER_CAPABILITIES,
     async () => {
       if (!isolation.isolateCodexExecution) {
         const command = await resolveCli();
+        if(constructionPinned)throw new Error("NONFORCING_EXECUTION_CONSTRUCTION_CLOSED");
         return new CodexAppServerUpstreamPool(
           command,
           config.upstreamPoolSize,
@@ -64,6 +66,7 @@ export function createExecutionRuntime(
       executionStarting = true;
       try {
         const command = await resolveCli();
+        if(constructionPinned)throw new Error("NONFORCING_EXECUTION_CONSTRUCTION_CLOSED");
         executionService = await ChildProcessCodexExecutionService.start({
           command,
           endpoint: executionEndpoint(config.stateDatabaseFile),
@@ -81,7 +84,8 @@ export function createExecutionRuntime(
       }
     },
     undefined,
-    service.admissionGuard()
+    service.admissionGuard(),
+    ()=>{constructionPinned=true;return true;}
   );
   const router = new CodexBackendRouter("app-server", new Map<CodexBackendKind, CodexUpstream>([["app-server", app]]));
   service.setAccountReader(() => app.readAccountSnapshot());
@@ -103,6 +107,6 @@ export function createExecutionRuntime(
     return account && window ? { ...window, observedAt: account.observedAt } : null;
   };
   const close = router.close.bind(router);
-  router.close = async () => { try { await close(); } finally { await release?.(); } };
+  router.close = async () => { await close();await release?.(); };
   return router;
 }
