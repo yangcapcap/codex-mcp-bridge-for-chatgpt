@@ -222,3 +222,24 @@ activation or establish complete launcher/state/runtime shutdown. It requires a
 new independent exact-head review before integration and final acceptance. The
 local tests cover correlation, real owned exit, retained writer evidence, prior
 force history, serialization reentrancy and an observed detached descendant.
+
+### Pending private Node IPC child controller
+
+`OwnedProcessShutdown` is a reusable controller for a directly spawned, retained
+Node IPC child handle. It seals an exact child/generation/controller/close nonce,
+requires a positive synchronous admission fence, preserves prior ordinary-stop
+history and rejects missing or contradictory resource receipts. IPC backpressure
+is queued delivery, not rejection; only the send callback, exact receipt and
+bounded deadline settle delivery observation. A fresh finalize receipt plus
+actual exit of the original owned handle are required. It does not authenticate
+an external socket or prove process-tree absence; child-side resource/descendant
+proof and each consuming actor's admission/force/restart guards are mandatory.
+
+The draft controller is now used by the read-only state projection child, whose
+private protocol is version 3. Its controller UUID is fixed in the owned spawn
+arguments. The child stops admitting reads, awaits the retained serial queue,
+checks resource closure and writes a bounded correlated receipt before final
+disconnection. Parent timers and late replies retain unconfirmed request evidence
+and cannot resume force recovery. It still needs actual-host validation and a
+new independent review. State/telemetry and complete runtime/launcher adaptation
+remain pending. It does not enable a production policy switch.
