@@ -98,7 +98,7 @@ export class McpEventsController {
     this.stop.abort();
     try{this.unsubscribeFence.runSynchronous(()=>{
       this.unsubscribeFence.pinNonforcingShutdown();
-      const raw=Reflect.apply(this.unsubscribe,undefined,[]);
+      const raw=Reflect.apply(this.unsubscribe,this,[]);
       if(raw!==undefined){this.retainedErrors.set('unsubscribe-result',raw);this.nonforcingUnknown=true;}
       return raw;
     });}catch(error){this.nonforcingUnknown=true;this.retainedErrors.set('unsubscribe',error);}
