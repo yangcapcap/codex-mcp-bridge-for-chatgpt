@@ -2181,6 +2181,11 @@ type SteeringMutationFallbacks = {
   uncertain: unknown;
 };
 
+const ackPromiseConstructor=Promise;
+const ackPromisePrototype=Promise.prototype;
+const ackPromiseThen=Promise.prototype.then;
+const ackPromiseSpecies=Object.getOwnPropertyDescriptor(Promise,Symbol.species)?.get;
+
 export class CodexJobRegistry {
   private readonly authBoundary?: () => string | null;
   private readonly jobs = new Map<string, CodexJob>();
@@ -2640,10 +2645,10 @@ export class CodexJobRegistry {
           observation.value = Reflect.apply(acknowledge,this.upstream,[job.jobId]);
           if (this.nonforcingPinned) return;
           if (observation.value !== undefined) {
-            const promise = observation.value instanceof Promise;
+            const promise = this.safeAcknowledgementPromise(observation.value);
             if (this.nonforcingPinned) return;
             if (!promise) {failed(observation.value);return;}
-            Reflect.apply(Promise.prototype.then,observation.value,[
+            Reflect.apply(ackPromiseThen,observation.value,[
               () => {if (!this.nonforcingPinned) this.executionAcknowledgements.delete(job);},
               (error: unknown) => {failed(error);}
             ]);
@@ -2657,6 +2662,20 @@ export class CodexJobRegistry {
       if (!this.nonforcingPinned && !this.unconfirmedJobCallbacks.has(job) && observation.value === undefined)
         this.executionAcknowledgements.delete(job);
     }
+  }
+
+  private safeAcknowledgementPromise(value:unknown):boolean {
+    try {
+      if(!value || typeof value!=='object')return false;
+      const own=Object.getOwnPropertyDescriptor(value,'constructor');
+      if(this.nonforcingPinned || own)return false;
+      const prototype=Object.getPrototypeOf(value);
+      if(this.nonforcingPinned || prototype!==ackPromisePrototype)return false;
+      const constructor=Object.getOwnPropertyDescriptor(ackPromisePrototype,'constructor');
+      if(this.nonforcingPinned || constructor?.value!==ackPromiseConstructor || !Object.hasOwn(constructor,'value'))return false;
+      const species=Object.getOwnPropertyDescriptor(ackPromiseConstructor,Symbol.species);
+      return !this.nonforcingPinned && !!species && species.get===ackPromiseSpecies && species.set===undefined && !Object.hasOwn(species,'value');
+    }catch{return false;}
   }
 
   private async settleExecutionResult(job: CodexJob, result: ToolResult, onComplete?: JobCompletionCallback): Promise<void> {
@@ -3742,7 +3761,27 @@ export class CodexJobRegistry {
       this.unconfirmedJobCallbacks.add(job);
       this.retainNonforcingObservation(job.jobId,"completion-callback-result",returned);
       throw new Error("STATE_COMPLETION_CALLBACK_UNCONFIRMED");
+    } catch (error) {
+      this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(job.jobId,'completion-callback-error',error);
+      throw error;
     } finally {this.registryCallbacksInFlight--;}
+  }
+
+  private invokeTerminalUndo(job:CodexJob,undo?:()=>void):void {
+    if(!undo)return;
+    if(this.nonforcingPinned){this.retainNonforcingObservation(job.jobId,'terminal-undo',undo);return;}
+    this.registryCallbacksInFlight++;
+    try {
+      const result=Reflect.apply(undo,undefined,[]);
+      if(result!==undefined) {
+        this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+        this.retainNonforcingObservation(job.jobId,'terminal-undo-result',result);
+      }
+    }catch(error){
+      this.nonforcingUnknown=true;this.unconfirmedJobCallbacks.add(job);
+      this.retainNonforcingObservation(job.jobId,'terminal-undo-error',error);
+    }finally{this.registryCallbacksInFlight--;}
   }
 
   private settleResolvedJob(
@@ -3794,8 +3833,7 @@ export class CodexJobRegistry {
       this.notify(job.jobId, "terminal");
       this.notifyScope(job.scopeId);
     } catch (error) {
-      if (!this.nonforcingPinned) undo?.();
-      else if (undo) this.retainNonforcingObservation(job.jobId,"terminal-undo",undo);
+      this.invokeTerminalUndo(job,undo);
       throw new JobTerminalCommitError(error);
     }
   }
@@ -3846,8 +3884,7 @@ export class CodexJobRegistry {
       this.notify(job.jobId, "terminal");
       this.notifyScope(job.scopeId);
     } catch (error) {
-      if (!this.nonforcingPinned) undo?.();
-      else if (undo) this.retainNonforcingObservation(job.jobId,"terminal-undo",undo);
+      this.invokeTerminalUndo(job,undo);
       throw new JobTerminalCommitError(error);
     }
   }
@@ -4344,6 +4381,13 @@ export class CodexJobRegistry {
     if (!captured.ok || !isRecord(captured.value) || !isCodexBackendKind(captured.value.backendKind) ||
         typeof captured.value.workerId !== "string" || !captured.value.workerId ||
         !Number.isSafeInteger(captured.value.workerGeneration) || captured.value.workerGeneration < 0 ||
+        captured.value.threadPersistence!==undefined && !['persistent','ephemeral','unknown'].includes(captured.value.threadPersistence) ||
+        captured.value.runtime!==undefined && (!isRecord(captured.value.runtime) ||
+          typeof captured.value.runtime.codex!=='string' || !captured.value.runtime.codex ||
+          (['sdk','python'] as const).some(key=>captured.value.runtime![key]!==undefined && typeof captured.value.runtime![key]!=='string') ||
+          captured.value.runtime.channel!==undefined && captured.value.runtime.channel!=='stable' ||
+          (['requestedAuthMode','resolvedAuthMode'] as const).some(key=>captured.value.runtime![key]!==undefined &&
+            !['chatgpt','api-key'].includes(captured.value.runtime![key]!))) ||
         (["workerPid","processGroupId"] as const).some(key => captured.value[key] !== undefined &&
           (!Number.isSafeInteger(captured.value[key]) || (captured.value[key] as number) <= 0)) ||
         (["upstreamRequestId","threadId","sessionId","forkedFromThreadId"] as const).some(key => captured.value[key] !== undefined &&

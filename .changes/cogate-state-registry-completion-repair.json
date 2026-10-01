@@ -1,0 +1,1 @@
+{"schemaVersion":1,"releaseUnitId":"codex-mcp-bridge","bump":"patch","summary":"Reject unsafe native ACK Promise descriptors and retain completion rollback uncertainty with original producer outcomes.","breaking":false,"migration":null}

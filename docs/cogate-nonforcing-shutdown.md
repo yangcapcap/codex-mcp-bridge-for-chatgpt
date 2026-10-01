@@ -417,6 +417,14 @@ returning captured data. Cancellation, steering and persistence errors inspect
 own message data without invoking accessor messages or writing after pinning.
 Explicit retained-Job maintenance also rejects after the permanent pin.
 
+Native Promise ACK observation accepts only the unchanged intrinsic Promise
+prototype, constructor and species descriptors, with no own constructor field.
+Other objects remain unconfirmed without invoking a constructor/species getter.
+Worker assignment persistence/runtime fields must satisfy their semantic types.
+Completion callback exceptions and rollback undo exceptions or non-void returns
+retain the original successful producer outcome and callback uncertainty; they
+cannot fabricate a failed terminal Job or authorize an execution ACK.
+
 This registry component does not close the state database, retire a durable writer
 or approve the complete runtime. The full runtime owner must additionally fence
 in-flight application RPCs and frontends before closing resources and authenticating
