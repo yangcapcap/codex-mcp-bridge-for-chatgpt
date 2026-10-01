@@ -265,3 +265,17 @@ EXIT describes resource/process closure and does not certify their persistence.
 Existing ordinary diagnostic flush/recovery remains the default. This draft still
 requires actual-host verification and a new independent exact-head review and
 does not expose a production shutdown policy switch.
+
+### Pending lazy execution construction fence
+
+The lazy execution adapter seals startup before invoking its factory. A
+nonforcing close immediately stops new admission, including a method captured
+before an asynchronous admission guard returns. Existing instances receive their
+explicit capability synchronously. A late factory result is pinned before any
+resume protection or request continues; an unfinished factory remains sticky
+UNKNOWN because late registration cannot reconstruct earlier resources. Missing
+capabilities, prior ordinary close and unqualified disposal also remain UNKNOWN;
+ordinary close/disposal never resumes after pin. Execution factory construction
+checks its pin after CLI selection, and an unconfirmed router close retains the
+CLI context rather than releasing it. These are local source/pure checks pending
+fresh independent review and runtime/launcher integration.
